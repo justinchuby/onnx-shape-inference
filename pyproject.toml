@@ -7,7 +7,7 @@ name = "onnx-shape-inference"
 dynamic = ["version"]
 description = 'Symbolic shape inference for ONNX models'
 readme = "README.md"
-requires-python = ">=3.7"
+requires-python = ">=3.8"
 license = "MIT"
 keywords = []
 authors = [
@@ -16,7 +16,6 @@ authors = [
 classifiers = [
   "Development Status :: 4 - Beta",
   "Programming Language :: Python",
-  "Programming Language :: Python :: 3.7",
   "Programming Language :: Python :: 3.8",
   "Programming Language :: Python :: 3.9",
   "Programming Language :: Python :: 3.10",
@@ -24,12 +23,17 @@ classifiers = [
   "Programming Language :: Python :: Implementation :: CPython",
   "Programming Language :: Python :: Implementation :: PyPy",
 ]
-dependencies = []
+dependencies = [
+  "sympy",
+  "numpy",
+  "onnx>=1.14",
+  "typing_extensions",
+]
 
 [project.urls]
-Documentation = "https://github.com/unknown/onnx-shape-inference#readme"
-Issues = "https://github.com/unknown/onnx-shape-inference/issues"
-Source = "https://github.com/unknown/onnx-shape-inference"
+Documentation = "https://github.com/justinchuby/onnx-shape-inference#readme"
+Issues = "https://github.com/justinchuby/onnx-shape-inference/issues"
+Source = "https://github.com/justinchuby/onnx-shape-inference"
 
 [tool.hatch.version]
 path = "src/onnx_shape_inference/__about__.py"
@@ -57,33 +61,26 @@ python = ["3.7", "3.8", "3.9", "3.10", "3.11"]
 [tool.hatch.envs.lint]
 detached = true
 dependencies = [
-  "black>=23.1.0",
-  "mypy>=1.0.0",
-  "ruff>=0.0.243",
+  "lintrunner",
+  "lintrunner-adapters",
 ]
 [tool.hatch.envs.lint.scripts]
-typing = "mypy --install-types --non-interactive {args:src/onnx_shape_inference tests}"
 style = [
-  "ruff {args:.}",
+  "lintrunner --all-files",
   "black --check --diff {args:.}",
 ]
 fmt = [
-  "black {args:.}",
-  "ruff --fix {args:.}",
-  "style",
+  "lintrunner f --all-files",
 ]
 all = [
   "style",
-  "typing",
 ]
 
 [tool.black]
-target-version = ["py37"]
-line-length = 120
-skip-string-normalization = true
+target-version = ["py38"]
 
 [tool.ruff]
-target-version = "py37"
+target-version = "py38"
 line-length = 120
 select = [
   "A",
@@ -122,20 +119,12 @@ ignore = [
   # Ignore complexity
   "C901", "PLR0911", "PLR0912", "PLR0913", "PLR0915",
 ]
-unfixable = [
-  # Don't touch unused imports
-  "F401",
-]
 
 [tool.ruff.isort]
 known-first-party = ["onnx_shape_inference"]
 
 [tool.ruff.flake8-tidy-imports]
 ban-relative-imports = "all"
-
-[tool.ruff.per-file-ignores]
-# Tests can use magic values, assertions, and relative imports
-"tests/**/*" = ["PLR2004", "S101", "TID252"]
 
 [tool.coverage.run]
 source_pkgs = ["onnx_shape_inference", "tests"]
