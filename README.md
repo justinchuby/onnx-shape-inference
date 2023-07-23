@@ -3,7 +3,7 @@
 [![PyPI - Version](https://img.shields.io/pypi/v/onnx-shape-inference.svg)](https://pypi.org/project/onnx-shape-inference)
 [![PyPI - Python Version](https://img.shields.io/pypi/pyversions/onnx-shape-inference.svg)](https://pypi.org/project/onnx-shape-inference)
 
-Symbolic shape inference for ONNX using sympy
+Symbolic shape inference for ONNX.
 
 ## Installation
 
