@@ -1,0 +1,16 @@
+merge_base_with = 'main'
+
+[[linter]]
+code = 'NEWLINE'
+include_patterns = ['**']
+exclude_patterns = []
+command = [
+    'python',
+    '-m',
+    'lintrunner_adapters',
+    'run',
+    'newlines_linter',
+    '--',
+    '@{{PATHSFILE}}',
+]
+is_formatter = true
