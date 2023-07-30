@@ -59,10 +59,12 @@ cov = [
 python = ["3.8", "3.9", "3.10", "3.11"]
 
 [tool.hatch.envs.lint]
-detached = true
 dependencies = [
   "lintrunner",
   "lintrunner-adapters",
+]
+post-install-commands = [
+  "lintrunner init",
 ]
 [tool.hatch.envs.lint.scripts]
 style = [
