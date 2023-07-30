@@ -58,26 +58,6 @@ cov = [
 [[tool.hatch.envs.all.matrix]]
 python = ["3.8", "3.9", "3.10", "3.11"]
 
-[tool.hatch.envs.lint]
-dependencies = [
-  "lintrunner",
-  "lintrunner-adapters",
-]
-post-install-commands = [
-  "lintrunner init",
-]
-[tool.hatch.envs.lint.scripts]
-style = [
-  "lintrunner --all-files",
-  "black --check --diff {args:.}",
-]
-fmt = [
-  "lintrunner f --all-files",
-]
-all = [
-  "style",
-]
-
 [tool.black]
 target-version = ["py38"]
 
