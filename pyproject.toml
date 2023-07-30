@@ -115,7 +115,7 @@ ignore = [
 ban-relative-imports = "all"
 
 [tool.coverage.run]
-source_pkgs = ["onnx_shape_inference", "tests"]
+source_pkgs = ["onnx_shape_inference"]
 branch = true
 parallel = true
 omit = [
@@ -123,8 +123,8 @@ omit = [
 ]
 
 [tool.coverage.paths]
-onnx_shape_inference = ["src/onnx_shape_inference", "*/onnx-shape-inference/src/onnx_shape_inference"]
-tests = ["tests", "*/onnx-shape-inference/tests"]
+onnx_shape_inference = ["src/onnx_shape_inference"]
+tests = ["src/onnx_shape_inference"]
 
 [tool.coverage.report]
 exclude_lines = [
