@@ -3,32 +3,13 @@
 from __future__ import annotations
 
 import os
+import pathlib
+import unittest
 
 import numpy as np
 import onnx
 
-if os.path.exists(
-    os.path.join(
-        os.path.dirname(__file__),
-        "..",
-        "..",
-        "python",
-        "tools",
-        "symbolic_shape_infer.py",
-    )
-):
-    # Allow running this test script without installing onnxruntime package.
-    import sys
-
-    sys.path.append(
-        os.path.join(os.path.dirname(__file__), "..", "..", "python", "tools")
-    )
-    from symbolic_shape_infer import SymbolicShapeInference
-else:
-    from onnxruntime.tools.symbolic_shape_infer import SymbolicShapeInference
-
-import unittest
-from pathlib import Path
+from onnx_shape_inference._internal import shape_inference
 
 
 def unique_element(lst):
@@ -43,7 +24,7 @@ class TestSymbolicShapeInference(unittest.TestCase):
     def test_symbolic_shape_infer(self):
         cwd = os.getcwd()
         test_model_dir = os.path.join(cwd, "..", "models")
-        for filename in Path(test_model_dir).rglob("*.onnx"):
+        for filename in pathlib.Path(test_model_dir).rglob("*.onnx"):
             if filename.name.startswith("."):
                 continue  # skip some bad model files
 
@@ -53,7 +34,7 @@ class TestSymbolicShapeInference(unittest.TestCase):
                 continue
 
             print("Running symbolic shape inference on : " + str(filename))
-            SymbolicShapeInference.infer_shapes(
+            shape_inference.SymbolicShapeInference.infer_shapes(
                 in_mp=onnx.load(str(filename)),
                 auto_merge=True,
                 int_max=100000,
@@ -115,7 +96,7 @@ class TestSymbolicShapeInference(unittest.TestCase):
         model = onnx.helper.make_model(graph, producer_name="test_mismatched_types")
 
         with self.assertRaisesRegex(ValueError, r"if_node.*FLOAT.*DOUBLE"):
-            SymbolicShapeInference.infer_shapes(model, auto_merge=True)
+            shape_inference.SymbolicShapeInference.infer_shapes(model, auto_merge=True)
 
 
 class TestSymbolicShapeInferenceForOperators(unittest.TestCase):
@@ -161,7 +142,9 @@ class TestSymbolicShapeInferenceForOperators(unittest.TestCase):
         model = onnx.helper.make_model(graph, producer_name="Unsqueeze_Test_Model")
         model.opset_import[0].version = 11
 
-        inferred = SymbolicShapeInference.infer_shapes(model, auto_merge=True)
+        inferred = shape_inference.SymbolicShapeInference.infer_shapes(
+            model, auto_merge=True
+        )
         expected_shapes = [
             onnx.helper.make_tensor_value_info(
                 "temp", onnx.TensorProto.FLOAT, [1, "b", "s"]
@@ -196,7 +179,9 @@ class TestSymbolicShapeInferenceForOperators(unittest.TestCase):
         model = onnx.helper.make_model(graph, producer_name="Unsqueeze_Test_Model")
         model.opset_import[0].version = 13
 
-        inferred = SymbolicShapeInference.infer_shapes(model, auto_merge=True)
+        inferred = shape_inference.SymbolicShapeInference.infer_shapes(
+            model, auto_merge=True
+        )
         expected_shapes = [
             onnx.helper.make_tensor_value_info(
                 "temp", onnx.TensorProto.FLOAT, ["b", "s", 1]
@@ -238,7 +223,9 @@ class TestSymbolicShapeInferenceForOperators(unittest.TestCase):
         model = onnx.helper.make_model(graph, producer_name="Gather_Test_Model")
         model.opset_import[0].version = 13
 
-        inferred = SymbolicShapeInference.infer_shapes(model, auto_merge=True)
+        inferred = shape_inference.SymbolicShapeInference.infer_shapes(
+            model, auto_merge=True
+        )
         expected_shapes = [
             onnx.helper.make_tensor_value_info("data", onnx.TensorProto.FLOAT, [5]),
             onnx.helper.make_tensor_value_info("output", onnx.TensorProto.FLOAT, ["b"]),
@@ -312,7 +299,9 @@ class TestSymbolicShapeInferenceForOperators(unittest.TestCase):
         )
         model = onnx.helper.make_model(graph)
 
-        inferred = SymbolicShapeInference.infer_shapes(model, auto_merge=True)
+        inferred = shape_inference.SymbolicShapeInference.infer_shapes(
+            model, auto_merge=True
+        )
         expected_shapes = [
             onnx.helper.make_tensor_value_info(
                 "output", onnx.TensorProto.FLOAT, ["b", "s", hidden_size]
@@ -350,7 +339,9 @@ class TestSymbolicShapeInferenceForOperators(unittest.TestCase):
         )
         model = onnx.helper.make_model(graph)
 
-        inferred = SymbolicShapeInference.infer_shapes(model, auto_merge=True)
+        inferred = shape_inference.SymbolicShapeInference.infer_shapes(
+            model, auto_merge=True
+        )
         expected_shapes = [
             onnx.helper.make_tensor_value_info("loss", onnx.TensorProto.FLOAT, [])
         ]
@@ -375,7 +366,9 @@ class TestSymbolicShapeInferenceForOperators(unittest.TestCase):
         graph = onnx.helper.make_graph(nodes, "Einsum_Test", inputs, outputs, [])
         model = onnx.helper.make_model(graph)
 
-        inferred = SymbolicShapeInference.infer_shapes(model, auto_merge=True)
+        inferred = shape_inference.SymbolicShapeInference.infer_shapes(
+            model, auto_merge=True
+        )
         expected_shapes = [
             onnx.helper.make_tensor_value_info(
                 "output_0", onnx.TensorProto.FLOAT, output_0_shape
@@ -407,7 +400,9 @@ class TestSymbolicShapeInferenceForOperators(unittest.TestCase):
         graph = onnx.helper.make_graph(nodes, "Einsum_Test", inputs, outputs, [])
         model = onnx.helper.make_model(graph)
 
-        inferred = SymbolicShapeInference.infer_shapes(model, auto_merge=True)
+        inferred = shape_inference.SymbolicShapeInference.infer_shapes(
+            model, auto_merge=True
+        )
         expected_shapes = [
             onnx.helper.make_tensor_value_info(
                 "output_0", onnx.TensorProto.FLOAT, output_0_shape
@@ -466,7 +461,9 @@ class TestSymbolicShapeInferenceForOperators(unittest.TestCase):
         graph_def = onnx.helper.make_graph(
             nodes, "TestMulPrecision", [graph_input], [graph_output], [constant]
         )
-        model = SymbolicShapeInference.infer_shapes(onnx.helper.make_model(graph_def))
+        model = shape_inference.SymbolicShapeInference.infer_shapes(
+            onnx.helper.make_model(graph_def)
+        )
         output_dims = unique_element(model.graph.output).type.tensor_type.shape.dim
         self.assertEqual(len(output_dims), 1)
         self.assertEqual(output_dims[0].dim_value, 512)
@@ -500,7 +497,9 @@ class TestSymbolicShapeInferenceForOperators(unittest.TestCase):
         graph_def = onnx.helper.make_graph(
             nodes, "TestDivPrecision", [graph_input], [graph_output], [constant]
         )
-        model = SymbolicShapeInference.infer_shapes(onnx.helper.make_model(graph_def))
+        model = shape_inference.SymbolicShapeInference.infer_shapes(
+            onnx.helper.make_model(graph_def)
+        )
         output_dims = unique_element(model.graph.output).type.tensor_type.shape.dim
         self.assertEqual(len(output_dims), 1)
         self.assertEqual(output_dims[0].dim_value, 512)
@@ -576,7 +575,9 @@ class TestSymbolicShapeInferenceForSlice(unittest.TestCase):
         graph_def = onnx.helper.make_graph(
             nodes, "graph", inputs, [output], initializer=initializers
         )
-        model = SymbolicShapeInference.infer_shapes(onnx.helper.make_model(graph_def))
+        model = shape_inference.SymbolicShapeInference.infer_shapes(
+            onnx.helper.make_model(graph_def)
+        )
         output = unique_element(model.graph.output)
         shape = [
             d.dim_param if d.dim_param else d.dim_value
@@ -667,7 +668,9 @@ class TestSymbolicShapeInferenceForSlice(unittest.TestCase):
         graph_def = onnx.helper.make_graph(
             nodes, "SliceOfMin", [graph_input], [graph_output], initializer=initializers
         )
-        model = SymbolicShapeInference.infer_shapes(onnx.helper.make_model(graph_def))
+        model = shape_inference.SymbolicShapeInference.infer_shapes(
+            onnx.helper.make_model(graph_def)
+        )
         output_dims = unique_element(model.graph.output).type.tensor_type.shape.dim
         self.assertEqual(len(output_dims), 1)
         self.assertEqual(output_dims[0].dim_param, "N")
