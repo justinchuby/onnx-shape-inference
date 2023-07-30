@@ -8,6 +8,7 @@ import unittest
 
 import numpy as np
 import onnx
+
 from onnx_shape_inference._internal import shape_inference
 
 
