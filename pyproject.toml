@@ -86,12 +86,10 @@ select = [
   "A",
   "ARG",
   "B",
-  "C",
+  "C4",
   "DTZ",
   "E",
-  "EM",
   "F",
-  "FBT",
   "I",
   "ICN",
   "ISC",
@@ -100,28 +98,18 @@ select = [
   "PLE",
   "PLR",
   "PLW",
-  "Q",
   "RUF",
-  "S",
-  "T",
   "TID",
   "UP",
   "W",
   "YTT",
 ]
 ignore = [
-  # Allow non-abstract empty methods in abstract base classes
-  "B027",
-  # Allow boolean positional values in function calls, like `dict.get(... True)`
-  "FBT003",
-  # Ignore checks for possible passwords
-  "S105", "S106", "S107",
   # Ignore complexity
   "C901", "PLR0911", "PLR0912", "PLR0913", "PLR0915",
+  "E501", # black handles line length
+  "PLR2004", # Ignore magic numbers for now
 ]
-
-[tool.ruff.isort]
-known-first-party = ["onnx_shape_inference"]
 
 [tool.ruff.flake8-tidy-imports]
 ban-relative-imports = "all"
