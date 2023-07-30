@@ -58,24 +58,6 @@ cov = [
 [[tool.hatch.envs.all.matrix]]
 python = ["3.8", "3.9", "3.10", "3.11"]
 
-[tool.hatch.envs.lint]
-detached = true
-dependencies = [
-  "lintrunner",
-  "lintrunner-adapters",
-]
-[tool.hatch.envs.lint.scripts]
-style = [
-  "lintrunner --all-files",
-  "black --check --diff {args:.}",
-]
-fmt = [
-  "lintrunner f --all-files",
-]
-all = [
-  "style",
-]
-
 [tool.black]
 target-version = ["py38"]
 
@@ -90,7 +72,6 @@ select = [
   "DTZ",
   "E",
   "F",
-  "I",
   "ICN",
   "ISC",
   "N",
@@ -115,7 +96,7 @@ ignore = [
 ban-relative-imports = "all"
 
 [tool.coverage.run]
-source_pkgs = ["onnx_shape_inference", "tests"]
+source_pkgs = ["onnx_shape_inference"]
 branch = true
 parallel = true
 omit = [
@@ -123,8 +104,8 @@ omit = [
 ]
 
 [tool.coverage.paths]
-onnx_shape_inference = ["src/onnx_shape_inference", "*/onnx-shape-inference/src/onnx_shape_inference"]
-tests = ["tests", "*/onnx-shape-inference/tests"]
+onnx_shape_inference = ["src/onnx_shape_inference"]
+tests = ["src/onnx_shape_inference"]
 
 [tool.coverage.report]
 exclude_lines = [
