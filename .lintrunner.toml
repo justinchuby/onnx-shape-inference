@@ -1,6 +1,34 @@
 merge_base_with = 'main'
 
 [[linter]]
+code = 'RUFF'
+include_patterns = [
+    '**/*.py',
+    '**/*.pyi',
+]
+exclude_patterns = []
+command = [
+    'python',
+    '-m',
+    'lintrunner_adapters',
+    'run',
+    'ruff_linter',
+    '--config=pyproject.toml',
+    '--show-disable',
+    '@{{PATHSFILE}}',
+]
+init_command = [
+    'python',
+    '-m',
+    'lintrunner_adapters',
+    'run',
+    'pip_init',
+    '--dry-run={{DRYRUN}}',
+    'ruff==0.0.280',
+]
+is_formatter = true
+
+[[linter]]
 code = 'NEWLINE'
 include_patterns = ['**']
 exclude_patterns = []
