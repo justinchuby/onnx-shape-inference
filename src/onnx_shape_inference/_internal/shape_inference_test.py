@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 
-import numpy
+import numpy as np
 import onnx
 
 if os.path.exists(
@@ -20,7 +20,9 @@ if os.path.exists(
     # Allow running this test script without installing onnxruntime package.
     import sys
 
-    sys.path.append(os.path.join(os.path.dirname(__file__), "..", "..", "python", "tools"))
+    sys.path.append(
+        os.path.join(os.path.dirname(__file__), "..", "..", "python", "tools")
+    )
     from symbolic_shape_infer import SymbolicShapeInference
 else:
     from onnxruntime.tools.symbolic_shape_infer import SymbolicShapeInference
@@ -66,37 +68,49 @@ class TestSymbolicShapeInference(unittest.TestCase):
                     ["x"],
                     ["out"],
                     name="if_node",
-                    then_branch=helper.make_graph(
+                    then_branch=onnx.helper.make_graph(
                         [
                             onnx.helper.make_node(
                                 "Constant",
                                 [],
                                 ["one_float"],
-                                value=helper.make_tensor("one_float_value", onnx.TensorProto.FLOAT, [], [1]),
+                                value=onnx.helper.make_tensor(
+                                    "one_float_value", onnx.TensorProto.FLOAT, [], [1]
+                                ),
                             )
                         ],
                         "then",
                         [],
-                        [helper.make_tensor_value_info("one_float", onnx.TensorProto.FLOAT, [])],
+                        [
+                            onnx.helper.make_tensor_value_info(
+                                "one_float", onnx.TensorProto.FLOAT, []
+                            )
+                        ],
                     ),
-                    else_branch=helper.make_graph(
+                    else_branch=onnx.helper.make_graph(
                         [
                             onnx.helper.make_node(
                                 "Constant",
                                 [],
                                 ["one_double"],
-                                value=helper.make_tensor("one_double", onnx.TensorProto.DOUBLE, [], [1]),
+                                value=onnx.helper.make_tensor(
+                                    "one_double", onnx.TensorProto.DOUBLE, [], [1]
+                                ),
                             )
                         ],
                         "else",
                         [],
-                        [helper.make_tensor_value_info("one_double", onnx.TensorProto.DOUBLE, [])],
+                        [
+                            onnx.helper.make_tensor_value_info(
+                                "one_double", onnx.TensorProto.DOUBLE, []
+                            )
+                        ],
                     ),
                 )
             ],
             "graph",
-            [helper.make_tensor_value_info("x", onnx.TensorProto.BOOL, [])],
-            [helper.make_tensor_value_info("out", onnx.TensorProto.FLOAT, [])],
+            [onnx.helper.make_tensor_value_info("x", onnx.TensorProto.BOOL, [])],
+            [onnx.helper.make_tensor_value_info("out", onnx.TensorProto.FLOAT, [])],
         )
         model = onnx.helper.make_model(graph, producer_name="test_mismatched_types")
 
@@ -105,12 +119,17 @@ class TestSymbolicShapeInference(unittest.TestCase):
 
 
 class TestSymbolicShapeInferenceForOperators(unittest.TestCase):
-    def _check_shapes(self, graph: onnx.GraphProto, inferred_graph: onnx.GraphProto, vis: list[onnx.ValueInfoProto]) -> None:
+    def _check_shapes(
+        self,
+        graph: onnx.GraphProto,
+        inferred_graph: onnx.GraphProto,
+        vis: list[onnx.ValueInfoProto],
+    ) -> None:
         names_in_vis = {x.name for x in vis}
-        vis = list(x for x in graph.value_info if x.name not in names_in_vis) + vis
+        vis = [x for x in graph.value_info if x.name not in names_in_vis] + vis
         inferred_vis = list(inferred_graph.value_info)
-        vis = list(sorted(vis, key=lambda x: x.name))
-        inferred_vis = list(sorted(inferred_vis, key=lambda x: x.name))
+        vis = sorted(vis, key=lambda x: x.name)
+        inferred_vis = sorted(inferred_vis, key=lambda x: x.name)
         if vis == inferred_vis:
             return
         # otherwise some custom logic to give a nicer diff
@@ -129,10 +148,14 @@ class TestSymbolicShapeInferenceForOperators(unittest.TestCase):
             ],
             "Unsqueeze_Test",
             [
-                onnx.helper.make_tensor_value_info("input", onnx.TensorProto.FLOAT, ["b", "s"]),
+                onnx.helper.make_tensor_value_info(
+                    "input", onnx.TensorProto.FLOAT, ["b", "s"]
+                ),
             ],
             [
-                onnx.helper.make_tensor_value_info("output", onnx.TensorProto.FLOAT, [1, "b", "s"]),
+                onnx.helper.make_tensor_value_info(
+                    "output", onnx.TensorProto.FLOAT, [1, "b", "s"]
+                ),
             ],
         )
         model = onnx.helper.make_model(graph, producer_name="Unsqueeze_Test_Model")
@@ -140,8 +163,12 @@ class TestSymbolicShapeInferenceForOperators(unittest.TestCase):
 
         inferred = SymbolicShapeInference.infer_shapes(model, auto_merge=True)
         expected_shapes = [
-            onnx.helper.make_tensor_value_info("temp", onnx.TensorProto.FLOAT, [1, "b", "s"]),
-            onnx.helper.make_tensor_value_info("output", onnx.TensorProto.FLOAT, [1, "b", "s"]),
+            onnx.helper.make_tensor_value_info(
+                "temp", onnx.TensorProto.FLOAT, [1, "b", "s"]
+            ),
+            onnx.helper.make_tensor_value_info(
+                "output", onnx.TensorProto.FLOAT, [1, "b", "s"]
+            ),
         ]
         self._check_shapes(graph, inferred.graph, expected_shapes)
 
@@ -153,10 +180,14 @@ class TestSymbolicShapeInferenceForOperators(unittest.TestCase):
             ],
             "Unsqueeze_Test",
             [
-                onnx.helper.make_tensor_value_info("input", onnx.TensorProto.FLOAT, ["b", "s"]),
+                onnx.helper.make_tensor_value_info(
+                    "input", onnx.TensorProto.FLOAT, ["b", "s"]
+                ),
             ],
             [
-                onnx.helper.make_tensor_value_info("output", onnx.TensorProto.FLOAT, ["b", "s", 1]),
+                onnx.helper.make_tensor_value_info(
+                    "output", onnx.TensorProto.FLOAT, ["b", "s", 1]
+                ),
             ],
             [
                 onnx.helper.make_tensor("axes", onnx.TensorProto.INT64, [1], [-1]),
@@ -167,8 +198,12 @@ class TestSymbolicShapeInferenceForOperators(unittest.TestCase):
 
         inferred = SymbolicShapeInference.infer_shapes(model, auto_merge=True)
         expected_shapes = [
-            onnx.helper.make_tensor_value_info("temp", onnx.TensorProto.FLOAT, ["b", "s", 1]),
-            onnx.helper.make_tensor_value_info("output", onnx.TensorProto.FLOAT, ["b", "s", 1]),
+            onnx.helper.make_tensor_value_info(
+                "temp", onnx.TensorProto.FLOAT, ["b", "s", 1]
+            ),
+            onnx.helper.make_tensor_value_info(
+                "output", onnx.TensorProto.FLOAT, ["b", "s", 1]
+            ),
         ]
         self._check_shapes(graph, inferred.graph, expected_shapes)
 
@@ -180,16 +215,24 @@ class TestSymbolicShapeInferenceForOperators(unittest.TestCase):
                     [],
                     ["data"],
                     "constant",
-                    value=helper.make_tensor("input", onnx.TensorProto.FLOAT, [5], [0.0, 1.0, 2.0, 3.0, 4.0]),
+                    value=onnx.helper.make_tensor(
+                        "input", onnx.TensorProto.FLOAT, [5], [0.0, 1.0, 2.0, 3.0, 4.0]
+                    ),
                 ),
-                onnx.helper.make_node("Gather", ["data", "indices"], ["output"], axis=0),
+                onnx.helper.make_node(
+                    "Gather", ["data", "indices"], ["output"], axis=0
+                ),
             ],
             "Gather_Test",
             [
-                onnx.helper.make_tensor_value_info("indices", onnx.TensorProto.INT64, ["b"]),
+                onnx.helper.make_tensor_value_info(
+                    "indices", onnx.TensorProto.INT64, ["b"]
+                ),
             ],
             [
-                onnx.helper.make_tensor_value_info("output", onnx.TensorProto.FLOAT, ["b"]),
+                onnx.helper.make_tensor_value_info(
+                    "output", onnx.TensorProto.FLOAT, ["b"]
+                ),
             ],
         )
         model = onnx.helper.make_model(graph, producer_name="Gather_Test_Model")
@@ -223,8 +266,12 @@ class TestSymbolicShapeInferenceForOperators(unittest.TestCase):
                 [2, hidden_size],
                 [1.0] * (2 * hidden_size),
             ),
-            onnx.helper.make_tensor("gamma", onnx.TensorProto.FLOAT, [hidden_size], [1.0] * hidden_size),
-            onnx.helper.make_tensor("beta", onnx.TensorProto.FLOAT, [hidden_size], [1.0] * hidden_size),
+            onnx.helper.make_tensor(
+                "gamma", onnx.TensorProto.FLOAT, [hidden_size], [1.0] * hidden_size
+            ),
+            onnx.helper.make_tensor(
+                "beta", onnx.TensorProto.FLOAT, [hidden_size], [1.0] * hidden_size
+            ),
         ]
 
         nodes = [
@@ -245,22 +292,34 @@ class TestSymbolicShapeInferenceForOperators(unittest.TestCase):
         ]
 
         inputs = [
-            onnx.helper.make_tensor_value_info("input_ids", onnx.TensorProto.FLOAT, ["b", "s"]),
-            onnx.helper.make_tensor_value_info("segment_ids", onnx.TensorProto.FLOAT, ["b", "s"]),
+            onnx.helper.make_tensor_value_info(
+                "input_ids", onnx.TensorProto.FLOAT, ["b", "s"]
+            ),
+            onnx.helper.make_tensor_value_info(
+                "segment_ids", onnx.TensorProto.FLOAT, ["b", "s"]
+            ),
         ]
 
         outputs = [
             onnx.helper.make_tensor_value_info("output", onnx.TensorProto.FLOAT, None),
-            onnx.helper.make_tensor_value_info("mask_index", onnx.TensorProto.INT32, None),
+            onnx.helper.make_tensor_value_info(
+                "mask_index", onnx.TensorProto.INT32, None
+            ),
         ]
 
-        graph = onnx.helper.make_graph(nodes, "Unsqueeze_Test", inputs, outputs, initializers)
+        graph = onnx.helper.make_graph(
+            nodes, "Unsqueeze_Test", inputs, outputs, initializers
+        )
         model = onnx.helper.make_model(graph)
 
         inferred = SymbolicShapeInference.infer_shapes(model, auto_merge=True)
         expected_shapes = [
-            onnx.helper.make_tensor_value_info("output", onnx.TensorProto.FLOAT, ["b", "s", hidden_size]),
-            onnx.helper.make_tensor_value_info("mask_index", onnx.TensorProto.INT32, ["b"]),
+            onnx.helper.make_tensor_value_info(
+                "output", onnx.TensorProto.FLOAT, ["b", "s", hidden_size]
+            ),
+            onnx.helper.make_tensor_value_info(
+                "mask_index", onnx.TensorProto.INT32, ["b"]
+            ),
         ]
         self._check_shapes(graph, inferred.graph, expected_shapes)
 
@@ -268,65 +327,103 @@ class TestSymbolicShapeInferenceForOperators(unittest.TestCase):
         hidden_size = 1024
 
         nodes = [
-            onnx.helper.make_node("SoftmaxCrossEntropyLoss", inputs=["logits", "labels"], outputs=["loss"]),
+            onnx.helper.make_node(
+                "SoftmaxCrossEntropyLoss", inputs=["logits", "labels"], outputs=["loss"]
+            ),
         ]
 
         inputs = [
-            onnx.helper.make_tensor_value_info("logits", onnx.TensorProto.FLOAT, ["b", "s", hidden_size]),
-            onnx.helper.make_tensor_value_info("labels", onnx.TensorProto.INT32, ["b", "s"]),
+            onnx.helper.make_tensor_value_info(
+                "logits", onnx.TensorProto.FLOAT, ["b", "s", hidden_size]
+            ),
+            onnx.helper.make_tensor_value_info(
+                "labels", onnx.TensorProto.INT32, ["b", "s"]
+            ),
         ]
 
         outputs = [
             onnx.helper.make_tensor_value_info("loss", onnx.TensorProto.FLOAT, None),
         ]
 
-        graph = onnx.helper.make_graph(nodes, "SoftmaxCrossEntropyLoss_Test", inputs, outputs, [])
+        graph = onnx.helper.make_graph(
+            nodes, "SoftmaxCrossEntropyLoss_Test", inputs, outputs, []
+        )
         model = onnx.helper.make_model(graph)
 
         inferred = SymbolicShapeInference.infer_shapes(model, auto_merge=True)
-        expected_shapes = [helper.make_tensor_value_info("loss", onnx.TensorProto.FLOAT, [])]
+        expected_shapes = [
+            onnx.helper.make_tensor_value_info("loss", onnx.TensorProto.FLOAT, [])
+        ]
         self._check_shapes(graph, inferred.graph, expected_shapes)
 
     def _test_einsum_one_input_impl(self, input_0_shape, output_0_shape, eqn):
         nodes = [
-            onnx.helper.make_node("Einsum", ["input_0"], ["output_0"], "einsum_0", equation=eqn),
+            onnx.helper.make_node(
+                "Einsum", ["input_0"], ["output_0"], "einsum_0", equation=eqn
+            ),
         ]
         inputs = [
-            onnx.helper.make_tensor_value_info("input_0", onnx.TensorProto.FLOAT, input_0_shape),
+            onnx.helper.make_tensor_value_info(
+                "input_0", onnx.TensorProto.FLOAT, input_0_shape
+            ),
         ]
         outputs = [
-            onnx.helper.make_tensor_value_info("output_0", onnx.TensorProto.FLOAT, None),
+            onnx.helper.make_tensor_value_info(
+                "output_0", onnx.TensorProto.FLOAT, None
+            ),
         ]
         graph = onnx.helper.make_graph(nodes, "Einsum_Test", inputs, outputs, [])
         model = onnx.helper.make_model(graph)
 
         inferred = SymbolicShapeInference.infer_shapes(model, auto_merge=True)
-        expected_shapes = [helper.make_tensor_value_info("output_0", onnx.TensorProto.FLOAT, output_0_shape)]
+        expected_shapes = [
+            onnx.helper.make_tensor_value_info(
+                "output_0", onnx.TensorProto.FLOAT, output_0_shape
+            )
+        ]
         self._check_shapes(graph, inferred.graph, expected_shapes)
 
-    def _test_einsum_two_inputs_impl(self, input_0_shape, input_1_shape, output_0_shape, eqn):
+    def _test_einsum_two_inputs_impl(
+        self, input_0_shape, input_1_shape, output_0_shape, eqn
+    ):
         nodes = [
-            onnx.helper.make_node("Einsum", ["input_0", "input_1"], ["output_0"], "einsum_0", equation=eqn),
+            onnx.helper.make_node(
+                "Einsum", ["input_0", "input_1"], ["output_0"], "einsum_0", equation=eqn
+            ),
         ]
         inputs = [
-            onnx.helper.make_tensor_value_info("input_0", onnx.TensorProto.FLOAT, input_0_shape),
-            onnx.helper.make_tensor_value_info("input_1", onnx.TensorProto.FLOAT, input_1_shape),
+            onnx.helper.make_tensor_value_info(
+                "input_0", onnx.TensorProto.FLOAT, input_0_shape
+            ),
+            onnx.helper.make_tensor_value_info(
+                "input_1", onnx.TensorProto.FLOAT, input_1_shape
+            ),
         ]
         outputs = [
-            onnx.helper.make_tensor_value_info("output_0", onnx.TensorProto.FLOAT, None),
+            onnx.helper.make_tensor_value_info(
+                "output_0", onnx.TensorProto.FLOAT, None
+            ),
         ]
         graph = onnx.helper.make_graph(nodes, "Einsum_Test", inputs, outputs, [])
         model = onnx.helper.make_model(graph)
 
         inferred = SymbolicShapeInference.infer_shapes(model, auto_merge=True)
-        expected_shapes = [helper.make_tensor_value_info("output_0", onnx.TensorProto.FLOAT, output_0_shape)]
+        expected_shapes = [
+            onnx.helper.make_tensor_value_info(
+                "output_0", onnx.TensorProto.FLOAT, output_0_shape
+            )
+        ]
         self._check_shapes(graph, inferred.graph, expected_shapes)
 
     def test_einsum_matmul(self):
-        self._test_einsum_two_inputs_impl([1, "b", 8], [2, 12, "n"], [1, "b", 12, "n"], "abc, cde -> abde")
+        self._test_einsum_two_inputs_impl(
+            [1, "b", 8], [2, 12, "n"], [1, "b", 12, "n"], "abc, cde -> abde"
+        )
 
     def test_einsum_batch_matmul(self):
-        self._test_einsum_two_inputs_impl([5, 2, 3], [5, 3, 4], [5, 2, 4], "bij, bjk -> bik")
+        self._test_einsum_two_inputs_impl(
+            [5, 2, 3], [5, 3, 4], [5, 2, 4], "bij, bjk -> bik"
+        )
 
     def test_einsum_inner_prod(self):
         self._test_einsum_two_inputs_impl([5], [5], [], "i, i")
@@ -341,11 +438,15 @@ class TestSymbolicShapeInferenceForOperators(unittest.TestCase):
         self._test_einsum_one_input_impl(["a", "b"], ["b", "a"], "ij -> ji")
 
     def test_mul_precision(self):
-        graph_input = onnx.helper.make_tensor_value_info("input", onnx.TensorProto.FLOAT, [1024])
-        graph_output = onnx.helper.make_tensor_value_info("output", onnx.TensorProto.FLOAT, None)
+        graph_input = onnx.helper.make_tensor_value_info(
+            "input", onnx.TensorProto.FLOAT, [1024]
+        )
+        graph_output = onnx.helper.make_tensor_value_info(
+            "output", onnx.TensorProto.FLOAT, None
+        )
 
         # initializers
-        value = numpy.array([0.5], dtype=numpy.float32)
+        value = np.array([0.5], dtype=np.float32)
         constant = onnx.numpy_helper.from_array(value, name="constant")
 
         nodes = [
@@ -355,22 +456,31 @@ class TestSymbolicShapeInferenceForOperators(unittest.TestCase):
             onnx.helper.make_node("Mul", ["input_shape", "constant"], ["output_shape"]),
             # Resize input
             onnx.helper.make_node(
-                "Resize", inputs=["input", "", "", "output_shape"], outputs=["output"], mode="nearest"
+                "Resize",
+                inputs=["input", "", "", "output_shape"],
+                outputs=["output"],
+                mode="nearest",
             ),
         ]
 
-        graph_def = onnx.helper.make_graph(nodes, "TestMulPrecision", [graph_input], [graph_output], [constant])
+        graph_def = onnx.helper.make_graph(
+            nodes, "TestMulPrecision", [graph_input], [graph_output], [constant]
+        )
         model = SymbolicShapeInference.infer_shapes(onnx.helper.make_model(graph_def))
         output_dims = unique_element(model.graph.output).type.tensor_type.shape.dim
         self.assertEqual(len(output_dims), 1)
         self.assertEqual(output_dims[0].dim_value, 512)
 
     def test_div_precision(self):
-        graph_input = onnx.helper.make_tensor_value_info("input", onnx.TensorProto.FLOAT, [768])
-        graph_output = onnx.helper.make_tensor_value_info("output", onnx.TensorProto.FLOAT, None)
+        graph_input = onnx.helper.make_tensor_value_info(
+            "input", onnx.TensorProto.FLOAT, [768]
+        )
+        graph_output = onnx.helper.make_tensor_value_info(
+            "output", onnx.TensorProto.FLOAT, None
+        )
 
         # initializers
-        value = numpy.array([1.5], dtype=numpy.float32)
+        value = np.array([1.5], dtype=np.float32)
         constant = onnx.numpy_helper.from_array(value, name="constant")
 
         nodes = [
@@ -380,11 +490,16 @@ class TestSymbolicShapeInferenceForOperators(unittest.TestCase):
             onnx.helper.make_node("Div", ["input_shape", "constant"], ["output_shape"]),
             # Resize input
             onnx.helper.make_node(
-                "Resize", inputs=["input", "", "", "output_shape"], outputs=["output"], mode="nearest"
+                "Resize",
+                inputs=["input", "", "", "output_shape"],
+                outputs=["output"],
+                mode="nearest",
             ),
         ]
 
-        graph_def = onnx.helper.make_graph(nodes, "TestDivPrecision", [graph_input], [graph_output], [constant])
+        graph_def = onnx.helper.make_graph(
+            nodes, "TestDivPrecision", [graph_input], [graph_output], [constant]
+        )
         model = SymbolicShapeInference.infer_shapes(onnx.helper.make_model(graph_def))
         output_dims = unique_element(model.graph.output).type.tensor_type.shape.dim
         self.assertEqual(len(output_dims), 1)
@@ -419,34 +534,54 @@ class TestSymbolicShapeInferenceForSlice(unittest.TestCase):
         inputs = []
         nodes = []
         for i, dim in enumerate(input_dims):
-            inputs.append(onnx.helper.make_tensor_value_info(f"t{i}", onnx.TensorProto.FLOAT, ["B", dim]))
+            inputs.append(
+                onnx.helper.make_tensor_value_info(
+                    f"t{i}", onnx.TensorProto.FLOAT, ["B", dim]
+                )
+            )
             nodes.extend(
                 [
                     onnx.helper.make_node("Shape", [f"t{i}"], [f"shape{i}"]),
-                    onnx.helper.make_node("Slice", [f"shape{i}", "one", "two", "zero", "one"], [f"dim{i}"]),
+                    onnx.helper.make_node(
+                        "Slice", [f"shape{i}", "one", "two", "zero", "one"], [f"dim{i}"]
+                    ),
                     onnx.helper.make_node("Neg", [f"dim{i}"], [f"neg_dim{i}"]),
                 ]
             )
 
         def make_concat_dims(concat_name, dims):
-            dims = [f"neg_{dimstrmap(dim[1:])}" if dim.startswith("-") else dimstrmap(dim) for dim in dims]
+            dims = [
+                f"neg_{dimstrmap(dim[1:])}" if dim.startswith("-") else dimstrmap(dim)
+                for dim in dims
+            ]
             return onnx.helper.make_node("Concat", dims, [concat_name], axis=0)
 
         nodes.extend(
             [
-                onnx.helper.make_node("Concat", [inp.name for inp in inputs], ["concat"], axis=1),
+                onnx.helper.make_node(
+                    "Concat", [inp.name for inp in inputs], ["concat"], axis=1
+                ),
                 make_concat_dims("starts", ["zero", start]),
                 make_concat_dims("ends", ["intmax", end]),
                 make_concat_dims("axes", ["zero", "one"]),
                 make_concat_dims("steps", ["one", step]),
-                onnx.helper.make_node("Slice", ["concat", "starts", "ends", "axes", "steps"], ["output"]),
+                onnx.helper.make_node(
+                    "Slice", ["concat", "starts", "ends", "axes", "steps"], ["output"]
+                ),
             ]
         )
-        output = onnx.helper.make_tensor_value_info("output", onnx.TensorProto.FLOAT, ["d1", "d2"])
-        graph_def = onnx.helper.make_graph(nodes, "graph", inputs, [output], initializer=initializers)
+        output = onnx.helper.make_tensor_value_info(
+            "output", onnx.TensorProto.FLOAT, ["d1", "d2"]
+        )
+        graph_def = onnx.helper.make_graph(
+            nodes, "graph", inputs, [output], initializer=initializers
+        )
         model = SymbolicShapeInference.infer_shapes(onnx.helper.make_model(graph_def))
         output = unique_element(model.graph.output)
-        shape = [d.dim_param if d.dim_param else d.dim_value for d in output.type.tensor_type.shape.dim]
+        shape = [
+            d.dim_param if d.dim_param else d.dim_value
+            for d in output.type.tensor_type.shape.dim
+        ]
         self.assertEqual(shape, ["B", expected_output_dim])
 
     def test_numeric_negative_indices_forward(self):
@@ -468,7 +603,9 @@ class TestSymbolicShapeInferenceForSlice(unittest.TestCase):
         self.check_slice_of_concat(["N", "N"], "zero", "intmax", "N", "floor(-1/N) + 3")
 
     def test_symbolic_negative_step(self):
-        self.check_slice_of_concat(["N", "N"], "-one", "-intmax", "-N", "floor(-1/N) + 3")
+        self.check_slice_of_concat(
+            ["N", "N"], "-one", "-intmax", "-N", "floor(-1/N) + 3"
+        )
 
     def test_flip(self):
         self.check_slice_of_concat(["N"], "-one", "-intmax", "-one", "N")
@@ -477,13 +614,24 @@ class TestSymbolicShapeInferenceForSlice(unittest.TestCase):
         self.check_slice_of_concat(["N", "N", "N"], "-one", "-intmax", "-one", "3*N")
 
     def test_slice_of_min(self):
-        graph_input = onnx.helper.make_tensor_value_info("input", onnx.TensorProto.FLOAT, ["N"])
-        graph_output = onnx.helper.make_tensor_value_info("output", onnx.TensorProto.FLOAT, None)
+        graph_input = onnx.helper.make_tensor_value_info(
+            "input", onnx.TensorProto.FLOAT, ["N"]
+        )
+        graph_output = onnx.helper.make_tensor_value_info(
+            "output", onnx.TensorProto.FLOAT, None
+        )
         const_size = 42
         half_const_size = const_size // 2
         initializers = [
-            onnx.helper.make_tensor("const_tensor", onnx.TensorProto.FLOAT, [const_size], [42.0] * const_size),
-            onnx.helper.make_tensor("half_const_size", onnx.TensorProto.INT64, [], [half_const_size]),
+            onnx.helper.make_tensor(
+                "const_tensor",
+                onnx.TensorProto.FLOAT,
+                [const_size],
+                [42.0] * const_size,
+            ),
+            onnx.helper.make_tensor(
+                "half_const_size", onnx.TensorProto.INT64, [], [half_const_size]
+            ),
             onnx.helper.make_tensor("zeros", onnx.TensorProto.INT64, [1], [0]),
             onnx.helper.make_tensor("ones", onnx.TensorProto.INT64, [1], [1]),
         ]
@@ -492,21 +640,33 @@ class TestSymbolicShapeInferenceForSlice(unittest.TestCase):
             # Get the shape of the input tensor: `input_tensor_shape = [N]`.
             onnx.helper.make_node("Shape", ["input"], ["input_tensor_shape"]),
             # The starts of the const tensor slice: `starts = [21 - N + 1]`.
-            onnx.helper.make_node("Sub", ["half_const_size", "input_tensor_shape"], ["starts_aux"]),
+            onnx.helper.make_node(
+                "Sub", ["half_const_size", "input_tensor_shape"], ["starts_aux"]
+            ),
             onnx.helper.make_node("Add", ["ones", "starts_aux"], ["starts"]),
             # The ends of the const tensor slice: `ends = [21 + N]`.
-            onnx.helper.make_node("Add", ["half_const_size", "input_tensor_shape"], ["ends"]),
+            onnx.helper.make_node(
+                "Add", ["half_const_size", "input_tensor_shape"], ["ends"]
+            ),
             # Slice the const tensor: `slice_out = const_tensor[starts:ends]`.
-            onnx.helper.make_node("Slice", ["const_tensor", "starts", "ends", "zeros", "ones"], ["slice_out"]),
+            onnx.helper.make_node(
+                "Slice",
+                ["const_tensor", "starts", "ends", "zeros", "ones"],
+                ["slice_out"],
+            ),
             # Crop the const tensor slice using the shape of the input tensor: `slice_out_cropped = slice_out[0:input_tensor_shape]`.
             onnx.helper.make_node(
-                "Slice", ["slice_out", "zeros", "input_tensor_shape", "zeros", "ones"], ["slice_out_cropped"]
+                "Slice",
+                ["slice_out", "zeros", "input_tensor_shape", "zeros", "ones"],
+                ["slice_out_cropped"],
             ),
             # Add the const tensor slice to the input tensor: `output = input + slice_out_cropped`.
             onnx.helper.make_node("Add", ["slice_out_cropped", "input"], ["output"]),
         ]
 
-        graph_def = onnx.helper.make_graph(nodes, "SliceOfMin", [graph_input], [graph_output], initializer=initializers)
+        graph_def = onnx.helper.make_graph(
+            nodes, "SliceOfMin", [graph_input], [graph_output], initializer=initializers
+        )
         model = SymbolicShapeInference.infer_shapes(onnx.helper.make_model(graph_def))
         output_dims = unique_element(model.graph.output).type.tensor_type.shape.dim
         self.assertEqual(len(output_dims), 1)
