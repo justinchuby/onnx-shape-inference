@@ -67,23 +67,27 @@ line-length = 120
 select = [
   "A",
   "ARG",
-  "B",
-  "C4",
-  "DTZ",
-  "E",
-  "F",
+  "B", # flake8-bugbear
+  "C4", # flake8-comprehensions
+  "D", # pydocstyle
+  "E", # pycodestyle
+  "F", # Pyflakes
+  "G", # flake8-logging-format
   "ICN",
-  "ISC",
-  "N",
+  "ISC", # flake8-implicit-str-concat
+  "N", # pep8-naming
   "PLC",
   "PLE",
   "PLR",
   "PLW",
-  "RUF",
-  "TID",
-  "UP",
-  "W",
-  "YTT",
+  "NPY", # modern numpy
+  "PERF", # Perflint
+  "RUF", # Ruff-specific rules
+  "T10", # flake8-debugger
+  "TID252", # Disallow relative imports
+  "UP", # pyupgrade
+  "W", # pycodestyle
+  "YTT", # flake8-2020
 ]
 ignore = [
   # Ignore complexity
