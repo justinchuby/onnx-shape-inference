@@ -59,10 +59,8 @@ def infer_pad(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
 
     output_shape: ir.Shape | None = None
     if data.shape is not None:
-        pads: list[int] | None = None
-        pads_attr = node.attributes.get("pads")
-        if pads_attr is not None:
-            pads = [int(x) for x in pads_attr.as_ints()]
+        pads_attr = _context.require_attr(node, "pads")
+        pads = [int(x) for x in pads_attr.as_ints()]
         output_shape = _apply_pads(ctx, data.shape, pads, axes=None)
 
     if len(node.outputs) > 0:
