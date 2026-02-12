@@ -2,6 +2,9 @@
 
 [![PyPI - Version](https://img.shields.io/pypi/v/onnx-shape-inference.svg)](https://pypi.org/project/onnx-shape-inference)
 [![PyPI - Python Version](https://img.shields.io/pypi/pyversions/onnx-shape-inference.svg)](https://pypi.org/project/onnx-shape-inference)
+[![codecov](https://codecov.io/gh/justinchuby/onnx-shape-inference/graph/badge.svg?token=JF1zsZfrLM)](https://codecov.io/gh/justinchuby/onnx-shape-inference)
+[![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
+[![PyPI Downloads](https://static.pepy.tech/badge/onnx-shape-inference/month)](https://pepy.tech/projects/onnx-shape-inference)
 
 Experimental symbolic shape inference for ONNX models. Built on top of [ONNX IR](https://github.com/onnx/ir-py), this library performs shape inference directly on the IR without serialization overhead, using [SymPy](https://www.sympy.org/) for symbolic dimension arithmetic.
 
