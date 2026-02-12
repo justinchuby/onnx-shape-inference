@@ -262,24 +262,18 @@ def infer_ms_attention(ctx: _context.ShapeInferenceContext, node: ir.Node) -> No
         if num_heads_attr is not None:
             num_heads = num_heads_attr.as_int()
             past = (
-                node.inputs[4]
-                if len(node.inputs) > 4 and node.inputs[4] is not None
-                else None
+                node.inputs[4] if len(node.inputs) > 4 and node.inputs[4] is not None else None
             )
             if past is not None and past.shape is not None and past.shape.rank() == 5:
                 present_dims: list[int | ir.SymbolicDim] = list(past.shape.dims)
-                ctx.set_shape_and_dtype(
-                    node.outputs[1], ir.Shape(present_dims), x.dtype
-                )
+                ctx.set_shape_and_dtype(node.outputs[1], ir.Shape(present_dims), x.dtype)
             else:
                 head_size = (
                     x.shape[2] // num_heads
                     if isinstance(x.shape[2], int)
                     else ctx.new_symbolic_dim()
                 )
-                present_shape = ir.Shape(
-                    [2, x.shape[0], num_heads, x.shape[1], head_size]
-                )
+                present_shape = ir.Shape([2, x.shape[0], num_heads, x.shape[1], head_size])
                 ctx.set_shape_and_dtype(node.outputs[1], present_shape, x.dtype)
 
 
@@ -289,9 +283,7 @@ def infer_ms_attention(ctx: _context.ShapeInferenceContext, node: ir.Node) -> No
 
 
 @_reg(_MSFT, "MultiHeadAttention", since_version=1)
-def infer_ms_multi_head_attention(
-    ctx: _context.ShapeInferenceContext, node: ir.Node
-) -> None:
+def infer_ms_multi_head_attention(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
     """com.microsoft MultiHeadAttention."""
     if not node.inputs or node.inputs[0] is None:
         raise _context.OpUsageError(node, "Expected at least 1 input (query)")
@@ -314,7 +306,11 @@ def infer_ms_multi_head_attention(
 
         # Present key/value
         key = node.inputs[1] if len(node.inputs) > 1 and node.inputs[1] is not None else None
-        total_seq = key.shape[1] if key is not None and key.shape is not None and key.shape.rank() == 3 else None
+        total_seq = (
+            key.shape[1]
+            if key is not None and key.shape is not None and key.shape.rank() == 3
+            else None
+        )
         _set_mha_present(ctx, node, query, total_seq)
 
     # 5D query: [B, Nh, Sq, 3, Hd] packed format
@@ -457,9 +453,7 @@ def infer_packed_mha(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None
 
 
 @_reg(_MSFT, "DecoderMaskedMultiHeadAttention", since_version=1)
-def infer_decoder_masked_mha(
-    ctx: _context.ShapeInferenceContext, node: ir.Node
-) -> None:
+def infer_decoder_masked_mha(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
     if not node.inputs or node.inputs[0] is None:
         raise _context.OpUsageError(node, "Expected at least 1 input (query)")
     query = node.inputs[0]
@@ -497,7 +491,11 @@ def infer_gated_relative_position_bias(
     token_offset = (
         node.inputs[6] if len(node.inputs) > 6 and node.inputs[6] is not None else None
     )
-    if token_offset is not None and token_offset.shape is not None and token_offset.shape.rank() == 2:
+    if (
+        token_offset is not None
+        and token_offset.shape is not None
+        and token_offset.shape.rank() == 2
+    ):
         batch = token_offset.shape[0]
         seq_len = token_offset.shape[1]
     elif node.inputs[0].shape is not None and node.inputs[0].shape.rank() == 3:
@@ -532,22 +530,14 @@ def infer_remove_padding(ctx: _context.ShapeInferenceContext, node: ir.Node) -> 
     seq = x.shape[1]
 
     if len(node.outputs) > 0:
-        ctx.set_shape_and_dtype(
-            node.outputs[0], ir.Shape([token_count, hidden]), x.dtype
-        )
+        ctx.set_shape_and_dtype(node.outputs[0], ir.Shape([token_count, hidden]), x.dtype)
     if len(node.outputs) > 1 and node.outputs[1] is not None:
-        ctx.set_shape_and_dtype(
-            node.outputs[1], ir.Shape([batch, seq]), ir.DataType.INT32
-        )
+        ctx.set_shape_and_dtype(node.outputs[1], ir.Shape([batch, seq]), ir.DataType.INT32)
     if len(node.outputs) > 2 and node.outputs[2] is not None:
         batch_plus_1 = ctx.new_symbolic_dim()
-        ctx.set_shape_and_dtype(
-            node.outputs[2], ir.Shape([batch_plus_1]), ir.DataType.INT32
-        )
+        ctx.set_shape_and_dtype(node.outputs[2], ir.Shape([batch_plus_1]), ir.DataType.INT32)
     if len(node.outputs) > 3 and node.outputs[3] is not None:
-        ctx.set_shape_and_dtype(
-            node.outputs[3], ir.Shape([1]), ir.DataType.INT32
-        )
+        ctx.set_shape_and_dtype(node.outputs[3], ir.Shape([1]), ir.DataType.INT32)
 
 
 # ---------------------------------------------------------------------------
@@ -566,9 +556,7 @@ def infer_restore_padding(ctx: _context.ShapeInferenceContext, node: ir.Node) ->
         and token_offset.shape is not None
         and token_offset.shape.rank() == 2
     ):
-        output_shape = ir.Shape(
-            [token_offset.shape[0], token_offset.shape[1], x.shape[1]]
-        )
+        output_shape = ir.Shape([token_offset.shape[0], token_offset.shape[1], x.shape[1]])
     else:
         output_shape = None
 
@@ -582,9 +570,7 @@ def infer_restore_padding(ctx: _context.ShapeInferenceContext, node: ir.Node) ->
 
 
 @_reg(_MSFT, "GroupQueryAttention", since_version=1)
-def infer_group_query_attention(
-    ctx: _context.ShapeInferenceContext, node: ir.Node
-) -> None:
+def infer_group_query_attention(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
     """com.microsoft GroupQueryAttention.
 
     Inputs:
@@ -615,11 +601,7 @@ def infer_group_query_attention(
     # Output[0]: [B, S, num_heads * head_size]
     if query.shape is not None and query.shape.rank() == 3:
         hidden = query.shape[2]
-        if (
-            num_heads is not None
-            and kv_num_heads is not None
-            and isinstance(hidden, int)
-        ):
+        if num_heads is not None and kv_num_heads is not None and isinstance(hidden, int):
             # Check if packed QKV: d = (num_heads + 2*kv_num_heads) * head_size
             packed_total = num_heads + 2 * kv_num_heads
             head_size_check = hidden // packed_total
@@ -629,9 +611,7 @@ def infer_group_query_attention(
                 out_hidden = hidden
         else:
             out_hidden = hidden
-        output_shape: ir.Shape | None = ir.Shape(
-            [query.shape[0], query.shape[1], out_hidden]
-        )
+        output_shape: ir.Shape | None = ir.Shape([query.shape[0], query.shape[1], out_hidden])
     else:
         output_shape = query.shape
 
@@ -654,9 +634,7 @@ def infer_group_query_attention(
 
         total_seq: int | ir.SymbolicDim = ctx.new_symbolic_dim()
         past_key = (
-            node.inputs[3]
-            if len(node.inputs) > 3 and node.inputs[3] is not None
-            else None
+            node.inputs[3] if len(node.inputs) > 3 and node.inputs[3] is not None else None
         )
         if past_key is not None and past_key.shape is not None and past_key.shape.rank() == 4:
             past_seq = past_key.shape[2]
@@ -702,7 +680,7 @@ def infer_matmul_nbits(ctx: _context.ShapeInferenceContext, node: ir.Node) -> No
 
     output_shape: ir.Shape | None = None
     if a.shape is not None and a.shape.rank() >= 1:
-        out_dims: list[int | ir.SymbolicDim] = list(a.shape.dims[:-1]) + [n_dim]
+        out_dims: list[int | ir.SymbolicDim] = [*list(a.shape.dims[:-1]), n_dim]
         output_shape = ir.Shape(out_dims)
 
     if len(node.outputs) > 0:
@@ -715,9 +693,7 @@ def infer_matmul_nbits(ctx: _context.ShapeInferenceContext, node: ir.Node) -> No
 
 
 @_reg(_MSFT, "SparseAttention", since_version=1)
-def infer_sparse_attention(
-    ctx: _context.ShapeInferenceContext, node: ir.Node
-) -> None:
+def infer_sparse_attention(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
     """Sparse variant of GroupQueryAttention. Same output semantics."""
     if not node.inputs or node.inputs[0] is None:
         raise _context.OpUsageError(node, "Expected at least 1 input (query)")
@@ -778,3 +754,368 @@ def infer_fused_matmul(ctx: _context.ShapeInferenceContext, node: ir.Node) -> No
         shape_b = ir.Shape(dims)
 
     _matmul._matmul_shape(ctx, node, shape_a, shape_b, a.dtype)
+
+
+# ---------------------------------------------------------------------------
+# MoE / QMoE (com.microsoft)
+# ---------------------------------------------------------------------------
+
+
+@_reg(_MSFT, "MoE", since_version=1)
+@_reg(_MSFT, "QMoE", since_version=1)
+def infer_moe(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
+    """Mixture of Experts. Output shape = input shape."""
+    if not node.inputs or node.inputs[0] is None:
+        raise _context.OpUsageError(node, "Expected at least 1 input")
+    x = node.inputs[0]
+    if len(node.outputs) > 0:
+        ctx.set_shape_and_dtype(node.outputs[0], x.shape, x.dtype)
+
+
+# ---------------------------------------------------------------------------
+# QAttention (com.microsoft)
+# ---------------------------------------------------------------------------
+
+
+@_reg(_MSFT, "QAttention", since_version=1)
+def infer_q_attention(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
+    """Quantized Attention.
+
+    Inputs:
+      0: input   [B, S, input_hidden_size] (int8/uint8)
+      1: weight  [input_hidden_size, 3*hidden_size] (int8/uint8)
+      2: bias    [3*hidden_size] (float)
+      ...
+      8: past (optional) [2, B, num_heads, past_S, head_size]
+
+    Outputs:
+      0: output  [B, S, hidden_size] (float)
+      1: present (optional) [2, B, num_heads, total_S, head_size]
+    """
+    if not node.inputs or node.inputs[0] is None:
+        raise _context.OpUsageError(node, "Expected at least 1 input")
+    x = node.inputs[0]
+    bias = node.inputs[2] if len(node.inputs) > 2 and node.inputs[2] is not None else None
+
+    # Output dtype is float (T3 type from bias/scales)
+    output_dtype = bias.dtype if bias is not None else ir.DataType.FLOAT
+
+    if x.shape is None or x.shape.rank() != 3:
+        if len(node.outputs) > 0:
+            ctx.set_shape_and_dtype(node.outputs[0], x.shape, output_dtype)
+        return
+
+    # Determine hidden_size from bias (3*hidden_size)
+    hidden: int | ir.SymbolicDim = x.shape[2]
+    if bias is not None and bias.shape is not None and bias.shape.rank() == 1:
+        tripled = bias.shape[0]
+        if isinstance(tripled, int):
+            hidden = tripled // 3
+
+    output_shape = ir.Shape([x.shape[0], x.shape[1], hidden])
+    if len(node.outputs) > 0:
+        ctx.set_shape_and_dtype(node.outputs[0], output_shape, output_dtype)
+
+    # Present state
+    if len(node.outputs) > 1 and node.outputs[1] is not None:
+        num_heads = _context.require_attr(node, "num_heads").as_int()
+        head_size: int | ir.SymbolicDim = (
+            hidden // num_heads if isinstance(hidden, int) else ctx.new_symbolic_dim()
+        )
+        past = node.inputs[8] if len(node.inputs) > 8 and node.inputs[8] is not None else None
+        total_seq: int | ir.SymbolicDim
+        if past is not None and past.shape is not None and past.shape.rank() == 5:
+            past_seq = past.shape[3]
+            cur_seq = x.shape[1]
+            if isinstance(past_seq, int) and isinstance(cur_seq, int):
+                total_seq = past_seq + cur_seq
+            else:
+                total_seq = ctx.new_symbolic_dim()
+        else:
+            total_seq = x.shape[1]
+        present_shape = ir.Shape([2, x.shape[0], num_heads, total_seq, head_size])
+        ctx.set_shape_and_dtype(node.outputs[1], present_shape, output_dtype)
+
+
+# ---------------------------------------------------------------------------
+# QGemm (com.microsoft)
+# ---------------------------------------------------------------------------
+
+
+@_reg(_MSFT, "QGemm", since_version=1)
+def infer_q_gemm(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
+    """Quantized Gemm: Y = alpha * (A @ B) + C.
+
+    Inputs: A(0), a_scale(1), a_zp(2), B(3), b_scale(4), b_zp(5),
+            C(6, opt), y_scale(7, opt), y_zp(8, opt)
+    Output: Y = (M, N), dtype from y_scale or float.
+    """
+    if len(node.inputs) < 4 or node.inputs[0] is None or node.inputs[3] is None:
+        raise _context.OpUsageError(node, "Expected inputs A and B")
+    a = node.inputs[0]
+    b = node.inputs[3]
+
+    trans_a_attr = node.attributes.get("transA")
+    trans_b_attr = node.attributes.get("transB")
+    trans_a = trans_a_attr.as_int() if trans_a_attr is not None else 0
+    trans_b = trans_b_attr.as_int() if trans_b_attr is not None else 0
+
+    shape_a = a.shape
+    shape_b = b.shape
+
+    if trans_a and shape_a is not None and shape_a.rank() == 2:
+        shape_a = ir.Shape([shape_a[1], shape_a[0]])
+    if trans_b and shape_b is not None and shape_b.rank() == 2:
+        shape_b = ir.Shape([shape_b[1], shape_b[0]])
+
+    # Output dtype: y_scale dtype if provided, otherwise float
+    y_scale = node.inputs[7] if len(node.inputs) > 7 and node.inputs[7] is not None else None
+    output_dtype = y_scale.dtype if y_scale is not None else ir.DataType.FLOAT
+
+    output_shape: ir.Shape | None = None
+    if (
+        shape_a is not None
+        and shape_b is not None
+        and shape_a.rank() == 2
+        and shape_b.rank() == 2
+    ):
+        output_shape = ir.Shape([shape_a[0], shape_b[1]])
+
+    if len(node.outputs) > 0:
+        ctx.set_shape_and_dtype(node.outputs[0], output_shape, output_dtype)
+
+
+# ---------------------------------------------------------------------------
+# QLinear elementwise ops (com.microsoft)
+# ---------------------------------------------------------------------------
+
+
+def _qlinear_unary_shape(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
+    """QLinear unary ops: output shape = input[0] shape.
+
+    Pattern: X(0), x_scale(1), x_zp(2), y_scale(3), y_zp(4)
+    Output dtype = X's dtype.
+    """
+    if not node.inputs or node.inputs[0] is None:
+        raise _context.OpUsageError(node, "Expected at least 1 input")
+    x = node.inputs[0]
+    if len(node.outputs) > 0:
+        ctx.set_shape_and_dtype(node.outputs[0], x.shape, x.dtype)
+
+
+@_reg(_MSFT, "QLinearLeakyRelu", since_version=1)
+@_reg(_MSFT, "QLinearSigmoid", since_version=1)
+@_reg(_MSFT, "QLinearSoftmax", since_version=1)
+@_reg(_MSFT, "QLinearAveragePool", since_version=1)
+@_reg(_MSFT, "QLinearGlobalAveragePool", since_version=1)
+@_reg(_MSFT, "QLinearReduceMean", since_version=1)
+def _infer_qlinear_unary(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
+    _qlinear_unary_shape(ctx, node)
+
+
+def _qlinear_binary_shape(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
+    """QLinear binary ops (Add, Mul): output shape = broadcast(A, B).
+
+    Pattern: A(0), A_scale(1), A_zp(2), B(3), B_scale(4), B_zp(5),
+             C_scale(6), C_zp(7)
+    Output dtype = A's dtype.
+    """
+    if len(node.inputs) < 4 or node.inputs[0] is None or node.inputs[3] is None:
+        raise _context.OpUsageError(node, "Expected inputs A and B")
+    a = node.inputs[0]
+    b = node.inputs[3]
+    from onnx_shape_inference import _broadcast
+
+    output_shape = _broadcast.broadcast_shapes(a.shape, b.shape)
+    if len(node.outputs) > 0:
+        ctx.set_shape_and_dtype(node.outputs[0], output_shape, a.dtype)
+
+
+@_reg(_MSFT, "QLinearAdd", since_version=1)
+@_reg(_MSFT, "QLinearMul", since_version=1)
+def _infer_qlinear_binary(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
+    _qlinear_binary_shape(ctx, node)
+
+
+# ---------------------------------------------------------------------------
+# QLinearConv (com.microsoft)
+# ---------------------------------------------------------------------------
+
+
+@_reg(_MSFT, "QLinearConv", since_version=1)
+def infer_qlinear_conv(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
+    """Quantized Conv. x(0), x_scale(1), x_zp(2), w(3), w_scale(4), w_zp(5), ..."""
+    if len(node.inputs) < 4 or node.inputs[0] is None or node.inputs[3] is None:
+        raise _context.OpUsageError(node, "Expected inputs x and w")
+    x = node.inputs[0]
+    w = node.inputs[3]
+
+    from onnx_shape_inference._ops import _conv
+
+    output_shape = _conv._compute_conv_shape(ctx, node, x, w)
+    if len(node.outputs) > 0:
+        ctx.set_shape_and_dtype(node.outputs[0], output_shape, x.dtype)
+
+
+# ---------------------------------------------------------------------------
+# QLinearConcat (com.microsoft)
+# ---------------------------------------------------------------------------
+
+
+@_reg(_MSFT, "QLinearConcat", since_version=1)
+def infer_qlinear_concat(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
+    """QLinear Concat. Inputs: Y_scale(0), Y_zp(1), then (tensor, scale, zp) triples.
+
+    Output shape = concat of input tensors along axis.
+    """
+    axis_attr = node.attributes.get("axis")
+    axis = axis_attr.as_int() if axis_attr is not None else 0
+
+    # Extract data tensors: inputs[2], inputs[5], inputs[8], ...
+    data_values: list[ir.Value] = []
+    i = 2
+    while i < len(node.inputs):
+        if node.inputs[i] is not None:
+            data_values.append(node.inputs[i])
+        i += 3  # Skip scale and zp
+
+    if not data_values:
+        return
+
+    output_dtype = data_values[0].dtype
+
+    # Compute concat output shape
+    first_shape = data_values[0].shape
+    if first_shape is None:
+        if len(node.outputs) > 0:
+            ctx.set_shape_and_dtype(node.outputs[0], None, output_dtype)
+        return
+
+    rank = first_shape.rank()
+    if axis < 0:
+        axis += rank
+
+    concat_dim: int | ir.SymbolicDim = 0
+    out_dims: list[int | ir.SymbolicDim] = list(first_shape.dims)
+    all_concrete = True
+    for v in data_values:
+        if v.shape is None or v.shape.rank() != rank:
+            all_concrete = False
+            break
+        dim = v.shape[axis]
+        if isinstance(dim, int) and isinstance(concat_dim, int):
+            concat_dim += dim
+        else:
+            all_concrete = False
+            break
+
+    if all_concrete:
+        out_dims[axis] = concat_dim
+        output_shape: ir.Shape | None = ir.Shape(out_dims)
+    else:
+        out_dims[axis] = ctx.new_symbolic_dim()
+        output_shape = ir.Shape(out_dims)
+
+    if len(node.outputs) > 0:
+        ctx.set_shape_and_dtype(node.outputs[0], output_shape, output_dtype)
+
+
+# ---------------------------------------------------------------------------
+# QLinearWhere (com.microsoft)
+# ---------------------------------------------------------------------------
+
+
+@_reg(_MSFT, "QLinearWhere", since_version=1)
+def infer_qlinear_where(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
+    """Quantized Where: Z = condition ? X : Y.
+
+    Inputs: condition(0), X(1), x_scale(2), x_zp(3), Y(4), y_scale(5), y_zp(6),
+            z_scale(7), z_zp(8)
+    Output: broadcast(condition, X, Y)
+    """
+    if len(node.inputs) < 5 or node.inputs[0] is None:
+        raise _context.OpUsageError(node, "Expected condition, X, Y inputs")
+    condition = node.inputs[0]
+    x = node.inputs[1] if len(node.inputs) > 1 and node.inputs[1] is not None else None
+    y = node.inputs[4] if len(node.inputs) > 4 and node.inputs[4] is not None else None
+
+    from onnx_shape_inference import _broadcast
+
+    output_shape = condition.shape
+    if x is not None:
+        output_shape = _broadcast.broadcast_shapes(output_shape, x.shape)
+    if y is not None:
+        output_shape = _broadcast.broadcast_shapes(output_shape, y.shape)
+
+    output_dtype = x.dtype if x is not None else None
+    if len(node.outputs) > 0:
+        ctx.set_shape_and_dtype(node.outputs[0], output_shape, output_dtype)
+
+
+# ---------------------------------------------------------------------------
+# QOrdered* ops (com.microsoft) — passthrough shape semantics
+# ---------------------------------------------------------------------------
+
+
+@_reg(_MSFT, "QOrderedGelu", since_version=1)
+@_reg(_MSFT, "QOrderedLayerNormalization", since_version=1)
+@_reg(_MSFT, "QOrderedAttention", since_version=1)
+@_reg(_MSFT, "QOrderedLongformerAttention", since_version=1)
+def _infer_qordered_passthrough(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
+    """QOrdered ops: output shape = input[0] shape."""
+    if not node.inputs or node.inputs[0] is None:
+        raise _context.OpUsageError(node, "Expected at least 1 input")
+    x = node.inputs[0]
+    if len(node.outputs) > 0:
+        ctx.set_shape_and_dtype(node.outputs[0], x.shape, x.dtype)
+
+
+# ---------------------------------------------------------------------------
+# QOrderedMatMul (com.microsoft)
+# ---------------------------------------------------------------------------
+
+
+@_reg(_MSFT, "QOrderedMatMul", since_version=1)
+def infer_qordered_matmul(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
+    """QOrdered MatMul. Inputs: A(0), scaleA(1), B(2), scaleB(3), ...
+
+    Output: matmul(A, B) shape.
+    """
+    if len(node.inputs) < 3 or node.inputs[0] is None or node.inputs[2] is None:
+        raise _context.OpUsageError(node, "Expected inputs A and B")
+    a = node.inputs[0]
+    b = node.inputs[2]
+    _matmul._matmul_shape(ctx, node, a.shape, b.shape, a.dtype)
+
+
+# ---------------------------------------------------------------------------
+# QEmbedLayerNormalization (com.microsoft)
+# ---------------------------------------------------------------------------
+
+
+@_reg(_MSFT, "QEmbedLayerNormalization", since_version=1)
+def infer_qembed_layer_norm(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
+    """Quantized EmbedLayerNormalization.
+
+    Inputs: input_ids(0), ..., word_embedding(2), ...
+    Output[0]: [B, S, H], Output[1]: mask_index [B]
+    """
+    if len(node.inputs) < 3 or node.inputs[0] is None or node.inputs[2] is None:
+        raise _context.OpUsageError(node, "Expected input_ids and word_embedding inputs")
+    input_ids = node.inputs[0]
+    word_emb = node.inputs[2]
+
+    output_shape: ir.Shape | None = None
+    output_dtype = word_emb.dtype
+    if input_ids.shape is not None and word_emb.shape is not None:
+        if input_ids.shape.rank() == 2 and word_emb.shape.rank() == 2:
+            output_shape = ir.Shape(
+                [input_ids.shape[0], input_ids.shape[1], word_emb.shape[1]]
+            )
+
+    if len(node.outputs) > 0:
+        ctx.set_shape_and_dtype(node.outputs[0], output_shape, output_dtype)
+    if len(node.outputs) > 1 and node.outputs[1] is not None and input_ids.shape is not None:
+        ctx.set_shape_and_dtype(
+            node.outputs[1], ir.Shape([input_ids.shape[0]]), ir.DataType.INT32
+        )
