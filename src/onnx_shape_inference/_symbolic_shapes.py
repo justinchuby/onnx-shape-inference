@@ -73,11 +73,11 @@ class _ExpressionTokenizer:
                 self.pos += 1
             return ("NUMBER", int(self.text[start : self.pos]))
 
-        # Identifier
+        # Identifier (dots allowed for names like 'decoder_input_ids.45_dim_1')
         if char.isalpha() or char == "_":
             start = self.pos
             while self.pos < self.length and (
-                self.text[self.pos].isalnum() or self.text[self.pos] == "_"
+                self.text[self.pos].isalnum() or self.text[self.pos] in "_."
             ):
                 self.pos += 1
             return ("IDENT", self.text[start : self.pos])
