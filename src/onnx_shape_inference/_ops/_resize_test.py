@@ -8,14 +8,14 @@ import unittest
 
 import numpy as np
 import onnx_ir as ir
-from onnx_ir.shape_inference._ops._testing import (
+
+from onnx_shape_inference import OpUsageError
+from onnx_shape_inference._ops._testing import (
     const_value,
     run_shape_inference,
     run_shape_inference_with_values,
     ts,
 )
-
-from onnx_shape_inference import OpUsageError
 
 FLOAT = ir.DataType.FLOAT
 

@@ -7,7 +7,8 @@ from __future__ import annotations
 import unittest
 
 import onnx_ir as ir
-from onnx_ir.shape_inference._ops._testing import run_shape_inference, ts
+
+from onnx_shape_inference._ops._testing import run_shape_inference, ts
 
 FLOAT = ir.DataType.FLOAT
 BOOL = ir.DataType.BOOL

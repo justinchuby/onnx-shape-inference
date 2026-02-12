@@ -15,7 +15,8 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     import onnx_ir as ir
-    from onnx_ir.shape_inference._context import ShapeInferenceContext
+
+    from onnx_shape_inference._context import ShapeInferenceContext
 
 logger = logging.getLogger(__name__)
 

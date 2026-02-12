@@ -8,7 +8,8 @@ import unittest
 
 import onnx_ir as ir
 import parameterized
-from onnx_ir.shape_inference._ops._testing import (
+
+from onnx_shape_inference._ops._testing import (
     const_value,
     run_shape_inference_with_values,
     ts,

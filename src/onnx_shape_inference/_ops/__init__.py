@@ -7,7 +7,7 @@ they are registered with the global registry.
 """
 
 # Import to trigger registration
-from onnx_ir.shape_inference._ops import (
+from onnx_shape_inference._ops import (
     _ai_onnx_ml,
     _arg,
     _attention,

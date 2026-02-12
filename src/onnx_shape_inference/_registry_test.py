@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import unittest
 
-from onnx_ir.shape_inference._registry import OpShapeInferenceRegistry
+from onnx_shape_inference._registry import OpShapeInferenceRegistry
 
 
 class OpShapeInferenceRegistryTest(unittest.TestCase):

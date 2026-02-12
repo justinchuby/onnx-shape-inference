@@ -291,7 +291,7 @@ def infer_deform_conv(ctx: _context.ShapeInferenceContext, node: ir.Node) -> Non
     batch_dim = x_shape[0]
     out_channels = w_shape[0]
 
-    from onnx_ir.shape_inference._ops._conv import _compute_conv_output_dim
+    from onnx_shape_inference._ops._conv import _compute_conv_output_dim
 
     spatial_dims: list[int | ir.SymbolicDim] = []
     for i in range(n_spatial):

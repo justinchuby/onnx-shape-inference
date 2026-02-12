@@ -36,13 +36,13 @@ In **source files** (`_ops/*.py`), import modules only — not names:
 from onnx_shape_inference import _context, _registry
 
 # BAD
-from onnx_ir.shape_inference._context import check_inputs
+from onnx_shape_inference._context import check_inputs
 ```
 
 In **test files** (`_ops/*_test.py`), importing the `ts` helper directly is an approved exception:
 
 ```python
-from onnx_ir.shape_inference._ops._testing import ts
+from onnx_shape_inference._ops._testing import ts
 ```
 
 ### Registration Pattern
@@ -107,7 +107,7 @@ if axis >= rank:
 All tests use `ts()` (TypeAndShape) for concise assertions. It creates an `ir.TypeAndShape` object for direct comparison with `assertEqual`:
 
 ```python
-from onnx_ir.shape_inference._ops._testing import ts
+from onnx_shape_inference._ops._testing import ts
 
 FLOAT = ir.DataType.FLOAT
 INT64 = ir.DataType.INT64
@@ -214,7 +214,7 @@ class MyOpTest(unittest.TestCase):
 Use `const_value()` for ops that read constant inputs:
 
 ```python
-from onnx_ir.shape_inference._ops._testing import const_value
+from onnx_shape_inference._ops._testing import const_value
 
 x = ir.Value(name="x", type=ir.TensorType(FLOAT), shape=ir.Shape([3, 4, 5]))
 k = const_value([3])
@@ -256,7 +256,7 @@ lintrunner -a --output oneline
 After creating a new op file, import it in `src/onnx_ir/shape_inference/_ops/__init__.py` to trigger registration:
 
 ```python
-from onnx_ir.shape_inference._ops import _my_op  # noqa: F401
+from onnx_shape_inference._ops import _my_op  # noqa: F401
 ```
 
 ## References
