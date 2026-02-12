@@ -29,6 +29,9 @@ def infer_range(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
         s = float(start_const.numpy().item())
         lim = float(limit_const.numpy().item())
         d = float(delta_const.numpy().item())
+        if d == 0.0:
+            ctx.record_error(node, "Range: delta must not be zero")
+            return
         output_len = max(0, math.ceil((lim - s) / d))
 
     output_shape = ir.Shape([output_len])

@@ -67,6 +67,27 @@ class PadTest(unittest.TestCase):
                 opset_version=13,
             )
 
+    def test_missing_pads_input_raises(self):
+        """Opset 11+: missing pads input should raise OpUsageError."""
+        with self.assertRaises(OpUsageError):
+            run_shape_inference(
+                "",
+                "Pad",
+                [ts(FLOAT, [3, 4])],
+                opset_version=13,
+            )
+
+    def test_legacy_pads_attribute(self):
+        """Opset < 11: pads from attribute works."""
+        actual = run_shape_inference(
+            "",
+            "Pad",
+            [ts(FLOAT, [3, 4])],
+            attributes={"pads": ir.AttrInt64s("pads", [1, 0, 1, 0])},
+            opset_version=2,
+        )
+        self.assertEqual(actual, [ts(FLOAT, [5, 4])])
+
 
 if __name__ == "__main__":
     unittest.main()

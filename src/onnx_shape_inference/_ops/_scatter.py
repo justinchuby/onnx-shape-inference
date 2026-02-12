@@ -19,7 +19,7 @@ from onnx_shape_inference import _context, _registry
 @_registry.registry.register("", "Scatter", since_version=9)
 def infer_scatter(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
     """Infer shape and dtype for deprecated Scatter operator (same as ScatterElements)."""
-    (data,) = _context.check_inputs(node, "data")
+    (data, _indices, _updates) = _context.check_inputs(node, "data", "indices", "updates")
 
     if len(node.outputs) > 0:
         ctx.set_shape_and_dtype(node.outputs[0], data.shape, data.dtype)
@@ -28,7 +28,7 @@ def infer_scatter(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
 @_registry.registry.register("", "ScatterElements", since_version=18)
 def infer_scatter_elements(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
     """Infer shape and dtype for ScatterElements operator."""
-    (data,) = _context.check_inputs(node, "data")
+    (data, _indices, _updates) = _context.check_inputs(node, "data", "indices", "updates")
 
     if len(node.outputs) > 0:
         ctx.set_shape_and_dtype(node.outputs[0], data.shape, data.dtype)
@@ -37,7 +37,7 @@ def infer_scatter_elements(ctx: _context.ShapeInferenceContext, node: ir.Node) -
 @_registry.registry.register("", "ScatterND", since_version=18)
 def infer_scatter_nd(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
     """Infer shape and dtype for ScatterND operator."""
-    (data,) = _context.check_inputs(node, "data")
+    (data, _indices, _updates) = _context.check_inputs(node, "data", "indices", "updates")
 
     if len(node.outputs) > 0:
         ctx.set_shape_and_dtype(node.outputs[0], data.shape, data.dtype)
@@ -49,7 +49,7 @@ def infer_tensor_scatter(ctx: _context.ShapeInferenceContext, node: ir.Node) -> 
 
     Output = data (first input) shape/dtype.
     """
-    (data,) = _context.check_inputs(node, "data")
+    (data, _indices, _updates) = _context.check_inputs(node, "data", "indices", "updates")
 
     if len(node.outputs) > 0:
         ctx.set_shape_and_dtype(node.outputs[0], data.shape, data.dtype)

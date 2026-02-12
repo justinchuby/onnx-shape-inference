@@ -28,7 +28,12 @@ class ScatterTest(unittest.TestCase):
         ]
     )
     def test_basic(self, _name, op_type, input_shape):
-        actual = run_shape_inference("", op_type, [ts(FLOAT, input_shape)], opset_version=18)
+        actual = run_shape_inference(
+            "",
+            op_type,
+            [ts(FLOAT, input_shape), ts(INT64, [2, 3]), ts(FLOAT, [2, 3])],
+            opset_version=18,
+        )
         self.assertEqual(actual, [ts(FLOAT, input_shape)])
 
     @parameterized.parameterized.expand(
@@ -38,7 +43,12 @@ class ScatterTest(unittest.TestCase):
         ]
     )
     def test_symbolic_dims(self, _name, op_type, input_shape):
-        actual = run_shape_inference("", op_type, [ts(FLOAT, input_shape)], opset_version=18)
+        actual = run_shape_inference(
+            "",
+            op_type,
+            [ts(FLOAT, input_shape), ts(INT64, [2, 3]), ts(FLOAT, [2, 3])],
+            opset_version=18,
+        )
         self.assertEqual(actual, [ts(FLOAT, input_shape)])
 
     @parameterized.parameterized.expand(
@@ -50,6 +60,17 @@ class ScatterTest(unittest.TestCase):
     def test_none_input_raises(self, _name, op_type):
         with self.assertRaises(OpUsageError):
             run_shape_inference_with_values("", op_type, [None], opset_version=18)
+
+    @parameterized.parameterized.expand(
+        [
+            ("scatter_elements", "ScatterElements"),
+            ("scatter_nd", "ScatterND"),
+        ]
+    )
+    def test_missing_indices_raises(self, _name, op_type):
+        """Missing indices/updates inputs should raise OpUsageError."""
+        with self.assertRaises(OpUsageError):
+            run_shape_inference("", op_type, [ts(FLOAT, [3, 4])], opset_version=18)
 
 
 class TensorScatterTest(unittest.TestCase):
