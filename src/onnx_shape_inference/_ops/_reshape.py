@@ -74,26 +74,72 @@ def infer_reshape(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
             output_dims.append(dim_val)
 
     # Try to compute the inferred dimension
-    if inferred_idx is not None and input_shape is not None and input_shape.is_static():
-        total_input = math.prod(d if isinstance(d, int) else 0 for d in input_shape.dims)
-        known_output = 1
-        all_known = True
-        for i, d in enumerate(output_dims):
-            if i == inferred_idx:
-                continue
-            if isinstance(d, int) and d > 0:
-                known_output *= d
-            else:
-                all_known = False
-                break
+    if inferred_idx is not None and input_shape is not None:
+        if input_shape.is_static():
+            total_input = math.prod(d if isinstance(d, int) else 0 for d in input_shape.dims)
+            known_output = 1
+            all_known = True
+            for i, d in enumerate(output_dims):
+                if i == inferred_idx:
+                    continue
+                if isinstance(d, int) and d > 0:
+                    known_output *= d
+                else:
+                    all_known = False
+                    break
 
-        if all_known and known_output > 0 and total_input > 0:
-            output_dims[inferred_idx] = total_input // known_output
+            if all_known and known_output > 0 and total_input > 0:
+                output_dims[inferred_idx] = total_input // known_output
+            else:
+                output_dims[inferred_idx] = ctx.new_symbolic_dim()
         else:
-            output_dims[inferred_idx] = ctx.new_symbolic_dim()
+            # Try symbolic inference: if all other output dims are concrete
+            # and the input has exactly one symbolic dim with the rest concrete,
+            # we can compute the -1 dim symbolically.
+            known_output = 1
+            all_output_known = True
+            for i, d in enumerate(output_dims):
+                if i == inferred_idx:
+                    continue
+                if isinstance(d, int) and d > 0:
+                    known_output *= d
+                else:
+                    all_output_known = False
+                    break
+
+            known_input = 1
+            symbolic_input_dims: list[ir.SymbolicDim] = []
+            for d in input_shape.dims:
+                if isinstance(d, int):
+                    known_input *= d
+                elif isinstance(d, ir.SymbolicDim):
+                    symbolic_input_dims.append(d)
+
+            if (
+                all_output_known
+                and known_output > 0
+                and len(symbolic_input_dims) == 1
+                and known_input > 0
+            ):
+                # inferred_dim = symbolic_dim * known_input / known_output
+                factor = known_input // known_output
+                if factor == 1:
+                    output_dims[inferred_idx] = symbolic_input_dims[0]
+                elif factor > 1:
+                    output_dims[inferred_idx] = symbolic_input_dims[0] * factor
+                else:
+                    output_dims[inferred_idx] = ctx.new_symbolic_dim()
+            else:
+                output_dims[inferred_idx] = ctx.new_symbolic_dim()
     elif inferred_idx is not None:
         output_dims[inferred_idx] = ctx.new_symbolic_dim()
 
     output_shape = ir.Shape(output_dims)
     if len(node.outputs) > 0:
         ctx.set_shape_and_dtype(node.outputs[0], output_shape, input_dtype)
+
+        # Propagate symbolic value: Reshape doesn't change element values,
+        # just the shape.  Forward the data input's symbolic value if present.
+        sym_val = ctx.get_symbolic_value(data)
+        if sym_val is not None:
+            ctx.set_symbolic_value(node.outputs[0], sym_val)

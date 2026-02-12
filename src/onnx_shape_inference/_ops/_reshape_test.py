@@ -92,7 +92,7 @@ class ReshapeTest(unittest.TestCase):
         self.assertEqual(actual, [ts(FLOAT, [0, 4])])
 
     def test_neg_one_non_static_input(self):
-        """When input shape is symbolic, -1 becomes a new symbolic dim."""
+        """When input shape has one symbolic dim, -1 resolves to that dim."""
         data = ir.Value(
             name="data",
             shape=ir.Shape([ir.SymbolicDim("batch"), 12]),
@@ -105,7 +105,7 @@ class ReshapeTest(unittest.TestCase):
             [data, shape_val],
             opset_version=17,
         )
-        self.assertEqual(actual, [ts(FLOAT, ["_d0", 3, 4])])
+        self.assertEqual(actual, [ts(FLOAT, ["batch", 3, 4])])
 
     def test_dynamic_shape_with_known_rank(self):
         """Dynamic shape input (non-const) but shape input's shape gives output rank."""
@@ -128,7 +128,7 @@ class ReshapeTest(unittest.TestCase):
         self.assertEqual(actual, [ts(FLOAT, ["_d0", "_d1"])])
 
     def test_neg_one_with_symbolic_known_dims(self):
-        """Reshape with -1 where known dims don't fully resolve (symbolic in output)."""
+        """Reshape with -1 where one input dim is symbolic resolves to that dim."""
         data = ir.Value(
             name="data",
             shape=ir.Shape([ir.SymbolicDim("N"), 3, 4]),
@@ -141,7 +141,7 @@ class ReshapeTest(unittest.TestCase):
             [data, shape_val],
             opset_version=17,
         )
-        self.assertEqual(actual, [ts(FLOAT, ["_d0", 12])])
+        self.assertEqual(actual, [ts(FLOAT, ["N", 12])])
 
     def test_zero_dim_no_input_shape(self):
         """0-dim in target with no input shape → symbolic dim."""

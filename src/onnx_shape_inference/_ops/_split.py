@@ -57,11 +57,19 @@ def infer_split(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
             split_sizes = [base + (1 if i < remainder else 0) for i in range(num_outputs)]
 
     if split_sizes is not None:
+        # Propagate symbolic values when splitting a 1-D tensor along axis 0
+        sym_val = ctx.get_symbolic_value(data) if axis == 0 and rank == 1 else None
+
+        offset = 0
         for i, out in enumerate(node.outputs):
             if i < len(split_sizes):
                 new_dims = list(input_shape.dims)
                 new_dims[axis] = split_sizes[i]
                 ctx.set_shape_and_dtype(out, ir.Shape(new_dims), input_dtype)
+
+                if sym_val is not None:
+                    ctx.set_symbolic_value(out, sym_val[offset : offset + split_sizes[i]])
+                offset += split_sizes[i]
             else:
                 ctx.set_shape_and_dtype(out, None, input_dtype)
     else:

@@ -424,6 +424,89 @@ class ReshapePropagationTest(unittest.TestCase):
         self.assertEqual(str(out.shape[0]), "N")
         self.assertEqual(out.shape[1], 3)
 
+    def test_reshape_forwards_symbolic_value(self):
+        """Reshape preserves element values (symbolic_value) of data input."""
+        ctx = _context.ShapeInferenceContext({"": 17})
+        data = ir.Value(name="data", type=ir.TensorType(INT64))
+        data.shape = ir.Shape([1])
+        ctx.set_symbolic_value(data, [ir.SymbolicDim("N")])
+
+        shape_val = const_value([], "target_shape")
+        [out] = _run_node(ctx, "", "Reshape", [data, shape_val])
+        sym_val = ctx.get_symbolic_value(out)
+        self.assertIsNotNone(sym_val)
+        self.assertEqual(len(sym_val), 1)
+        self.assertEqual(str(sym_val[0]), "N")
+
+
+class SplitPropagationTest(unittest.TestCase):
+    """Test that Split slices symbolic_value per output."""
+
+    def test_split_propagates_symbolic_value(self):
+        ctx = _context.ShapeInferenceContext({"": 17})
+        data = ir.Value(name="data", type=ir.TensorType(INT64))
+        data.shape = ir.Shape([3])
+        ctx.set_symbolic_value(data, [ir.SymbolicDim("N"), 3, ir.SymbolicDim("H")])
+
+        split_sizes = const_value([1, 2], "split")
+        [out0, out1] = _run_node(
+            ctx,
+            "",
+            "Split",
+            [data, split_sizes],
+            attributes={"axis": ir.Attr("axis", ir.AttributeType.INT, 0)},
+            num_outputs=2,
+        )
+        self.assertEqual(ctx.get_symbolic_value(out0), [ir.SymbolicDim("N")])
+        self.assertEqual(ctx.get_symbolic_value(out1), [3, ir.SymbolicDim("H")])
+
+    def test_split_equal_sizes(self):
+        ctx = _context.ShapeInferenceContext({"": 17})
+        data = ir.Value(name="data", type=ir.TensorType(INT64))
+        data.shape = ir.Shape([4])
+        ctx.set_symbolic_value(data, [ir.SymbolicDim("A"), ir.SymbolicDim("B"), 10, 20])
+
+        [out0, out1] = _run_node(
+            ctx,
+            "",
+            "Split",
+            [data],
+            attributes={"axis": ir.Attr("axis", ir.AttributeType.INT, 0)},
+            num_outputs=2,
+        )
+        self.assertEqual(
+            ctx.get_symbolic_value(out0), [ir.SymbolicDim("A"), ir.SymbolicDim("B")]
+        )
+        self.assertEqual(ctx.get_symbolic_value(out1), [10, 20])
+
+
+class MaxMinPropagationTest(unittest.TestCase):
+    """Test that Max/Min propagate symbolic_value."""
+
+    def test_max_propagates(self):
+        ctx = _context.ShapeInferenceContext({"": 17})
+        a = ir.Value(name="a", type=ir.TensorType(INT64))
+        a.shape = ir.Shape([2])
+        ctx.set_symbolic_value(a, [5, -3])
+
+        b = const_value([0, 0], "b")
+        [out] = _run_node(ctx, "", "Max", [a, b])
+        sym_val = ctx.get_symbolic_value(out)
+        self.assertIsNotNone(sym_val)
+        self.assertEqual(sym_val, [5, 0])
+
+    def test_min_propagates(self):
+        ctx = _context.ShapeInferenceContext({"": 17})
+        a = ir.Value(name="a", type=ir.TensorType(INT64))
+        a.shape = ir.Shape([2])
+        ctx.set_symbolic_value(a, [5, -3])
+
+        b = const_value([3, 3], "b")
+        [out] = _run_node(ctx, "", "Min", [a, b])
+        sym_val = ctx.get_symbolic_value(out)
+        self.assertIsNotNone(sym_val)
+        self.assertEqual(sym_val, [3, -3])
+
 
 class EndToEndPropagationTest(unittest.TestCase):
     """Test the full Shape → Slice → Concat → Reshape pipeline."""
