@@ -6,15 +6,15 @@ from __future__ import annotations
 
 import unittest
 
-import parameterized
-
 import onnx_ir as ir
-from onnx_shape_inference import OpUsageError
+import parameterized
 from onnx_ir.shape_inference._ops._testing import (
     run_shape_inference,
     run_shape_inference_with_values,
     ts,
 )
+
+from onnx_shape_inference import OpUsageError
 
 FLOAT = ir.DataType.FLOAT
 INT32 = ir.DataType.INT32

@@ -9,6 +9,7 @@ __all__ = [
 ]
 
 import onnx_ir as ir
+
 from onnx_shape_inference import _context, _registry
 
 _reg = _registry.registry.register

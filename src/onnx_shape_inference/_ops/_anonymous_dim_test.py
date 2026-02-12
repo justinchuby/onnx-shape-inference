@@ -13,8 +13,8 @@ from __future__ import annotations
 import unittest
 
 import numpy as np
-
 import onnx_ir as ir
+
 from onnx_shape_inference import infer_symbolic_shapes
 
 

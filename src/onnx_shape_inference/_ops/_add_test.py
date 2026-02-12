@@ -6,9 +6,8 @@ from __future__ import annotations
 
 import unittest
 
-import parameterized
-
 import onnx_ir as ir
+import parameterized
 from onnx_ir.shape_inference._ops._testing import run_shape_inference, ts
 
 FLOAT = ir.DataType.FLOAT

@@ -7,14 +7,15 @@ from __future__ import annotations
 import unittest
 
 import onnx_ir as ir
+from onnx_ir.shape_inference._ops._control_flow import _merge_shapes
+from onnx_ir.shape_inference._ops._testing import (
+    run_shape_inference_with_values,
+)
+
 from onnx_shape_inference import (
     OpUsageError,
     _context,
     infer_symbolic_shapes,
-)
-from onnx_ir.shape_inference._ops._control_flow import _merge_shapes
-from onnx_ir.shape_inference._ops._testing import (
-    run_shape_inference_with_values,
 )
 
 

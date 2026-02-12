@@ -14,6 +14,7 @@ import operator as _operator
 from collections.abc import Callable
 
 import onnx_ir as ir
+
 from onnx_shape_inference import _broadcast, _context, _registry
 
 _reg = _registry.registry.register

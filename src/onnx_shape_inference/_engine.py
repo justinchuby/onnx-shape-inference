@@ -17,6 +17,7 @@ __all__ = [
 import logging
 
 import onnx_ir as ir
+
 from onnx_shape_inference import _context, _registry
 
 logger = logging.getLogger(__name__)

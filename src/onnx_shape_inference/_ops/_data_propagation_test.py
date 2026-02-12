@@ -7,10 +7,10 @@ from __future__ import annotations
 import unittest
 
 import numpy as np
-
 import onnx_ir as ir
-from onnx_shape_inference import _context, _registry
 from onnx_ir.shape_inference._ops._testing import const_value, ts
+
+from onnx_shape_inference import _context, _registry
 
 
 def _make_value(
@@ -131,7 +131,9 @@ class IdentityPropagationTest(unittest.TestCase):
     def test_identity_propagates_symbolic_value(self):
         ctx = _context.ShapeInferenceContext({"": 17})
         x = _make_value("x", ts(INT64, [4]))
-        ctx.set_symbolic_value(x, [ir.SymbolicDim("N"), 3, ir.SymbolicDim("H"), ir.SymbolicDim("W")])
+        ctx.set_symbolic_value(
+            x, [ir.SymbolicDim("N"), 3, ir.SymbolicDim("H"), ir.SymbolicDim("W")]
+        )
         [out] = _run_node(ctx, "", "Identity", [x])
         sym_val = ctx.get_symbolic_value(out)
         self.assertIsNotNone(sym_val)

@@ -7,6 +7,7 @@ from __future__ import annotations
 import unittest
 
 import onnx_ir as ir
+
 from onnx_shape_inference import broadcast_shapes
 
 
