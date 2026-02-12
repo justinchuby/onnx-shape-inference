@@ -1,13 +1,13 @@
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+requires = ["setuptools>=68.0", "setuptools-scm>=8.0"]
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "onnx-shape-inference"
 dynamic = ["version"]
 description = 'Symbolic shape inference for ONNX models'
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.9"
 license = "MIT"
 keywords = []
 authors = [
@@ -26,7 +26,7 @@ classifiers = [
 dependencies = [
   "sympy",
   "numpy",
-  "onnx>=1.14",
+  "onnx>=1.19",
   "typing_extensions",
 ]
 
@@ -35,81 +35,71 @@ Documentation = "https://github.com/justinchuby/onnx-shape-inference#readme"
 Issues = "https://github.com/justinchuby/onnx-shape-inference/issues"
 Source = "https://github.com/justinchuby/onnx-shape-inference"
 
-[tool.hatch.version]
-path = "src/onnx_shape_inference/__about__.py"
-
-[tool.hatch.envs.default]
-dependencies = [
-  "coverage[toml]>=6.5",
-  "pytest",
-]
-[tool.hatch.envs.default.scripts]
-test = "pytest {args:tests}"
-test-cov = "coverage run -m pytest {args:tests}"
-cov-report = [
-  "- coverage combine",
-  "coverage report",
-]
-cov = [
-  "test-cov",
-  "cov-report",
-]
-
-[[tool.hatch.envs.all.matrix]]
-python = ["3.8", "3.9", "3.10", "3.11"]
-
-[tool.black]
-target-version = ["py38"]
+[tool.setuptools.dynamic]
+version = {attr = "onnx_shape_inference.__version__"}
 
 [tool.ruff]
-target-version = "py38"
-line-length = 120
+line-length = 95
+target-version = "py39"
+
+[tool.ruff.lint]
 select = [
-  "A",
-  "ARG",
-  "B",
-  "C4",
-  "DTZ",
-  "E",
-  "F",
-  "ICN",
-  "ISC",
-  "N",
-  "PLC",
-  "PLE",
-  "PLR",
-  "PLW",
-  "RUF",
-  "TID",
-  "UP",
-  "W",
-  "YTT",
+    "B", # flake8-bugbear
+    "C4", # flake8-comprehensions
+    "D", # pydocstyle
+    "E", # pycodestyle
+    "F", # Pyflakes
+    "G", # flake8-logging-format
+    "I", # isort
+    "ISC", # flake8-implicit-str-concat
+    "LOG", # flake8-logging
+    "N", # pep8-naming
+    "NPY", # modern numpy
+    "PERF", # Perflint
+    "PIE", # flake8-pie
+    "PYI", # flake8-pyi
+    "RUF", # Ruff-specific rules
+    "SIM", # flake8-simplify
+    "SLOT", # flake8-slot
+    "T10", # flake8-debugger
+    "TID", # Disallow relative imports
+    "TRY", # flake8-try-except-raise
+    "UP", # pyupgrade
+    "W", # pycodestyle
+    "YTT", # flake8-2020
 ]
+# Select preview rules
+preview = true
 ignore = [
-  # Ignore complexity
-  "C901", "PLR0911", "PLR0912", "PLR0913", "PLR0915",
-  "E501", # black handles line length
-  "PLR2004", # Ignore magic numbers for now
+    "B9",  # Opinionated bugbear rules
+    "C408", # Sometimes it is preferable when we construct kwargs
+    "D1", # D1 is for missing docstrings, which is not yet enforced.
+    "D401", # First line of docstring should be in imperative mood
+    "E1", "E2", "E3", # Pycodestyle formatting rules that conflicts with the formatter
+    "E501", # Line length. Not enforced because black will handle formatting
+    "SIM103", # "Return the condition directly" obscures logic sometimes
+    "NPY002", # We may not always need a generator
+    "PERF203", # try-except in loops sometimes necessary
+    "PERF401", # List comprehension is not always readable
+    "PYI041", # int | float is more clear
+    "RUF022", # We don't need to sort __all__ for elements to be grouped
+    "RUF031", # Parentheses for tuple in subscripts is more readable
+    "RUF052", # Variables with `_` prefix may not be dummy variables in all cases
+    "RUF067", # More relaxed __init__.py files
+    "SIM102", # Collapible if statements are not always more readable
+    "SIM108", # We don't always encourage ternary operators
+    "SIM114", # Don't always combine if branches for debugability
+    "SIM116", # Don't use dict lookup to replace if-else
+    "TRY003", # Messages can be constructed in the exception
 ]
 
-[tool.ruff.flake8-tidy-imports]
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["TID252"] # Allow relative imports in init files
+"**/*_test.py" = ["TID251"] # pathlib is allowed in tests
+
+[tool.ruff.lint.flake8-tidy-imports]
+# Disallow all relative imports.
 ban-relative-imports = "all"
 
-[tool.coverage.run]
-source_pkgs = ["onnx_shape_inference"]
-branch = true
-parallel = true
-omit = [
-  "src/onnx_shape_inference/__about__.py",
-]
-
-[tool.coverage.paths]
-onnx_shape_inference = ["src/onnx_shape_inference"]
-tests = ["src/onnx_shape_inference"]
-
-[tool.coverage.report]
-exclude_lines = [
-  "no cov",
-  "if __name__ == .__main__.:",
-  "if TYPE_CHECKING:",
-]
+[tool.ruff.lint.pydocstyle]
+convention = "google"
