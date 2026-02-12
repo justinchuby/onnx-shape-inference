@@ -74,6 +74,18 @@ class MatMulTest(unittest.TestCase):
         )
         self.assertEqual(actual, [ts(FLOAT, [5])])
 
+    def test_matmul_incompatible_batch_raises(self):
+        """Incompatible batch dims [2, ...] vs [3, ...] should raise."""
+        from onnx_shape_inference import ShapeInferenceError
+
+        with self.assertRaises(ShapeInferenceError):
+            run_shape_inference(
+                "",
+                "MatMul",
+                [ts(FLOAT, [2, 3, 4]), ts(FLOAT, [3, 4, 5])],
+                opset_version=17,
+            )
+
 
 INT8 = ir.DataType.INT8
 INT32 = ir.DataType.INT32

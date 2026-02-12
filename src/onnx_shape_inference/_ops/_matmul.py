@@ -55,8 +55,16 @@ def _matmul_shape(
 
         if batch_shape is not None:
             output_dims = [*batch_shape.dims, m_dim, n_dim]
-        else:
+        elif batch_a.rank() == 0 and batch_b.rank() == 0:
+            # Both inputs are 2-D, no batch dims to broadcast
             output_dims = [m_dim, n_dim]
+        else:
+            # Incompatible batch shapes
+            ctx.record_error(
+                node,
+                f"Incompatible batch dimensions for MatMul: {batch_a} vs {batch_b}",
+            )
+            return
         output_shape = ir.Shape(output_dims)
 
     if len(node.outputs) > 0:
