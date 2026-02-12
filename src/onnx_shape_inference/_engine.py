@@ -63,8 +63,7 @@ def _infer_symbolic_shapes(
     warn_on_missing: bool = True,
 ) -> bool:
     """Core implementation that returns whether the model was modified."""
-    # Import ops to trigger registration
-    from onnx_shape_inference import _ops  # noqa: F401
+    _registry.registry.collect()
 
     ctx = _context.ShapeInferenceContext(model.opset_imports, policy=policy)
 

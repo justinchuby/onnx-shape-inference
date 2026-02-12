@@ -51,8 +51,11 @@ jobs:
       - name: Run tests
         run: |
           pytest --cov=src --cov-report=xml --cov-branch --junitxml junit.xml
-      - name: Upload coverage to Codecov
+      - name: Upload coverage reports to Codecov
         uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          slug: justinchuby/onnx-shape-inference
 
   build:
     name: Build
