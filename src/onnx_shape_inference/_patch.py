@@ -18,11 +18,13 @@ def _add__(self, other: int | ir.SymbolicDim) -> ir.SymbolicDim:
         return ir.SymbolicDim(sympy.sympify(self._expr + other._expr))
     return NotImplemented
 
+
 def _radd__(self, other: int) -> ir.SymbolicDim:
     """Support int + ir.SymbolicDim."""
     if isinstance(other, int):
         return self.__add__(other)
     return NotImplemented
+
 
 def _sub__(self, other: int | ir.SymbolicDim) -> ir.SymbolicDim:
     """Subtract an integer or another ir.SymbolicDim from this dimension."""
@@ -36,6 +38,7 @@ def _sub__(self, other: int | ir.SymbolicDim) -> ir.SymbolicDim:
         return ir.SymbolicDim(sympy.sympify(self._expr - other._expr))
     return NotImplemented
 
+
 def _rsub__(self, other: int) -> ir.SymbolicDim:
     """Support int - ir.SymbolicDim."""
     if self._expr is None:
@@ -43,6 +46,7 @@ def _rsub__(self, other: int) -> ir.SymbolicDim:
     if isinstance(other, int):
         return ir.SymbolicDim(sympy.sympify(other - self._expr))
     return NotImplemented
+
 
 def _mul__(self, other: int | ir.SymbolicDim) -> ir.SymbolicDim:
     """Multiply this dimension by an integer or another ir.SymbolicDim."""
@@ -56,11 +60,13 @@ def _mul__(self, other: int | ir.SymbolicDim) -> ir.SymbolicDim:
         return ir.SymbolicDim(sympy.sympify(self._expr * other._expr))
     return NotImplemented
 
+
 def _rmul__(self, other: int) -> ir.SymbolicDim:
     """Support int * ir.SymbolicDim."""
     if isinstance(other, int):
         return self.__mul__(other)
     return NotImplemented
+
 
 def _floordiv__(self, other: int | ir.SymbolicDim) -> ir.SymbolicDim:
     """Floor divide this dimension by an integer or another ir.SymbolicDim."""
@@ -74,6 +80,7 @@ def _floordiv__(self, other: int | ir.SymbolicDim) -> ir.SymbolicDim:
         return ir.SymbolicDim(sympy.sympify(self._expr // other._expr))
     return NotImplemented
 
+
 def _truediv__(self, other: int | ir.SymbolicDim) -> ir.SymbolicDim:
     """Divide this dimension by an integer or another ir.SymbolicDim (rational)."""
     if self._expr is None:
@@ -86,6 +93,7 @@ def _truediv__(self, other: int | ir.SymbolicDim) -> ir.SymbolicDim:
         return ir.SymbolicDim(sympy.sympify(self._expr / other._expr))
     return NotImplemented
 
+
 def _rtruediv__(self, other: int) -> ir.SymbolicDim:
     """Support int / ir.SymbolicDim."""
     if self._expr is None:
@@ -93,6 +101,7 @@ def _rtruediv__(self, other: int) -> ir.SymbolicDim:
     if isinstance(other, int):
         return ir.SymbolicDim(sympy.sympify(other / self._expr))
     return NotImplemented
+
 
 def _mod__(self, other: int | ir.SymbolicDim) -> ir.SymbolicDim:
     """Compute modulo of this dimension by an integer or another ir.SymbolicDim."""
@@ -106,11 +115,13 @@ def _mod__(self, other: int | ir.SymbolicDim) -> ir.SymbolicDim:
         return ir.SymbolicDim(sympy.sympify(self._expr % other._expr))
     return NotImplemented
 
+
 def _ceil__(self) -> ir.SymbolicDim:
     """Support math.ceil(dim). Returns a ir.SymbolicDim with ceiling expression."""
     if self._expr is None:
         return ir.SymbolicDim(None)
     return ir.SymbolicDim(sympy.ceiling(self._expr))
+
 
 def _floor__(self) -> ir.SymbolicDim:
     """Support math.floor(dim). Returns a ir.SymbolicDim with floor expression."""
@@ -118,11 +129,13 @@ def _floor__(self) -> ir.SymbolicDim:
         return ir.SymbolicDim(None)
     return ir.SymbolicDim(sympy.floor(self._expr))
 
+
 def _trunc__(self) -> ir.SymbolicDim:
     """Support math.trunc(dim). Returns a ir.SymbolicDim truncated toward zero."""
     if self._expr is None:
         return ir.SymbolicDim(None)
     return ir.SymbolicDim(sympy.sign(self._expr) * sympy.floor(sympy.Abs(self._expr)))
+
 
 def _neg__(self) -> ir.SymbolicDim:
     """Negate this dimension."""
