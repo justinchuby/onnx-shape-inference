@@ -196,6 +196,8 @@ class ShapeInferenceContext:
         self._errors: list[ShapeInferenceError] = []
         # Counter for generating unique symbolic dimension names
         self._dim_counter: int = 0
+        # Partial data propagation: symbolic element values keyed by ir.Value
+        self._symbolic_values: dict[ir.Value, list[int | ir.SymbolicDim]] = {}
 
     @property
     def opset(self) -> int:
@@ -478,7 +480,7 @@ class ShapeInferenceContext:
         value: ir.Value,
         data: list[int | ir.SymbolicDim],
     ) -> None:
-        """Store symbolic element values on a value's metadata.
+        """Store symbolic element values for a value.
 
         This is used to track the known contents of 1-D integer tensors
         (e.g., shape tensors) so that downstream ops like Reshape can read
@@ -488,15 +490,15 @@ class ShapeInferenceContext:
             value: The value to annotate.
             data: A list of known element values (int or SymbolicDim).
         """
-        value.meta["symbolic_value"] = data
+        self._symbolic_values[value] = data
 
     def get_symbolic_value(
         self,
         value: ir.Value,
     ) -> list[int | ir.SymbolicDim] | None:
-        """Retrieve symbolic element values from a value.
+        """Retrieve symbolic element values for a value.
 
-        Checks ``value.meta["symbolic_value"]`` first.  If not set, falls back
+        Checks the context's internal map first.  If not set, falls back
         to reading a constant tensor via ``ir.convenience.get_const_tensor()``
         so that initializers and Constant outputs participate in propagation.
 
@@ -506,9 +508,9 @@ class ShapeInferenceContext:
         Returns:
             A list of ``int | ir.SymbolicDim``, or ``None`` if unavailable.
         """
-        sym_val = value.meta.get("symbolic_value")
+        sym_val = self._symbolic_values.get(value)
         if sym_val is not None:
-            return sym_val  # type: ignore[return-value]
+            return sym_val
 
         # Fall back to constant tensor (only for 0d/1d integer types used in
         # shape computation — higher-rank tensors are data, not shape values)
