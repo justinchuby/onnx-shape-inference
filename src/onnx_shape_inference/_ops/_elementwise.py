@@ -112,6 +112,13 @@ def _infer_string_concat(ctx: _context.ShapeInferenceContext, node: ir.Node) -> 
 # --- Variadic elementwise ops (output dtype = first input dtype) ---
 
 
+_VARIADIC_OPS: dict[str, Callable[..., object]] = {
+    "Max": max,
+    "Min": min,
+    "Sum": _operator.add,
+}
+
+
 @_reg("", "Max", since_version=8)
 @_reg("", "Mean", since_version=8)
 @_reg("", "Min", since_version=8)
@@ -135,3 +142,15 @@ def _infer_variadic_elementwise(ctx: _context.ShapeInferenceContext, node: ir.No
 
     if len(node.outputs) > 0:
         ctx.set_shape_and_dtype(node.outputs[0], output_shape, output_dtype)
+
+    # Propagate symbolic values for Max/Min/Sum on shape tensors
+    op_func = _VARIADIC_OPS.get(node.op_type)
+    if op_func is not None and len(node.outputs) > 0 and len(inputs) >= 2:
+        sym_vals = [ctx.get_symbolic_value(v) for v in inputs]
+        if all(sv is not None for sv in sym_vals):
+            lengths = [len(sv) for sv in sym_vals]  # type: ignore[arg-type]
+            if len(set(lengths)) == 1:
+                result = list(sym_vals[0])  # type: ignore[arg-type]
+                for sv in sym_vals[1:]:
+                    result = [op_func(a, b) for a, b in zip(result, sv)]  # type: ignore[arg-type]
+                ctx.set_symbolic_value(node.outputs[0], result)
