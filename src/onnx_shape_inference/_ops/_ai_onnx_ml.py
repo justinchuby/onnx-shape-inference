@@ -31,7 +31,7 @@ def infer_array_feature_extractor(ctx: _context.ShapeInferenceContext, node: ir.
     x_shape = x.shape
     y_shape = y.shape
     if x_shape is not None and y_shape is not None and y_shape.rank() >= 1:
-        out_dims = list(x_shape.dims[:-1]) + [y_shape.dims[-1]]
+        out_dims = [*list(x_shape.dims[:-1]), y_shape.dims[-1]]
         ctx.set_shape_and_dtype(node.outputs[0], ir.Shape(out_dims), x.dtype)
     else:
         ctx.set_shape_and_dtype(node.outputs[0], None, x.dtype)
