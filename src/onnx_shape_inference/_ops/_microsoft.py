@@ -141,7 +141,7 @@ def _infer_ms_layer_norm(ctx: _context.ShapeInferenceContext, node: ir.Node) -> 
     if len(node.outputs) > 0:
         ctx.set_shape_and_dtype(node.outputs[0], x.shape, x.dtype)
 
-    if (len(node.outputs) > 1 or len(node.outputs) > 2) and x.shape is not None:
+    if len(node.outputs) > 1 and x.shape is not None:
         axis_attr = node.attributes.get("axis")
         axis = axis_attr.as_int() if axis_attr is not None else -1
         rank = x.shape.rank()
@@ -894,13 +894,17 @@ def _qlinear_unary_shape(ctx: _context.ShapeInferenceContext, node: ir.Node) -> 
     """QLinear unary ops: output shape = input[0] shape.
 
     Pattern: X(0), x_scale(1), x_zp(2), y_scale(3), y_zp(4)
-    Output dtype = X's dtype.
+    Output dtype = X's dtype (quantized), fallback to x_zp's dtype.
     """
     if not node.inputs or node.inputs[0] is None:
         raise _context.OpUsageError(node, "Expected at least 1 input")
     x = node.inputs[0]
+    output_dtype = x.dtype
+    if output_dtype is None:
+        x_zp = node.inputs[2] if len(node.inputs) > 2 and node.inputs[2] is not None else None
+        output_dtype = x_zp.dtype if x_zp is not None else None
     if len(node.outputs) > 0:
-        ctx.set_shape_and_dtype(node.outputs[0], x.shape, x.dtype)
+        ctx.set_shape_and_dtype(node.outputs[0], x.shape, output_dtype)
 
 
 @_reg(_MSFT, "QLinearLeakyRelu", since_version=1)
@@ -918,7 +922,7 @@ def _qlinear_binary_shape(ctx: _context.ShapeInferenceContext, node: ir.Node) ->
 
     Pattern: A(0), A_scale(1), A_zp(2), B(3), B_scale(4), B_zp(5),
              C_scale(6), C_zp(7)
-    Output dtype = A's dtype.
+    Output dtype = A's dtype (quantized), fallback to A_zp's dtype.
     """
     if len(node.inputs) < 4 or node.inputs[0] is None or node.inputs[3] is None:
         raise _context.OpUsageError(node, "Expected inputs A and B")
@@ -927,8 +931,12 @@ def _qlinear_binary_shape(ctx: _context.ShapeInferenceContext, node: ir.Node) ->
     from onnx_shape_inference import _broadcast
 
     output_shape = _broadcast.broadcast_shapes(a.shape, b.shape)
+    output_dtype = a.dtype
+    if output_dtype is None:
+        a_zp = node.inputs[2] if len(node.inputs) > 2 and node.inputs[2] is not None else None
+        output_dtype = a_zp.dtype if a_zp is not None else None
     if len(node.outputs) > 0:
-        ctx.set_shape_and_dtype(node.outputs[0], output_shape, a.dtype)
+        ctx.set_shape_and_dtype(node.outputs[0], output_shape, output_dtype)
 
 
 @_reg(_MSFT, "QLinearAdd", since_version=1)
@@ -950,11 +958,16 @@ def infer_qlinear_conv(ctx: _context.ShapeInferenceContext, node: ir.Node) -> No
     x = node.inputs[0]
     w = node.inputs[3]
 
+    output_dtype = x.dtype
+    if output_dtype is None:
+        x_zp = node.inputs[2] if len(node.inputs) > 2 and node.inputs[2] is not None else None
+        output_dtype = x_zp.dtype if x_zp is not None else None
+
     from onnx_shape_inference._ops import _conv
 
     output_shape = _conv._compute_conv_shape(ctx, node, x, w)
     if len(node.outputs) > 0:
-        ctx.set_shape_and_dtype(node.outputs[0], output_shape, x.dtype)
+        ctx.set_shape_and_dtype(node.outputs[0], output_shape, output_dtype)
 
 
 # ---------------------------------------------------------------------------
@@ -983,6 +996,10 @@ def infer_qlinear_concat(ctx: _context.ShapeInferenceContext, node: ir.Node) -> 
         return
 
     output_dtype = data_values[0].dtype
+    if output_dtype is None:
+        # Fallback: first data tensor's zp (inputs[4]) shares the same type
+        zp = node.inputs[4] if len(node.inputs) > 4 and node.inputs[4] is not None else None
+        output_dtype = zp.dtype if zp is not None else None
 
     # Compute concat output shape
     first_shape = data_values[0].shape
@@ -1048,6 +1065,9 @@ def infer_qlinear_where(ctx: _context.ShapeInferenceContext, node: ir.Node) -> N
         output_shape = _broadcast.broadcast_shapes(output_shape, y.shape)
 
     output_dtype = x.dtype if x is not None else None
+    if output_dtype is None and x is not None:
+        x_zp = node.inputs[3] if len(node.inputs) > 3 and node.inputs[3] is not None else None
+        output_dtype = x_zp.dtype if x_zp is not None else None
     if len(node.outputs) > 0:
         ctx.set_shape_and_dtype(node.outputs[0], output_shape, output_dtype)
 

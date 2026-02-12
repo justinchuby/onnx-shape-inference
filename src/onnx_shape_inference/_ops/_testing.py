@@ -67,7 +67,7 @@ def const_value(
 def run_shape_inference(
     domain: str,
     op_type: str,
-    inputs: Sequence[ir.TypeAndShape],
+    inputs: Sequence[ir.TypeAndShape | None],
     attributes: dict[str, ir.Attr] | None = None,
     *,
     opset_version: int,
@@ -94,10 +94,13 @@ def run_shape_inference(
         inferred type and shape.
     """
     # Build Value objects from TypeAndShape specs
-    input_values: list[ir.Value] = []
+    input_values: list[ir.Value | None] = []
     for i, spec in enumerate(inputs):
-        v = ir.Value(name=f"input_{i}", shape=spec.shape, type=spec.type)
-        input_values.append(v)
+        if spec is None:
+            input_values.append(None)
+        else:
+            v = ir.Value(name=f"input_{i}", shape=spec.shape, type=spec.type)
+            input_values.append(v)
 
     output_values = [ir.Value(name=f"output_{i}") for i in range(num_outputs)]
 
@@ -114,7 +117,8 @@ def run_shape_inference(
 
     # Name anonymous dims on inputs, matching what the engine does
     for v in input_values:
-        ctx.name_anonymous_dims(v)
+        if v is not None:
+            ctx.name_anonymous_dims(v)
 
     func = _registry.registry.get(domain, op_type, version=opset_version)
     if func is None:
