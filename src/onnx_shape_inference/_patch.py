@@ -66,7 +66,9 @@ class SymbolicDim(ir.SymbolicDimProtocol, onnx_ir._display.PrettyPrintable):
             self._value = str(value)
             self._expr_cache = value
         else:
-            raise TypeError(f"Expected str, None, or sympy.Expr, got {type(value).__name__}")
+            raise TypeError(
+                f"Expected str, None, or sympy.Expr, got {type(value).__name__}"
+            )
 
     def __eq__(self, other: object) -> bool:
         """Check equality with another SymbolicDim, string, or None."""
@@ -293,3 +295,72 @@ class SymbolicDim(ir.SymbolicDimProtocol, onnx_ir._display.PrettyPrintable):
 
 ir.SymbolicDim = SymbolicDim  # Patch the onnx_ir.SymbolicDim to our enhanced version
 ir._core.SymbolicDim = SymbolicDim
+
+
+def evaluate(self, bindings: Mapping[str, int]) -> ir.Shape:
+    """Evaluate the shape with concrete values for symbolic dimensions.
+
+    Args:
+        bindings: A mapping from symbol names to integer values.
+
+    Returns:
+        A Shape with evaluated dimensions. Dimensions that can be fully
+        resolved become integers; unresolvable dimensions remain as
+        SymbolicDim instances.
+
+    Raises:
+        TypeError: If a dimension has an unexpected type.
+
+    Example::
+
+        >>> shape = ir.Shape(["batch", 256, ir.SymbolicDim("seq") + 1])
+        >>> shape.evaluate({"batch": 32, "seq": 128})
+        Shape([32, 256, 129])
+    """
+    result: list[int | SymbolicDim] = []
+    for dim in self._dims:
+        if isinstance(dim, int):
+            result.append(dim)
+        elif isinstance(dim, SymbolicDim):
+            evaluated = dim.evaluate(bindings)
+            result.append(evaluated)
+        else:
+            raise TypeError(
+                f"Unexpected dimension type: '{type(dim)}' in shape '{self}'"
+            )
+    return ir.Shape(result, denotations=self._denotations)
+
+
+def simplify(self) -> ir.Shape:
+    """Return a new Shape with all symbolic dimensions simplified.
+
+    Uses SymPy's simplify function to reduce symbolic expressions.
+
+    Returns:
+        A new Shape with simplified dimensions.
+    """
+    new_dims: list[int | SymbolicDim] = []
+    for dim in self._dims:
+        if isinstance(dim, SymbolicDim):
+            new_dims.append(dim.simplify())
+        else:
+            new_dims.append(dim)
+    return ir.Shape(new_dims, denotations=self._denotations)
+
+
+def free_symbols(self) -> frozenset[str]:
+    """Return the set of all free symbol names in this shape.
+
+    Returns:
+        A frozenset of symbol names that appear in any dimension.
+    """
+    symbols: set[str] = set()
+    for dim in self._dims:
+        if isinstance(dim, SymbolicDim):
+            symbols.update(dim.free_symbols())
+    return frozenset(symbols)
+
+
+ir.Shape.evaluate = evaluate
+ir.Shape.simplify = simplify
+ir.Shape.free_symbols = free_symbols
