@@ -8,7 +8,8 @@ import unittest
 
 import onnx_ir as ir
 import sympy
-from onnx_ir._symbolic_shapes import parse_symbolic_expression
+
+from onnx_shape_inference._symbolic_shapes import parse_symbolic_expression
 
 
 class SymbolicDimTest(unittest.TestCase):
