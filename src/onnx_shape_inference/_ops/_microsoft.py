@@ -141,7 +141,7 @@ def _infer_ms_layer_norm(ctx: _context.ShapeInferenceContext, node: ir.Node) -> 
     if len(node.outputs) > 0:
         ctx.set_shape_and_dtype(node.outputs[0], x.shape, x.dtype)
 
-    if (len(node.outputs) > 1 or len(node.outputs) > 2) and x.shape is not None:
+    if len(node.outputs) > 1 and x.shape is not None:
         axis_attr = node.attributes.get("axis")
         axis = axis_attr.as_int() if axis_attr is not None else -1
         rank = x.shape.rank()

@@ -292,6 +292,39 @@ class PackedAttentionTest(unittest.TestCase):
         )
         self.assertEqual(actual, [ts(FLOAT, [16, 192])])
 
+    def test_qkv_hidden_sizes(self):
+        actual = run_shape_inference(
+            MSFT,
+            "PackedAttention",
+            [ts(FLOAT, [100, 64]), ts(FLOAT, [64, 192]), ts(FLOAT, [192])],
+            attributes={
+                "qkv_hidden_sizes": ir.Attr(
+                    "qkv_hidden_sizes", ir.AttributeType.INTS, [64, 64, 128]
+                ),
+            },
+            opset_version=1,
+        )
+        self.assertEqual(actual[0].shape, ir.Shape([100, 128]))
+
+    def test_non_2d_fallback(self):
+        actual = run_shape_inference(
+            MSFT,
+            "PackedAttention",
+            [ts(FLOAT, [2, 8, 192])],
+            opset_version=1,
+        )
+        self.assertEqual(actual[0].shape, ir.Shape([2, 8, 192]))
+
+    def test_hidden_from_weights(self):
+        """Hidden inferred from weights when bias is absent."""
+        actual = run_shape_inference(
+            MSFT,
+            "PackedAttention",
+            [ts(FLOAT, [100, 192]), ts(FLOAT, [192, 576])],
+            opset_version=1,
+        )
+        self.assertEqual(actual[0].shape, ir.Shape([100, 192]))
+
 
 class DecoderMaskedMHATest(unittest.TestCase):
     def test_basic(self):
@@ -302,6 +335,25 @@ class DecoderMaskedMHATest(unittest.TestCase):
             opset_version=1,
         )
         self.assertEqual(actual, [ts(FLOAT, [2, 1, 64])])
+
+    def test_with_past(self):
+        actual = run_shape_inference(
+            MSFT,
+            "DecoderMaskedMultiHeadAttention",
+            [
+                ts(FLOAT, [2, 1, 64]),  # query
+                None,
+                None,
+                None,
+                None,
+                ts(FLOAT, [2, 4, 10, 16]),  # past key
+            ],
+            opset_version=1,
+            num_outputs=3,
+        )
+        self.assertEqual(actual[0].shape, ir.Shape([2, 1, 64]))
+        self.assertEqual(actual[1].shape, ir.Shape([2, 4, 10, 16]))
+        self.assertEqual(actual[2].shape, ir.Shape([2, 4, 10, 16]))
 
 
 class RemovePaddingTest(unittest.TestCase):
@@ -318,6 +370,15 @@ class RemovePaddingTest(unittest.TestCase):
         self.assertEqual(actual[1].shape, ir.Shape([2, 8]))
         self.assertEqual(actual[3].shape, ir.Shape([1]))
 
+    def test_non_3d_returns(self):
+        actual = run_shape_inference(
+            MSFT,
+            "RemovePadding",
+            [ts(FLOAT, [8, 64])],
+            opset_version=1,
+        )
+        self.assertIsNone(actual[0].shape)
+
 
 class RestorePaddingTest(unittest.TestCase):
     def test_basic(self):
@@ -328,6 +389,15 @@ class RestorePaddingTest(unittest.TestCase):
             opset_version=1,
         )
         self.assertEqual(actual, [ts(FLOAT, [2, 8, 64])])
+
+    def test_incompatible_ranks(self):
+        actual = run_shape_inference(
+            MSFT,
+            "RestorePadding",
+            [ts(FLOAT, [100, 64]), ts(INT32, [16])],
+            opset_version=1,
+        )
+        self.assertIsNone(actual[0].shape)
 
 
 class GatedRelativePositionBiasTest(unittest.TestCase):
@@ -340,6 +410,34 @@ class GatedRelativePositionBiasTest(unittest.TestCase):
             opset_version=1,
         )
         self.assertEqual(actual, [ts(FLOAT, [4, 4, 8, 8])])
+
+    def test_from_token_offset(self):
+        actual = run_shape_inference(
+            MSFT,
+            "GatedRelativePositionBias",
+            [
+                ts(FLOAT, [2, 8, 64]),  # query_layer
+                None,
+                None,
+                None,
+                None,
+                None,
+                ts(INT32, [2, 8]),  # token_offset
+            ],
+            attributes={"num_heads": ir.Attr("num_heads", ir.AttributeType.INT, 4)},
+            opset_version=1,
+        )
+        self.assertEqual(actual[0].shape, ir.Shape([2, 4, 8, 8]))
+
+    def test_no_num_heads(self):
+        """No num_heads attribute — no output shape set."""
+        actual = run_shape_inference(
+            MSFT,
+            "GatedRelativePositionBias",
+            [ts(FLOAT, [2, 8, 64])],
+            opset_version=1,
+        )
+        self.assertIsNone(actual[0].shape)
 
 
 class GroupQueryAttentionTest(unittest.TestCase):
@@ -813,10 +911,12 @@ class AttentionPresentTest(unittest.TestCase):
 
     def test_present_no_past(self):
         actual = run_shape_inference(
-            MSFT, "Attention",
+            MSFT,
+            "Attention",
             [ts(FLOAT, [2, 8, 192]), ts(FLOAT, [192, 576]), ts(FLOAT, [576])],
             attributes={"num_heads": ir.Attr("num_heads", ir.AttributeType.INT, 4)},
-            opset_version=1, num_outputs=2,
+            opset_version=1,
+            num_outputs=2,
         )
         # output: [2, 8, 192]
         self.assertEqual(actual[0].shape, ir.Shape([2, 8, 192]))
@@ -826,7 +926,8 @@ class AttentionPresentTest(unittest.TestCase):
     def test_non_3d_input(self):
         """Non-3D input falls back to passthrough."""
         actual = run_shape_inference(
-            MSFT, "Attention",
+            MSFT,
+            "Attention",
             [ts(FLOAT, [8, 192])],
             opset_version=1,
         )
@@ -834,7 +935,8 @@ class AttentionPresentTest(unittest.TestCase):
 
     def test_qkv_hidden_sizes(self):
         actual = run_shape_inference(
-            MSFT, "Attention",
+            MSFT,
+            "Attention",
             [ts(FLOAT, [2, 8, 64]), ts(FLOAT, [64, 192]), ts(FLOAT, [192])],
             attributes={
                 "qkv_hidden_sizes": ir.Attr(
@@ -848,7 +950,8 @@ class AttentionPresentTest(unittest.TestCase):
     def test_hidden_from_weights(self):
         """Hidden size inferred from weights when bias is missing."""
         actual = run_shape_inference(
-            MSFT, "Attention",
+            MSFT,
+            "Attention",
             [ts(FLOAT, [2, 8, 64]), ts(FLOAT, [64, 192])],
             opset_version=1,
         )
@@ -856,16 +959,18 @@ class AttentionPresentTest(unittest.TestCase):
 
     def test_present_with_past(self):
         actual = run_shape_inference(
-            MSFT, "Attention",
+            MSFT,
+            "Attention",
             [
                 ts(FLOAT, [2, 8, 192]),  # input
-                ts(FLOAT, [192, 576]),    # weights
-                ts(FLOAT, [576]),         # bias
-                None,                     # mask
+                ts(FLOAT, [192, 576]),  # weights
+                ts(FLOAT, [576]),  # bias
+                None,  # mask
                 ts(FLOAT, [2, 2, 4, 10, 48]),  # past
             ],
             attributes={"num_heads": ir.Attr("num_heads", ir.AttributeType.INT, 4)},
-            opset_version=1, num_outputs=2,
+            opset_version=1,
+            num_outputs=2,
         )
         # present copies past shape
         self.assertEqual(actual[1].shape, ir.Shape([2, 2, 4, 10, 48]))
@@ -880,14 +985,16 @@ class MultiHeadAttentionPathsTest(unittest.TestCase):
     def test_3d_with_value(self):
         """3D query with value input determines output hidden dim."""
         actual = run_shape_inference(
-            MSFT, "MultiHeadAttention",
+            MSFT,
+            "MultiHeadAttention",
             [
-                ts(FLOAT, [2, 8, 64]),   # query
+                ts(FLOAT, [2, 8, 64]),  # query
                 ts(FLOAT, [2, 10, 64]),  # key
-                ts(FLOAT, [2, 10, 128]), # value
+                ts(FLOAT, [2, 10, 128]),  # value
             ],
             attributes={"num_heads": ir.Attr("num_heads", ir.AttributeType.INT, 4)},
-            opset_version=1, num_outputs=3,
+            opset_version=1,
+            num_outputs=3,
         )
         self.assertEqual(actual[0].shape, ir.Shape([2, 8, 128]))
         # present key: [2, 4, 10, 16]
@@ -896,10 +1003,12 @@ class MultiHeadAttentionPathsTest(unittest.TestCase):
     def test_5d_packed(self):
         """5D packed query: [B, Sq, Nh, 3, Hd]."""
         actual = run_shape_inference(
-            MSFT, "MultiHeadAttention",
+            MSFT,
+            "MultiHeadAttention",
             [ts(FLOAT, [2, 8, 4, 3, 16])],
             attributes={"num_heads": ir.Attr("num_heads", ir.AttributeType.INT, 4)},
-            opset_version=1, num_outputs=3,
+            opset_version=1,
+            num_outputs=3,
         )
         # output: [2, 8, 64] = Nh*Hd = 4*16
         self.assertEqual(actual[0].shape, ir.Shape([2, 8, 64]))
@@ -907,7 +1016,8 @@ class MultiHeadAttentionPathsTest(unittest.TestCase):
     def test_non_3d_5d_fallback(self):
         """Non-3D non-5D query falls through."""
         actual = run_shape_inference(
-            MSFT, "MultiHeadAttention",
+            MSFT,
+            "MultiHeadAttention",
             [ts(FLOAT, [8, 64])],
             opset_version=1,
         )
@@ -915,7 +1025,8 @@ class MultiHeadAttentionPathsTest(unittest.TestCase):
 
     def test_null_shape_returns(self):
         actual = run_shape_inference(
-            MSFT, "MultiHeadAttention",
+            MSFT,
+            "MultiHeadAttention",
             [ts(FLOAT, None)],
             opset_version=1,
         )
@@ -927,51 +1038,12 @@ class MultiHeadAttentionPathsTest(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 
-class PackedAttentionTest(unittest.TestCase):
-    def test_basic(self):
-        actual = run_shape_inference(
-            MSFT, "PackedAttention",
-            [ts(FLOAT, [100, 192]), ts(FLOAT, [192, 576]), ts(FLOAT, [576])],
-            opset_version=1,
-        )
-        self.assertEqual(actual[0].shape, ir.Shape([100, 192]))
-
-    def test_qkv_hidden_sizes(self):
-        actual = run_shape_inference(
-            MSFT, "PackedAttention",
-            [ts(FLOAT, [100, 64]), ts(FLOAT, [64, 192]), ts(FLOAT, [192])],
-            attributes={
-                "qkv_hidden_sizes": ir.Attr(
-                    "qkv_hidden_sizes", ir.AttributeType.INTS, [64, 64, 128]
-                ),
-            },
-            opset_version=1,
-        )
-        self.assertEqual(actual[0].shape, ir.Shape([100, 128]))
-
-    def test_non_2d_fallback(self):
-        actual = run_shape_inference(
-            MSFT, "PackedAttention",
-            [ts(FLOAT, [2, 8, 192])],
-            opset_version=1,
-        )
-        self.assertEqual(actual[0].shape, ir.Shape([2, 8, 192]))
-
-    def test_hidden_from_weights(self):
-        """Hidden inferred from weights when bias is absent."""
-        actual = run_shape_inference(
-            MSFT, "PackedAttention",
-            [ts(FLOAT, [100, 192]), ts(FLOAT, [192, 576])],
-            opset_version=1,
-        )
-        self.assertEqual(actual[0].shape, ir.Shape([100, 192]))
-
-
 class PackedMHATest(unittest.TestCase):
     def test_2d_value(self):
         """2D value input determines output shape."""
         actual = run_shape_inference(
-            MSFT, "PackedMultiHeadAttention",
+            MSFT,
+            "PackedMultiHeadAttention",
             [ts(FLOAT, [100, 64]), None, ts(FLOAT, [100, 128])],
             opset_version=1,
         )
@@ -980,7 +1052,8 @@ class PackedMHATest(unittest.TestCase):
     def test_4d_query(self):
         """4D query: [token, Nh, S, Hd] -> [token, Nh*Hd]."""
         actual = run_shape_inference(
-            MSFT, "PackedMultiHeadAttention",
+            MSFT,
+            "PackedMultiHeadAttention",
             [ts(FLOAT, [100, 4, 8, 16])],
             opset_version=1,
         )
@@ -989,126 +1062,12 @@ class PackedMHATest(unittest.TestCase):
     def test_fallback(self):
         """Non-2D-value and non-4D-query falls through."""
         actual = run_shape_inference(
-            MSFT, "PackedMultiHeadAttention",
+            MSFT,
+            "PackedMultiHeadAttention",
             [ts(FLOAT, [100, 64])],
             opset_version=1,
         )
         self.assertEqual(actual[0].shape, ir.Shape([100, 64]))
-
-
-# ---------------------------------------------------------------------------
-# DecoderMaskedMultiHeadAttention
-# ---------------------------------------------------------------------------
-
-
-class DecoderMaskedMHATest(unittest.TestCase):
-    def test_basic(self):
-        actual = run_shape_inference(
-            MSFT, "DecoderMaskedMultiHeadAttention",
-            [ts(FLOAT, [2, 1, 64])],
-            opset_version=1,
-        )
-        self.assertEqual(actual[0].shape, ir.Shape([2, 1, 64]))
-
-    def test_with_past(self):
-        actual = run_shape_inference(
-            MSFT, "DecoderMaskedMultiHeadAttention",
-            [
-                ts(FLOAT, [2, 1, 64]),  # query
-                None, None, None, None,
-                ts(FLOAT, [2, 4, 10, 16]),  # past key
-            ],
-            opset_version=1, num_outputs=3,
-        )
-        self.assertEqual(actual[0].shape, ir.Shape([2, 1, 64]))
-        self.assertEqual(actual[1].shape, ir.Shape([2, 4, 10, 16]))
-        self.assertEqual(actual[2].shape, ir.Shape([2, 4, 10, 16]))
-
-
-# ---------------------------------------------------------------------------
-# GatedRelativePositionBias
-# ---------------------------------------------------------------------------
-
-
-class GatedRelativePositionBiasTest(unittest.TestCase):
-    def test_from_token_offset(self):
-        actual = run_shape_inference(
-            MSFT, "GatedRelativePositionBias",
-            [
-                ts(FLOAT, [2, 8, 64]),       # query_layer
-                None, None, None, None, None,
-                ts(INT32, [2, 8]),            # token_offset
-            ],
-            attributes={"num_heads": ir.Attr("num_heads", ir.AttributeType.INT, 4)},
-            opset_version=1,
-        )
-        self.assertEqual(actual[0].shape, ir.Shape([2, 4, 8, 8]))
-
-    def test_from_query(self):
-        """Fallback to query input when token_offset not provided."""
-        actual = run_shape_inference(
-            MSFT, "GatedRelativePositionBias",
-            [ts(FLOAT, [2, 8, 64])],
-            attributes={"num_heads": ir.Attr("num_heads", ir.AttributeType.INT, 4)},
-            opset_version=1,
-        )
-        self.assertEqual(actual[0].shape, ir.Shape([2, 4, 8, 8]))
-
-    def test_no_num_heads(self):
-        """No num_heads attribute — no output shape set."""
-        actual = run_shape_inference(
-            MSFT, "GatedRelativePositionBias",
-            [ts(FLOAT, [2, 8, 64])],
-            opset_version=1,
-        )
-        self.assertIsNone(actual[0].shape)
-
-
-# ---------------------------------------------------------------------------
-# RemovePadding / RestorePadding
-# ---------------------------------------------------------------------------
-
-
-class RemovePaddingTest(unittest.TestCase):
-    def test_basic(self):
-        actual = run_shape_inference(
-            MSFT, "RemovePadding",
-            [ts(FLOAT, [2, 8, 64])],
-            opset_version=1, num_outputs=4,
-        )
-        # output[0]: [token_count, 64]
-        self.assertEqual(actual[0].shape.rank(), 2)
-        self.assertEqual(actual[0].shape[1], 64)
-        # output[1]: [2, 8]
-        self.assertEqual(actual[1].shape, ir.Shape([2, 8]))
-        # output[3]: [1]
-        self.assertEqual(actual[3].shape, ir.Shape([1]))
-
-    def test_non_3d_returns(self):
-        actual = run_shape_inference(
-            MSFT, "RemovePadding",
-            [ts(FLOAT, [8, 64])],
-            opset_version=1,
-        )
-        self.assertIsNone(actual[0].shape)
-
-
-class RestorePaddingTest(unittest.TestCase):
-    def test_basic(self):
-        actual = run_shape_inference(
-            MSFT, "RestorePadding",
-            [ts(FLOAT, [100, 64]), ts(INT32, [2, 8])],
-            opset_version=1,
-        )
-        self.assertEqual(actual[0].shape, ir.Shape([2, 8, 64]))
-
-    def test_incompatible_ranks(self):
-        actual = run_shape_inference(
-            MSFT, "RestorePadding",
-            [ts(FLOAT, [100, 64]), ts(INT32, [16])],
-            opset_version=1,
-        )
-        self.assertIsNone(actual[0].shape)
 
 
 # ---------------------------------------------------------------------------
@@ -1121,19 +1080,21 @@ class GroupQueryAttentionPresentTest(unittest.TestCase):
         # query hidden=64, num_heads=4, kv_num_heads=2
         # packed_total=4+2*2=8, head_size=64//8=8, out_hidden=4*8=32
         actual = run_shape_inference(
-            MSFT, "GroupQueryAttention",
+            MSFT,
+            "GroupQueryAttention",
             [
-                ts(FLOAT, [2, 1, 64]),           # query (packed QKV)
-                ts(FLOAT, [2, 1, 16]),            # key
-                ts(FLOAT, [2, 1, 16]),            # value
-                ts(FLOAT, [2, 2, 10, 8]),         # past_key
-                ts(FLOAT, [2, 2, 10, 8]),         # past_value
+                ts(FLOAT, [2, 1, 64]),  # query (packed QKV)
+                ts(FLOAT, [2, 1, 16]),  # key
+                ts(FLOAT, [2, 1, 16]),  # value
+                ts(FLOAT, [2, 2, 10, 8]),  # past_key
+                ts(FLOAT, [2, 2, 10, 8]),  # past_value
             ],
             attributes={
                 "num_heads": ir.Attr("num_heads", ir.AttributeType.INT, 4),
                 "kv_num_heads": ir.Attr("kv_num_heads", ir.AttributeType.INT, 2),
             },
-            opset_version=1, num_outputs=3,
+            opset_version=1,
+            num_outputs=3,
         )
         self.assertEqual(actual[0].shape, ir.Shape([2, 1, 32]))
         # present: [2, 2, 11, 8]  (past_seq=10 + cur_seq=1)
@@ -1146,13 +1107,15 @@ class GroupQueryAttentionPresentTest(unittest.TestCase):
         # Use separate Q/K/V: hidden=128, num_heads=4, kv_num_heads=1
         # packed_total=4+2*1=6, 128/6=21.33 → NOT packed, out=128
         actual = run_shape_inference(
-            MSFT, "GroupQueryAttention",
+            MSFT,
+            "GroupQueryAttention",
             [ts(FLOAT, [2, 8, 128])],
             attributes={
                 "num_heads": ir.Attr("num_heads", ir.AttributeType.INT, 4),
                 "kv_num_heads": ir.Attr("kv_num_heads", ir.AttributeType.INT, 1),
             },
-            opset_version=1, num_outputs=3,
+            opset_version=1,
+            num_outputs=3,
         )
         self.assertEqual(actual[0].shape, ir.Shape([2, 8, 128]))
 
@@ -1165,12 +1128,13 @@ class GroupQueryAttentionPresentTest(unittest.TestCase):
 class QLinearConvTest(unittest.TestCase):
     def test_basic(self):
         actual = run_shape_inference(
-            MSFT, "QLinearConv",
+            MSFT,
+            "QLinearConv",
             [
                 ts(INT8, [1, 3, 32, 32]),  # x
-                ts(FLOAT, []),              # x_scale
-                ts(INT8, []),               # x_zp
-                ts(INT8, [16, 3, 3, 3]),   # w
+                ts(FLOAT, []),  # x_scale
+                ts(INT8, []),  # x_zp
+                ts(INT8, [16, 3, 3, 3]),  # w
             ],
             opset_version=1,
         )
@@ -1180,12 +1144,13 @@ class QLinearConvTest(unittest.TestCase):
     def test_dtype_from_zp(self):
         """Dtype falls back to x_zp when x has no dtype."""
         actual = run_shape_inference(
-            MSFT, "QLinearConv",
+            MSFT,
+            "QLinearConv",
             [
                 ts(None, [1, 3, 32, 32]),  # x (no dtype)
                 ts(FLOAT, []),
-                ts(INT8, []),              # x_zp (INT8)
-                ts(None, [16, 3, 3, 3]),   # w
+                ts(INT8, []),  # x_zp (INT8)
+                ts(None, [16, 3, 3, 3]),  # w
             ],
             opset_version=1,
         )
@@ -1201,14 +1166,15 @@ class QLinearConvTest(unittest.TestCase):
 class QLinearConcatFullTest(unittest.TestCase):
     def test_negative_axis(self):
         actual = run_shape_inference(
-            MSFT, "QLinearConcat",
+            MSFT,
+            "QLinearConcat",
             [
-                ts(FLOAT, []),       # Y_scale
-                ts(INT8, []),        # Y_zp
-                ts(INT8, [2, 4]),    # tensor1
+                ts(FLOAT, []),  # Y_scale
+                ts(INT8, []),  # Y_zp
+                ts(INT8, [2, 4]),  # tensor1
                 ts(FLOAT, []),
                 ts(INT8, []),
-                ts(INT8, [2, 6]),    # tensor2
+                ts(INT8, [2, 6]),  # tensor2
                 ts(FLOAT, []),
                 ts(INT8, []),
             ],
@@ -1221,7 +1187,8 @@ class QLinearConcatFullTest(unittest.TestCase):
     def test_no_data(self):
         """No data tensors — no output."""
         actual = run_shape_inference(
-            MSFT, "QLinearConcat",
+            MSFT,
+            "QLinearConcat",
             [ts(FLOAT, []), ts(INT8, [])],
             attributes={"axis": ir.Attr("axis", ir.AttributeType.INT, 0)},
             opset_version=1,
@@ -1230,7 +1197,8 @@ class QLinearConcatFullTest(unittest.TestCase):
 
     def test_null_first_shape(self):
         actual = run_shape_inference(
-            MSFT, "QLinearConcat",
+            MSFT,
+            "QLinearConcat",
             [
                 ts(FLOAT, []),
                 ts(INT8, []),
@@ -1246,14 +1214,15 @@ class QLinearConcatFullTest(unittest.TestCase):
     def test_dtype_from_zp(self):
         """Dtype falls back to zp when data has no dtype."""
         actual = run_shape_inference(
-            MSFT, "QLinearConcat",
+            MSFT,
+            "QLinearConcat",
             [
-                ts(FLOAT, []),       # Y_scale
-                ts(None, []),        # Y_zp
-                ts(None, [2, 4]),    # tensor1 (no dtype)
+                ts(FLOAT, []),  # Y_scale
+                ts(None, []),  # Y_zp
+                ts(None, [2, 4]),  # tensor1 (no dtype)
                 ts(FLOAT, []),
-                ts(INT8, []),        # zp1 (INT8)
-                ts(None, [2, 6]),    # tensor2 (no dtype)
+                ts(INT8, []),  # zp1 (INT8)
+                ts(None, [2, 6]),  # tensor2 (no dtype)
                 ts(FLOAT, []),
                 ts(INT8, []),
             ],
@@ -1272,13 +1241,14 @@ class QLinearConcatFullTest(unittest.TestCase):
 class QLinearWhereTest(unittest.TestCase):
     def test_basic(self):
         actual = run_shape_inference(
-            MSFT, "QLinearWhere",
+            MSFT,
+            "QLinearWhere",
             [
                 ts(ir.DataType.BOOL, [2, 8]),  # condition
-                ts(INT8, [2, 8]),               # X
+                ts(INT8, [2, 8]),  # X
                 ts(FLOAT, []),
                 ts(INT8, []),
-                ts(INT8, [2, 8]),               # Y
+                ts(INT8, [2, 8]),  # Y
                 ts(FLOAT, []),
                 ts(INT8, []),
                 ts(FLOAT, []),
@@ -1291,7 +1261,8 @@ class QLinearWhereTest(unittest.TestCase):
 
     def test_broadcast(self):
         actual = run_shape_inference(
-            MSFT, "QLinearWhere",
+            MSFT,
+            "QLinearWhere",
             [
                 ts(ir.DataType.BOOL, [2, 1]),
                 ts(INT8, [1, 8]),
@@ -1310,13 +1281,14 @@ class QLinearWhereTest(unittest.TestCase):
     def test_dtype_from_zp(self):
         """Dtype falls back to x_zp when X has no dtype."""
         actual = run_shape_inference(
-            MSFT, "QLinearWhere",
+            MSFT,
+            "QLinearWhere",
             [
                 ts(ir.DataType.BOOL, [2, 8]),
-                ts(None, [2, 8]),     # X (no dtype)
+                ts(None, [2, 8]),  # X (no dtype)
                 ts(FLOAT, []),
-                ts(INT8, []),         # x_zp (INT8)
-                ts(None, [2, 8]),     # Y
+                ts(INT8, []),  # x_zp (INT8)
+                ts(None, [2, 8]),  # Y
                 ts(FLOAT, []),
                 ts(INT8, []),
                 ts(FLOAT, []),
@@ -1335,7 +1307,8 @@ class QLinearWhereTest(unittest.TestCase):
 class QOrderedExtendedTest(unittest.TestCase):
     def test_layer_norm(self):
         actual = run_shape_inference(
-            MSFT, "QOrderedLayerNormalization",
+            MSFT,
+            "QOrderedLayerNormalization",
             [ts(INT8, [2, 8, 64])],
             opset_version=1,
         )
@@ -1343,7 +1316,8 @@ class QOrderedExtendedTest(unittest.TestCase):
 
     def test_attention(self):
         actual = run_shape_inference(
-            MSFT, "QOrderedAttention",
+            MSFT,
+            "QOrderedAttention",
             [ts(INT8, [2, 8, 64])],
             opset_version=1,
         )
@@ -1351,7 +1325,8 @@ class QOrderedExtendedTest(unittest.TestCase):
 
     def test_longformer_attention(self):
         actual = run_shape_inference(
-            MSFT, "QOrderedLongformerAttention",
+            MSFT,
+            "QOrderedLongformerAttention",
             [ts(INT8, [2, 8, 64])],
             opset_version=1,
         )
@@ -1366,13 +1341,15 @@ class QOrderedExtendedTest(unittest.TestCase):
 class QEmbedLayerNormTest(unittest.TestCase):
     def test_basic(self):
         actual = run_shape_inference(
-            MSFT, "QEmbedLayerNormalization",
+            MSFT,
+            "QEmbedLayerNormalization",
             [
-                ts(INT32, [2, 8]),     # input_ids
-                None,                  # segment_ids
+                ts(INT32, [2, 8]),  # input_ids
+                None,  # segment_ids
                 ts(FLOAT, [100, 64]),  # word_embedding
             ],
-            opset_version=1, num_outputs=2,
+            opset_version=1,
+            num_outputs=2,
         )
         self.assertEqual(actual[0].shape, ir.Shape([2, 8, 64]))
         self.assertEqual(actual[0].type.dtype, FLOAT)
@@ -1390,7 +1367,8 @@ class QLinearDtypeFallbackTest(unittest.TestCase):
 
     def test_unary_dtype_from_zp(self):
         actual = run_shape_inference(
-            MSFT, "QLinearSigmoid",
+            MSFT,
+            "QLinearSigmoid",
             [ts(None, [2, 8]), ts(FLOAT, []), ts(INT8, []), ts(FLOAT, []), ts(INT8, [])],
             opset_version=1,
         )
@@ -1399,11 +1377,12 @@ class QLinearDtypeFallbackTest(unittest.TestCase):
 
     def test_binary_dtype_from_zp(self):
         actual = run_shape_inference(
-            MSFT, "QLinearAdd",
+            MSFT,
+            "QLinearAdd",
             [
-                ts(None, [2, 8]),   # A (no dtype)
+                ts(None, [2, 8]),  # A (no dtype)
                 ts(FLOAT, []),
-                ts(INT8, []),       # A_zp (INT8)
+                ts(INT8, []),  # A_zp (INT8)
                 ts(None, [2, 8]),
                 ts(FLOAT, []),
                 ts(INT8, []),
@@ -1417,7 +1396,8 @@ class QLinearDtypeFallbackTest(unittest.TestCase):
 
     def test_qordered_matmul_dtype_from_input(self):
         actual = run_shape_inference(
-            MSFT, "QOrderedMatMul",
+            MSFT,
+            "QOrderedMatMul",
             [ts(INT8, [4, 32]), ts(FLOAT, []), ts(INT8, [32, 16])],
             opset_version=1,
         )
@@ -1433,7 +1413,8 @@ class QLinearDtypeFallbackTest(unittest.TestCase):
 class QLinearSoftmaxTest(unittest.TestCase):
     def test_basic(self):
         actual = run_shape_inference(
-            MSFT, "QLinearSoftmax",
+            MSFT,
+            "QLinearSoftmax",
             [ts(INT8, [2, 8]), ts(FLOAT, []), ts(INT8, []), ts(FLOAT, []), ts(INT8, [])],
             opset_version=1,
         )
@@ -1443,7 +1424,8 @@ class QLinearSoftmaxTest(unittest.TestCase):
 class QLinearPoolTest(unittest.TestCase):
     def test_average_pool(self):
         actual = run_shape_inference(
-            MSFT, "QLinearAveragePool",
+            MSFT,
+            "QLinearAveragePool",
             [ts(INT8, [2, 8]), ts(FLOAT, []), ts(INT8, []), ts(FLOAT, []), ts(INT8, [])],
             opset_version=1,
         )
@@ -1451,7 +1433,8 @@ class QLinearPoolTest(unittest.TestCase):
 
     def test_global_average_pool(self):
         actual = run_shape_inference(
-            MSFT, "QLinearGlobalAveragePool",
+            MSFT,
+            "QLinearGlobalAveragePool",
             [ts(INT8, [2, 8]), ts(FLOAT, []), ts(INT8, []), ts(FLOAT, []), ts(INT8, [])],
             opset_version=1,
         )
@@ -1459,7 +1442,8 @@ class QLinearPoolTest(unittest.TestCase):
 
     def test_reduce_mean(self):
         actual = run_shape_inference(
-            MSFT, "QLinearReduceMean",
+            MSFT,
+            "QLinearReduceMean",
             [ts(INT8, [2, 8]), ts(FLOAT, []), ts(INT8, []), ts(FLOAT, []), ts(INT8, [])],
             opset_version=1,
         )
@@ -1475,7 +1459,8 @@ class QAttentionPresentTest(unittest.TestCase):
     def test_non_3d_fallback(self):
         """Non-3D input falls back to passthrough."""
         actual = run_shape_inference(
-            MSFT, "QAttention",
+            MSFT,
+            "QAttention",
             [
                 ts(None, [8, 64]),
                 ts(None, [64, 192]),
@@ -1490,18 +1475,22 @@ class QAttentionPresentTest(unittest.TestCase):
 
     def test_with_past(self):
         actual = run_shape_inference(
-            MSFT, "QAttention",
+            MSFT,
+            "QAttention",
             [
                 ts(None, [2, 8, 64]),
                 ts(None, [64, 192]),
                 ts(FLOAT, [192]),
                 ts(FLOAT, []),
                 ts(FLOAT, []),
-                None, None, None,
+                None,
+                None,
+                None,
                 ts(FLOAT, [2, 2, 4, 10, 16]),  # past
             ],
             attributes={"num_heads": ir.Attr("num_heads", ir.AttributeType.INT, 4)},
-            opset_version=1, num_outputs=2,
+            opset_version=1,
+            num_outputs=2,
         )
         self.assertEqual(actual[0].shape, ir.Shape([2, 8, 64]))
         # present: [2, 2, 4, 18, 16]  (past_seq=10 + cur_seq=8)
@@ -1509,11 +1498,12 @@ class QAttentionPresentTest(unittest.TestCase):
 
 
 class QGemmTransATest(unittest.TestCase):
-    def test_transA(self):
+    def test_trans_a(self):
         actual = run_shape_inference(
-            MSFT, "QGemm",
+            MSFT,
+            "QGemm",
             [
-                ts(None, [32, 4]),   # A (will be transposed)
+                ts(None, [32, 4]),  # A (will be transposed)
                 ts(FLOAT, []),
                 ts(None, []),
                 ts(None, [32, 16]),
@@ -1530,16 +1520,20 @@ class MHAPresentWithPastTest(unittest.TestCase):
     def test_3d_with_past(self):
         """MHA with past key input extends total_seq."""
         actual = run_shape_inference(
-            MSFT, "MultiHeadAttention",
+            MSFT,
+            "MultiHeadAttention",
             [
-                ts(FLOAT, [2, 8, 64]),   # query
+                ts(FLOAT, [2, 8, 64]),  # query
                 ts(FLOAT, [2, 10, 64]),  # key
                 ts(FLOAT, [2, 10, 64]),  # value
-                None, None, None,
+                None,
+                None,
+                None,
                 ts(FLOAT, [2, 4, 5, 16]),  # past_key
             ],
             attributes={"num_heads": ir.Attr("num_heads", ir.AttributeType.INT, 4)},
-            opset_version=1, num_outputs=3,
+            opset_version=1,
+            num_outputs=3,
         )
         # present: total_seq = 5 + 10 = 15
         self.assertEqual(actual[1].shape, ir.Shape([2, 4, 15, 16]))
@@ -1547,9 +1541,11 @@ class MHAPresentWithPastTest(unittest.TestCase):
     def test_no_num_heads(self):
         """MHA without num_heads — no present state set."""
         actual = run_shape_inference(
-            MSFT, "MultiHeadAttention",
+            MSFT,
+            "MultiHeadAttention",
             [ts(FLOAT, [2, 8, 64]), ts(FLOAT, [2, 10, 64]), ts(FLOAT, [2, 10, 64])],
-            opset_version=1, num_outputs=3,
+            opset_version=1,
+            num_outputs=3,
         )
         self.assertIsNone(actual[1].shape)
 
@@ -1558,7 +1554,8 @@ class QLinearConcatSymbolicTest(unittest.TestCase):
     def test_symbolic_dim(self):
         """Symbolic dim in concat axis produces symbolic output."""
         actual = run_shape_inference(
-            MSFT, "QLinearConcat",
+            MSFT,
+            "QLinearConcat",
             [
                 ts(FLOAT, []),
                 ts(INT8, []),
@@ -1577,7 +1574,8 @@ class QLinearConcatSymbolicTest(unittest.TestCase):
     def test_rank_mismatch(self):
         """Different ranks in concat inputs produces symbolic axis dim."""
         actual = run_shape_inference(
-            MSFT, "QLinearConcat",
+            MSFT,
+            "QLinearConcat",
             [
                 ts(FLOAT, []),
                 ts(INT8, []),
