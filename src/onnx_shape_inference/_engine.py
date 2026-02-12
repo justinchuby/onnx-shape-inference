@@ -122,6 +122,22 @@ def _process_graph(
     modified = False
     warned_ops: set[tuple[str, str]] = set()
 
+    # Fix shapes for initializers: the actual tensor shape is ground truth
+    # and takes precedence over any (possibly incorrect) value_info annotation.
+    for value in graph.initializers.values():
+        const = ir.convenience.get_const_tensor(value)
+        if const is not None:
+            true_shape = const.shape
+            if value.shape != true_shape:
+                logger.debug(
+                    "Correcting shape for initializer %s: %s -> %s",
+                    value.name,
+                    value.shape,
+                    true_shape,
+                )
+                value.shape = true_shape
+                modified = True
+
     # Assign unique names to any anonymous (None) dims on graph inputs
     for value in graph.inputs:
         if ctx.name_anonymous_dims(value):
