@@ -50,7 +50,7 @@ jobs:
           pip install -e .
       - name: Run tests
         run: |
-          pytest --cov=src --cov-report=xml --cov-branch --junitxml junit.xml
+          pytest --cov=src/onnx_shape_inference --cov-report=xml --cov-branch --junitxml junit.xml
       - name: Upload coverage reports to Codecov
         uses: codecov/codecov-action@v5
         with:
