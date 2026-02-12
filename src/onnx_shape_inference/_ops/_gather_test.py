@@ -9,7 +9,7 @@ import unittest
 import parameterized
 
 import onnx_ir as ir
-from onnx_ir.shape_inference import OpUsageError
+from onnx_shape_inference import OpUsageError
 from onnx_ir.shape_inference._ops._testing import (
     run_shape_inference,
     run_shape_inference_with_values,
@@ -110,7 +110,7 @@ class GatherTest(unittest.TestCase):
         self.assertIsNone(actual[0].shape)
 
     def test_gather_axis_out_of_range(self):
-        from onnx_ir.shape_inference import ShapeInferenceError
+        from onnx_shape_inference import ShapeInferenceError
 
         with self.assertRaises(ShapeInferenceError):
             run_shape_inference(

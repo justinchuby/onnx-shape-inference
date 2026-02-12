@@ -32,7 +32,7 @@ class OpShapeInferenceRegistry:
 
     Example::
 
-        from onnx_ir.shape_inference import registry
+        from onnx_shape_inference import registry
 
         # Register with decorator
         @registry.register("", "Add", since_version=7)

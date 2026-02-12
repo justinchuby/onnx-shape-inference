@@ -7,7 +7,7 @@ from __future__ import annotations
 import unittest
 
 import onnx_ir as ir
-from onnx_ir.shape_inference import OpUsageError
+from onnx_shape_inference import OpUsageError
 from onnx_ir.shape_inference._ops._testing import (
     const_value,
     run_shape_inference_with_values,

@@ -9,7 +9,7 @@ import unittest
 import parameterized
 
 import onnx_ir as ir
-from onnx_ir.shape_inference import OpUsageError, ShapeInferenceError
+from onnx_shape_inference import OpUsageError, ShapeInferenceError
 from onnx_ir.shape_inference._ops._testing import (
     run_shape_inference,
     run_shape_inference_with_values,
@@ -445,7 +445,7 @@ class QLinearConvTest(unittest.TestCase):
         self.assertIsNone(actual[0].shape)
 
     def test_qlinear_conv_too_few_inputs(self):
-        from onnx_ir.shape_inference import OpUsageError
+        from onnx_shape_inference import OpUsageError
 
         with self.assertRaises(OpUsageError):
             run_shape_inference(

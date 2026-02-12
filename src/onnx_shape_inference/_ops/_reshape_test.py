@@ -9,7 +9,7 @@ import unittest
 import parameterized
 
 import onnx_ir as ir
-from onnx_ir.shape_inference import OpUsageError
+from onnx_shape_inference import OpUsageError
 from onnx_ir.shape_inference._ops._testing import (
     const_value,
     run_shape_inference_with_values,
@@ -157,7 +157,7 @@ class ReshapeTest(unittest.TestCase):
 
     def test_double_neg_one_error(self):
         """Two -1 dims should record an error."""
-        from onnx_ir.shape_inference import ShapeInferenceError
+        from onnx_shape_inference import ShapeInferenceError
 
         data = ir.Value(name="data", shape=ir.Shape([2, 3, 4]), type=ir.TensorType(FLOAT))
         shape_val = const_value([-1, -1])

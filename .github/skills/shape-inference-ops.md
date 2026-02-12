@@ -17,7 +17,7 @@ from __future__ import annotations
 __all__ = ["infer_my_op"]
 
 import onnx_ir as ir
-from onnx_ir.shape_inference import _context, _registry
+from onnx_shape_inference import _context, _registry
 
 
 @_registry.registry.register("", "MyOp", since_version=1)
@@ -33,7 +33,7 @@ In **source files** (`_ops/*.py`), import modules only — not names:
 
 ```python
 # GOOD
-from onnx_ir.shape_inference import _context, _registry
+from onnx_shape_inference import _context, _registry
 
 # BAD
 from onnx_ir.shape_inference._context import check_inputs

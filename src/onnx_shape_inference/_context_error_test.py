@@ -7,7 +7,7 @@ from __future__ import annotations
 import unittest
 
 import onnx_ir as ir
-from onnx_ir.shape_inference import _context
+from onnx_shape_inference import _context
 
 
 class ErrorRecordingTest(unittest.TestCase):

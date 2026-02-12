@@ -9,7 +9,7 @@ symbolic dimension arithmetic and is extensible via a registry system.
 Example::
 
     import onnx_ir as ir
-    from onnx_ir.shape_inference import infer_symbolic_shapes, ShapeMergePolicy
+    from onnx_shape_inference import infer_symbolic_shapes, ShapeMergePolicy
 
     # Load a model
     model = ir.load("model.onnx")
@@ -22,7 +22,7 @@ Example::
 
 Registering custom shape inference::
 
-    from onnx_ir.shape_inference import registry
+    from onnx_shape_inference import registry
 
     @registry.register("com.custom", "MyOp", since_version=1)
     def infer_my_op(ctx, node):
@@ -55,8 +55,8 @@ __all__ = [
     "require_attr",
 ]
 
-from onnx_ir.shape_inference._broadcast import broadcast_shapes
-from onnx_ir.shape_inference._context import (
+from onnx_shape_inference._broadcast import broadcast_shapes
+from onnx_shape_inference._context import (
     OpUsageError,
     ShapeInferenceContext,
     ShapeInferenceError,
@@ -64,8 +64,8 @@ from onnx_ir.shape_inference._context import (
     check_inputs,
     require_attr,
 )
-from onnx_ir.shape_inference._engine import infer_symbolic_shapes
-from onnx_ir.shape_inference._registry import OpShapeInferenceRegistry, registry
+from onnx_shape_inference._engine import infer_symbolic_shapes
+from onnx_shape_inference._registry import OpShapeInferenceRegistry, registry
 
 
 def __set_module() -> None:

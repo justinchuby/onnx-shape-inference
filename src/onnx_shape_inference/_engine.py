@@ -17,7 +17,7 @@ __all__ = [
 import logging
 
 import onnx_ir as ir
-from onnx_ir.shape_inference import _context, _registry
+from onnx_shape_inference import _context, _registry
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +46,7 @@ def infer_symbolic_shapes(
     Example::
 
         import onnx_ir as ir
-        from onnx_ir.shape_inference import infer_symbolic_shapes
+        from onnx_shape_inference import infer_symbolic_shapes
 
         model = ir.load("model.onnx")
         model = infer_symbolic_shapes(model)
@@ -63,7 +63,7 @@ def _infer_symbolic_shapes(
 ) -> bool:
     """Core implementation that returns whether the model was modified."""
     # Import ops to trigger registration
-    from onnx_ir.shape_inference import _ops  # noqa: F401
+    from onnx_shape_inference import _ops  # noqa: F401
 
     ctx = _context.ShapeInferenceContext(model.opset_imports, policy=policy)
 

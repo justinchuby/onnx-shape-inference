@@ -9,7 +9,7 @@ import unittest
 import numpy as np
 
 import onnx_ir as ir
-from onnx_ir.shape_inference import _context, _registry
+from onnx_shape_inference import _context, _registry
 from onnx_ir.shape_inference._ops._testing import const_value, ts
 
 

@@ -15,7 +15,7 @@ import unittest
 import numpy as np
 
 import onnx_ir as ir
-from onnx_ir.shape_inference import infer_symbolic_shapes
+from onnx_shape_inference import infer_symbolic_shapes
 
 
 def _make_model(
