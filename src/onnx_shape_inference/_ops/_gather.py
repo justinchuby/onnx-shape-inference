@@ -1,0 +1,106 @@
+# Copyright (c) ONNX Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+"""Shape inference for Gather operator."""
+
+from __future__ import annotations
+
+__all__ = [
+    "infer_gather",
+    "infer_gather_elements",
+    "infer_gather_nd",
+]
+
+import onnx_ir as ir
+from onnx_ir.shape_inference import _context, _registry
+
+
+@_registry.registry.register("", "Gather", since_version=1)
+def infer_gather(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
+    """Infer shape and dtype for Gather operator.
+
+    output_shape = data_shape[:axis] + indices_shape + data_shape[axis+1:]
+
+    Spec: https://onnx.ai/onnx/operators/onnx__Gather.html
+    """
+    (data, indices) = _context.check_inputs(node, "data", "indices")
+
+    data_shape = data.shape
+    indices_shape = indices.shape
+    output_dtype = data.dtype
+
+    output_shape: ir.Shape | None = None
+    if data_shape is not None and indices_shape is not None:
+        axis_attr = node.attributes.get("axis")
+        axis = axis_attr.as_int() if axis_attr is not None else 0
+
+        rank = data_shape.rank()
+        if axis < 0:
+            axis += rank
+
+        if not 0 <= axis < rank:
+            ctx.record_error(node, f"axis={axis} is out of range for rank {rank}")
+            return
+
+        output_dims: list[int | ir.SymbolicDim] = []
+        output_dims.extend(data_shape[:axis])
+        output_dims.extend(indices_shape.dims)
+        output_dims.extend(data_shape[axis + 1 :])
+        output_shape = ir.Shape(output_dims)
+
+    if len(node.outputs) > 0:
+        ctx.set_shape_and_dtype(node.outputs[0], output_shape, output_dtype)
+
+        # Propagate symbolic_value for gathering from a 1-D shape tensor
+        sym_val = ctx.get_symbolic_value(data)
+        if sym_val is not None:
+            axis_attr = node.attributes.get("axis")
+            axis = axis_attr.as_int() if axis_attr is not None else 0
+            if axis == 0:
+                idx_const = ir.convenience.get_const_tensor(indices)
+                if idx_const is not None:
+                    idx_list = [int(x) for x in idx_const.numpy().flatten()]
+                    n = len(sym_val)
+                    gathered = []
+                    for idx in idx_list:
+                        if -n <= idx < n:
+                            gathered.append(sym_val[idx])
+                    if len(gathered) == len(idx_list):
+                        ctx.set_symbolic_value(node.outputs[0], gathered)
+
+
+@_registry.registry.register("", "GatherElements", since_version=13)
+def infer_gather_elements(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
+    """Infer shape and dtype for GatherElements operator.
+
+    Output shape = indices shape, output dtype = data dtype.
+    """
+    (data, indices) = _context.check_inputs(node, "data", "indices")
+
+    if len(node.outputs) > 0:
+        ctx.set_shape_and_dtype(node.outputs[0], indices.shape, data.dtype)
+
+
+@_registry.registry.register("", "GatherND", since_version=12)
+def infer_gather_nd(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
+    """Infer shape and dtype for GatherND operator.
+
+    Output shape = indices_shape[:batch_dims] + indices_shape[batch_dims:-1]
+                   + data_shape[batch_dims + indices_shape[-1]:].
+    """
+    (data, indices) = _context.check_inputs(node, "data", "indices")
+
+    if len(node.outputs) > 0:
+        output_shape = None
+        if data.shape is not None and indices.shape is not None:
+            batch_dims_attr = node.attributes.get("batch_dims")
+            batch_dims = batch_dims_attr.as_int() if batch_dims_attr is not None else 0
+
+            last_idx_dim = indices.shape[-1]
+            if isinstance(last_idx_dim, int):
+                output_shape = ir.Shape(
+                    [
+                        *indices.shape[:-1],
+                        *data.shape[batch_dims + last_idx_dim :],
+                    ]
+                )
+        ctx.set_shape_and_dtype(node.outputs[0], output_shape, data.dtype)
