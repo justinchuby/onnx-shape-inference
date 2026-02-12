@@ -23,10 +23,9 @@ classifiers = [
   "Programming Language :: Python :: 3.13",
 ]
 dependencies = [
-  "sympy",
+  "sympy>=1.11",
   "numpy",
-  "onnx>=1.19",
-  "onnx-ir @ git+https://github.com/onnx/ir-py.git@main",
+  "onnx-ir>=0.1.16",
   "typing_extensions",
 ]
 
