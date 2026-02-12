@@ -66,9 +66,7 @@ class SymbolicDim(ir.SymbolicDimProtocol, onnx_ir._display.PrettyPrintable):
             self._value = str(value)
             self._expr_cache = value
         else:
-            raise TypeError(
-                f"Expected str, None, or sympy.Expr, got {type(value).__name__}"
-            )
+            raise TypeError(f"Expected str, None, or sympy.Expr, got {type(value).__name__}")
 
     def __eq__(self, other: object) -> bool:
         """Check equality with another SymbolicDim, string, or None."""
@@ -297,7 +295,7 @@ ir.SymbolicDim = SymbolicDim  # Patch the onnx_ir.SymbolicDim to our enhanced ve
 ir._core.SymbolicDim = SymbolicDim
 
 
-def evaluate(self, bindings: Mapping[str, int]) -> ir.Shape:
+def evaluate(self, bindings: Mapping[str, int]) -> ir.Shape:  # noqa: D417
     """Evaluate the shape with concrete values for symbolic dimensions.
 
     Args:
@@ -325,9 +323,7 @@ def evaluate(self, bindings: Mapping[str, int]) -> ir.Shape:
             evaluated = dim.evaluate(bindings)
             result.append(evaluated)
         else:
-            raise TypeError(
-                f"Unexpected dimension type: '{type(dim)}' in shape '{self}'"
-            )
+            raise TypeError(f"Unexpected dimension type: '{type(dim)}' in shape '{self}'")
     return ir.Shape(result, denotations=self._denotations)
 
 
