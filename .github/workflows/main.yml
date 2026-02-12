@@ -23,7 +23,7 @@ jobs:
       uses: justinchuby/lintrunner-action@main
 
   test:
-    name: pytest
+    name: test
     strategy:
       fail-fast: false
       matrix:
