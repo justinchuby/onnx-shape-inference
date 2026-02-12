@@ -24,6 +24,13 @@ logger = logging.getLogger(__name__)
 ShapeInferenceFunc = Callable[["ShapeInferenceContext", "ir.Node"], None]
 
 
+def _normalize_domain(domain: str) -> str:
+    """Normalize domain so that 'ai.onnx' is treated the same as ''."""
+    if domain == "ai.onnx":
+        return ""
+    return domain
+
+
 class OpShapeInferenceRegistry:
     """Registry for operator shape inference functions.
 
@@ -91,7 +98,7 @@ class OpShapeInferenceRegistry:
         """
 
         def decorator(func: ShapeInferenceFunc) -> ShapeInferenceFunc:
-            key = (domain, op_type)
+            key = (_normalize_domain(domain), op_type)
 
             if key not in self._registrations:
                 self._registrations[key] = []
@@ -163,7 +170,7 @@ class OpShapeInferenceRegistry:
 
         Complexity: O(1) after first lookup for a given (domain, op_type).
         """
-        key = (domain, op_type)
+        key = (_normalize_domain(domain), op_type)
 
         # Build cache if not already built
         if key not in self._cache and key in self._registrations:
