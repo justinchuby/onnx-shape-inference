@@ -15,30 +15,33 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v3
-    - name: Set up Python "3.11"
-      uses: actions/setup-python@v3
+    - name: Set up Python "3.13"
+      uses: actions/setup-python@v6
       with:
-        python-version: "3.11"
+        python-version: "3.13"
     - name: Lint with lintrunner
       uses: justinchuby/lintrunner-action@main
 
   test:
-    name: pytest
+    name: test
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest]
-        python_version: ["3.8", "3.9", "3.10", "3.11"]
+        python_version: ["3.9", "3.10", "3.12", "3.13"]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v6
       - name: Setup Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python_version }}
       - name: Install dependencies
         run: |
-          pip install hatch
+          pip install -r requirements/ci/requirements.txt
+          pip install -e .
       - name: Run tests
         run: |
-          hatch run test -v --color=yes
+          pytest --cov=src --cov-report=xml --cov-branch --junitxml junit.xml
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5

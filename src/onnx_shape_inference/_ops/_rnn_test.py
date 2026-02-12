@@ -1,0 +1,160 @@
+# Copyright (c) ONNX Project Contributors
+# SPDX-License-Identifier: Apache-2.0
+"""Unit tests for RNN/GRU/LSTM shape inference."""
+
+from __future__ import annotations
+
+import unittest
+
+import onnx_ir as ir
+import parameterized
+
+from onnx_shape_inference import OpUsageError
+from onnx_shape_inference._ops._testing import (
+    run_shape_inference,
+    run_shape_inference_with_values,
+    ts,
+)
+
+FLOAT = ir.DataType.FLOAT
+
+
+class RNNBasicTest(unittest.TestCase):
+    @parameterized.parameterized.expand(
+        [
+            ("rnn", "RNN", 2, [10, 1, 2, 16], [[1, 2, 16]]),
+            ("gru", "GRU", 2, [10, 1, 2, 16], [[1, 2, 16]]),
+            ("lstm", "LSTM", 3, [10, 1, 2, 16], [[1, 2, 16], [1, 2, 16]]),
+        ]
+    )
+    def test_basic_forward(self, _name, op_type, num_outputs, y_shape, hidden_shapes):
+        attrs = {
+            "hidden_size": ir.Attr("hidden_size", ir.AttributeType.INT, 16),
+        }
+        actual = run_shape_inference(
+            "",
+            op_type,
+            [ts(FLOAT, [10, 2, 8])],
+            attrs,
+            opset_version=21,
+            num_outputs=num_outputs,
+        )
+        self.assertEqual(actual[0], ts(FLOAT, y_shape))
+        for i, hs in enumerate(hidden_shapes):
+            self.assertEqual(actual[i + 1], ts(FLOAT, hs))
+
+    @parameterized.parameterized.expand(
+        [
+            ("rnn", "RNN"),
+            ("gru", "GRU"),
+            ("lstm", "LSTM"),
+        ]
+    )
+    def test_none_input_raises(self, _name, op_type):
+        with self.assertRaises(OpUsageError):
+            run_shape_inference_with_values("", op_type, [None], opset_version=21)
+
+
+class LSTMLayoutTest(unittest.TestCase):
+    def test_lstm_layout_1(self):
+        """LSTM with layout=1 (batch_first): X=[batch, seq, input_size]."""
+        attrs = {
+            "hidden_size": ir.Attr("hidden_size", ir.AttributeType.INT, 16),
+            "layout": ir.Attr("layout", ir.AttributeType.INT, 1),
+        }
+        actual = run_shape_inference(
+            "",
+            "LSTM",
+            [ts(FLOAT, [2, 10, 8])],
+            attrs,
+            opset_version=21,
+            num_outputs=3,
+        )
+        # layout=1: Y=[batch, seq, num_directions, hidden_size]
+        self.assertEqual(actual[0], ts(FLOAT, [2, 10, 1, 16]))
+        # Y_h=[batch, num_directions, hidden_size]
+        self.assertEqual(actual[1], ts(FLOAT, [2, 1, 16]))
+        # Y_c=[batch, num_directions, hidden_size]
+        self.assertEqual(actual[2], ts(FLOAT, [2, 1, 16]))
+
+
+class RNNHiddenSizeRequiredTest(unittest.TestCase):
+    def test_rnn_missing_hidden_size_raises(self):
+        """hidden_size is required per ONNX spec — missing raises OpUsageError."""
+        x_val = ir.Value(name="x", type=ir.TensorType(FLOAT), shape=ir.Shape([10, 2, 8]))
+        w_val = ir.Value(name="w", type=ir.TensorType(FLOAT), shape=ir.Shape([1, 16, 8]))
+        with self.assertRaises(OpUsageError):
+            run_shape_inference_with_values(
+                "",
+                "RNN",
+                [x_val, w_val],
+                opset_version=21,
+                num_outputs=2,
+            )
+
+    def test_lstm_missing_hidden_size_raises(self):
+        """hidden_size is required per ONNX spec — missing raises OpUsageError."""
+        x_val = ir.Value(name="x", type=ir.TensorType(FLOAT), shape=ir.Shape([10, 2, 8]))
+        w_val = ir.Value(name="w", type=ir.TensorType(FLOAT), shape=ir.Shape([1, 64, 8]))
+        with self.assertRaises(OpUsageError):
+            run_shape_inference_with_values(
+                "",
+                "LSTM",
+                [x_val, w_val],
+                opset_version=21,
+                num_outputs=3,
+            )
+
+
+class RNNMissingShapeTest(unittest.TestCase):
+    def test_rnn_missing_x_shape(self):
+        """When x has no shape, outputs get dtype but no shape."""
+        attrs = {
+            "hidden_size": ir.Attr("hidden_size", ir.AttributeType.INT, 16),
+        }
+        actual = run_shape_inference(
+            "",
+            "RNN",
+            [ts(FLOAT)],
+            attrs,
+            opset_version=21,
+            num_outputs=2,
+        )
+        self.assertEqual(actual, [ts(FLOAT), ts(FLOAT)])
+
+    def test_rnn_no_hidden_size_raises(self):
+        """When hidden_size is missing, OpUsageError is raised."""
+        with self.assertRaises(OpUsageError):
+            run_shape_inference(
+                "",
+                "RNN",
+                [ts(FLOAT, [10, 2, 8])],
+                opset_version=21,
+                num_outputs=2,
+            )
+
+
+class RNNSymbolicDimsTest(unittest.TestCase):
+    @parameterized.parameterized.expand(
+        [
+            ("lstm", "LSTM", 16, 3),
+            ("gru", "GRU", 32, 2),
+        ]
+    )
+    def test_symbolic_sequence_length(self, _name, op_type, hidden_size, num_outputs):
+        attrs = {
+            "hidden_size": ir.Attr("hidden_size", ir.AttributeType.INT, hidden_size),
+        }
+        actual = run_shape_inference(
+            "",
+            op_type,
+            [ts(FLOAT, ["S", "B", 10])],
+            attrs,
+            opset_version=21,
+            num_outputs=num_outputs,
+        )
+        self.assertEqual(actual[0], ts(FLOAT, ["S", 1, "B", hidden_size]))
+
+
+if __name__ == "__main__":
+    unittest.main()

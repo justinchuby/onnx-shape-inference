@@ -1,3 +1,4 @@
+# Configuration for lintrunner https://github.com/suo/lintrunner
 merge_base_with = 'main'
 
 [[linter]]
@@ -6,7 +7,9 @@ include_patterns = [
     '**/*.py',
     '**/*.pyi',
 ]
-exclude_patterns = []
+exclude_patterns = [
+    'tests/models/**',
+]
 command = [
     'python',
     '-m',
@@ -14,8 +17,7 @@ command = [
     'run',
     'ruff_linter',
     '--config=pyproject.toml',
-    '--show-disable',
-    '@{{PATHSFILE}}',
+    '@{{PATHSFILE}}'
 ]
 init_command = [
     'python',
@@ -24,25 +26,26 @@ init_command = [
     'run',
     'pip_init',
     '--dry-run={{DRYRUN}}',
-    'ruff==0.0.280',
+    '--requirement=requirements/lintrunner/requirements.txt',
 ]
 is_formatter = true
 
 [[linter]]
-code = 'BLACK-ISORT'
+code = 'RUFF-FORMAT'
 include_patterns = [
     '**/*.py',
 ]
-exclude_patterns = []
+exclude_patterns = [
+    'tests/onnx_backend_test_code/**',
+]
 command = [
     'python',
     '-m',
     'lintrunner_adapters',
     'run',
-    'black_isort_linter',
-    '--fast',
+    'ruff_format_linter',
     '--',
-    '@{{PATHSFILE}}',
+    '@{{PATHSFILE}}'
 ]
 init_command = [
     'python',
@@ -51,22 +54,6 @@ init_command = [
     'run',
     'pip_init',
     '--dry-run={{DRYRUN}}',
-    'black==23.7.0',
-    'isort==5.10.1',
-]
-is_formatter = true
-
-[[linter]]
-code = 'NEWLINE'
-include_patterns = ['**']
-exclude_patterns = []
-command = [
-    'python',
-    '-m',
-    'lintrunner_adapters',
-    'run',
-    'newlines_linter',
-    '--',
-    '@{{PATHSFILE}}',
+    '--requirement=requirements/lintrunner/requirements.txt',
 ]
 is_formatter = true

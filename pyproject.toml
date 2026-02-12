@@ -5,28 +5,28 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "onnx-shape-inference"
 dynamic = ["version"]
-description = 'Symbolic shape inference for ONNX models'
+description = 'Experimental symbolic shape inference for ONNX models'
 readme = "README.md"
 requires-python = ">=3.9"
-license = "MIT"
+license = "Apache-2.0"
 keywords = []
 authors = [
   { name = "Justin Chu", email = "justinchuby@users.noreply.github.com" },
 ]
 classifiers = [
-  "Development Status :: 4 - Beta",
+  "Development Status :: 3 - Alpha",
   "Programming Language :: Python",
-  "Programming Language :: Python :: 3.8",
   "Programming Language :: Python :: 3.9",
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
-  "Programming Language :: Python :: Implementation :: CPython",
-  "Programming Language :: Python :: Implementation :: PyPy",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
 ]
 dependencies = [
   "sympy",
   "numpy",
   "onnx>=1.19",
+  "onnx-ir @ git+https://github.com/onnx/ir-py.git@main",
   "typing_extensions",
 ]
 
