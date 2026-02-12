@@ -8,6 +8,7 @@ Experimental symbolic shape inference for ONNX models. Built on top of [ONNX IR]
 ## Features
 
 - **Symbolic shape inference** — propagates shapes through the graph using SymPy expressions for symbolic dimensions
+- **Shape data propagation** — tracks known element values of shape tensors (e.g. through `Shape → Slice → Concat → Reshape` chains) to resolve concrete output shapes that standard shape inference cannot
 - **Extensible registry** — register custom shape inference functions for custom operators
 - **Merge policies** — choose between strict and permissive shape merging strategies
 
@@ -39,6 +40,37 @@ model = infer_symbolic_shapes(model)
 model = infer_symbolic_shapes(model, policy="strict")
 ```
 
+### Per-node inference
+
+You can run shape inference on individual nodes by using the
+`ShapeInferenceContext` and `registry` directly. This is useful for
+debugging, testing, or integrating into custom graph passes.
+
+```python
+import onnx_ir as ir
+from onnx_shape_inference import ShapeInferenceContext, registry
+
+# Populate the registry with all built-in ops
+registry.collect()
+
+# Create a context with the model's opset imports
+ctx = ShapeInferenceContext(opset_imports={"": 21})
+
+# Look up the inference function for the op
+infer_func = registry.get("", "Relu", version=21)
+
+# Build a node (or get one from an existing graph)
+x = ir.Value(name="x", shape=ir.Shape([2, 3]), type=ir.TensorType(ir.DataType.FLOAT))
+y = ir.Value(name="y")
+node = ir.Node("", "Relu", inputs=[x], outputs=[y])
+
+# Run inference
+infer_func(ctx, node)
+
+print(y.shape)  # [2,3]
+print(y.dtype)  # FLOAT
+```
+
 ### Registering custom operators
 
 ```python
@@ -54,7 +86,7 @@ def infer_my_op(ctx, node):
 ## Development
 
 ```console
-pip install pytest
+pip install pytest parameterized
 pip install -e .
 pytest
 ```

@@ -193,6 +193,22 @@ class OpShapeInferenceRegistry:
         key = (domain, op_type)
         return key in self._registrations and len(self._registrations[key]) > 0
 
+    def collect(self) -> None:
+        """Import all built-in op modules to populate the registry.
+
+        Call this before using :meth:`get` outside of
+        :func:`~onnx_shape_inference.infer_symbolic_shapes` (which calls it
+        automatically).
+
+        Example::
+
+            from onnx_shape_inference import registry
+
+            registry.collect()
+            func = registry.get("", "Relu", version=21)
+        """
+        from onnx_shape_inference import _ops  # noqa: F401
+
     def clear(self) -> None:
         """Clear all registered functions (mainly for testing)."""
         self._registrations.clear()
