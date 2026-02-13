@@ -45,7 +45,7 @@ model = infer_symbolic_shapes(model, policy="strict")
 
 ### Use with onnxscript optimizer
 
-You can use apply symbolic shape inference to the model to help the optimizer discover more optimization opportunities.
+You can run symbolic shape inference on the model to help the optimizer discover more optimization opportunities.
 
 ```py
 import onnx_shape_inference
