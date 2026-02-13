@@ -486,11 +486,19 @@ class ShapeInferenceContext:
         (e.g., shape tensors) so that downstream ops like Reshape can read
         them even when the tensor is not a constant.
 
+        When all elements are concrete integers, the value's ``const_value``
+        is also set so that the tensor is available to downstream consumers
+        that read constants directly.
+
         Args:
             value: The value to annotate.
             data: A list of known element values (int or SymbolicDim).
         """
         self._symbolic_values[value] = data
+
+        # When fully concrete, also store as a constant tensor
+        if all(isinstance(d, int) for d in data) and value.const_value is None:
+            value.const_value = ir.tensor(data, dtype=ir.DataType.INT64, name=value.name)
 
     def get_symbolic_value(
         self,
