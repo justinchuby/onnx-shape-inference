@@ -43,6 +43,26 @@ model = infer_symbolic_shapes(model)
 model = infer_symbolic_shapes(model, policy="strict")
 ```
 
+### Use with onnxscript optimizer
+
+You can run symbolic shape inference on the model to help the optimizer discover more optimization opportunities.
+
+```py
+import onnx_shape_inference
+import onnx_ir as ir
+import onnxscript.optimizer
+
+model = ir.load("model.onnx")
+
+# Provide more shape information with infer_symbolic_shapes
+model = onnx_shape_inference.infer_symbolic_shapes(model)
+
+# onnxscript optimizer can leverage this information to better optimize the model
+onnxscript.optimizer.optimize(model)
+
+ir.save(model, "model_optimized.onnx")
+```
+
 ### Per-node inference
 
 You can run shape inference on individual nodes by using the
