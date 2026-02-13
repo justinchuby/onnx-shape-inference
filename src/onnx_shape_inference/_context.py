@@ -9,6 +9,7 @@ __all__ = [
     "ShapeInferenceContext",
     "ShapeInferenceError",
     "ShapeMergePolicy",
+    "SYM_DATA_KEY",
 ]
 
 import logging
@@ -18,6 +19,8 @@ from typing import Literal
 import onnx_ir as ir
 
 logger = logging.getLogger(__name__)
+
+SYM_DATA_KEY = "pkg.onnx_shape_inference.sym_data"
 
 
 class ShapeInferenceError(ValueError):
@@ -495,7 +498,8 @@ class ShapeInferenceContext:
             data: A list of known element values (int or SymbolicDim).
         """
         self._symbolic_values[value] = data
-        value.metadata_props["pkg.onnx_shape_inference.sym_value"] = (
+        # Call it sym_data because it is always 1d list even for scalars
+        value.metadata_props[SYM_DATA_KEY] = (
             "[" + ",".join(str(x) if isinstance(x, int) else f'"{x}"' for x in data) + "]"
         )
 
