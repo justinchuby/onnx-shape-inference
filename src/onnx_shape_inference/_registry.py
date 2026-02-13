@@ -113,7 +113,7 @@ class OpShapeInferenceRegistry:
 
             logger.debug(
                 "Registered shape inference for %s::%s (since_version=%s)",
-                domain or "ai.onnx",
+                domain,
                 op_type,
                 since_version,
             )

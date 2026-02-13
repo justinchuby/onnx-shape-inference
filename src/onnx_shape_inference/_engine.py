@@ -199,7 +199,7 @@ def _process_graph(
             if key not in warned_ops:
                 logger.warning(
                     "No shape inference registered for %s::%s",
-                    domain or "ai.onnx",
+                    domain,
                     op_type,
                 )
                 warned_ops.add(key)
