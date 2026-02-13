@@ -120,6 +120,7 @@ it directly or use the `SYM_DATA_KEY` constant:
 ```python
 import ast
 import numpy as np
+import onnx_ir as ir
 from onnx_shape_inference import SYM_DATA_KEY
 
 model = infer_symbolic_shapes(model)
