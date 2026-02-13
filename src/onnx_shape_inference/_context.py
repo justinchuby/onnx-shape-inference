@@ -495,6 +495,9 @@ class ShapeInferenceContext:
             data: A list of known element values (int or SymbolicDim).
         """
         self._symbolic_values[value] = data
+        value.metadata_props["pkg.onnx_shape_inference.sym_value"] = (
+            "[" + ",".join(str(x) if isinstance(x, int) else f'"{x}"' for x in data) + "]"
+        )
 
         # When fully concrete, also store as a constant tensor
         if value.shape is None:
