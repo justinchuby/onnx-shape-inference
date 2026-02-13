@@ -43,7 +43,12 @@ def infer_slice(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
     starts = _read_const_ints(node.inputs[1])
     ends = _read_const_ints(node.inputs[2])
 
-    if starts is None or ends is None:
+    # Try symbolic value for ends when not constant
+    ends_sym: list[int | ir.SymbolicDim] | None = None
+    if ends is None:
+        ends_sym = ctx.get_symbolic_value(node.inputs[2])
+
+    if starts is None or (ends is None and ends_sym is None):
         # Dynamic starts/ends — same rank, sliced dims are symbolic
         if len(node.outputs) > 0:
             symbolic_dims: list[int | ir.SymbolicDim] = [
@@ -65,8 +70,17 @@ def infer_slice(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
     if steps is None:
         steps = [1] * len(starts)
 
+    # Use concrete ends or symbolic ends
+    ends_values: list[int] | list[int | ir.SymbolicDim]
+    if ends is not None:
+        ends_values = ends
+    else:
+        assert ends_sym is not None
+        ends_values = ends_sym
+
     output_dims: list[int | ir.SymbolicDim] = list(input_shape.dims)
-    for start, end, axis, step in zip(starts, ends, axes, steps):
+    for i, (start, axis, step) in enumerate(zip(starts, axes, steps)):
+        end = ends_values[i]
         if axis < 0:
             axis += rank
         if not 0 <= axis < rank:
@@ -77,7 +91,14 @@ def infer_slice(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
             ctx.record_error(node, f"Step cannot be 0 for axis {axis}")
             return
 
-        if isinstance(dim, int):
+        if not isinstance(end, int):
+            # Symbolic end: if start=0 and step=1 and end matches input dim,
+            # the slice is a no-op for this axis
+            if start == 0 and step == 1 and end == dim:
+                output_dims[axis] = dim
+            else:
+                output_dims[axis] = ctx.new_symbolic_dim()
+        elif isinstance(dim, int):
             # Clamp start/end to [0, dim] for positive step, [-1, dim-1] for negative
             if step > 0:
                 clamped_start = max(0, min(start if start >= 0 else start + dim, dim))
@@ -91,12 +112,29 @@ def infer_slice(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
             )
             output_dims[axis] = slice_len
         else:
-            # Symbolic dim: if start/end are non-negative and not sentinel
-            # values, we can compute the slice length directly since it
-            # doesn't depend on the actual dimension size, assuming input has at least that many elements.
-            # This is a practical assumption.
+            # Symbolic dim with concrete start/end/step.
+            #
+            # Sentinel values (INT64_MAX, INT64_MIN, INT32_MAX, INT32_MIN) are
+            # used by ONNX Slice to mean "up to the end" or "from the beginning"
+            # depending on the sign of *step*.  When such sentinels appear with
+            # a zero start (forward) or as both start and end (reverse), the
+            # slice covers the entire axis and the output dim equals the input
+            # dim — even when that dim is symbolic.
+            #
+            # For non-sentinel, non-negative start/end we can compute the slice
+            # length directly as ``ceil((end - start) / step)`` because the
+            # result does not depend on the actual (unknown) dimension size.
+            # This assumes the tensor has at least ``end`` elements along the
+            # axis, which is a practical assumption for well-formed models.
             sentinels = {2**63 - 1, -(2**63), 2**31 - 1, -(2**31)}
-            if start >= 0 and end >= 0 and start not in sentinels and end not in sentinels:
+
+            # Full forward slice: start=0, step=1, end=sentinel → same dim
+            if start == 0 and step == 1 and end in sentinels:
+                output_dims[axis] = dim
+            # Full reverse slice: start=sentinel, step=-1, end=negative sentinel
+            elif step == -1 and start in sentinels and end in sentinels:
+                output_dims[axis] = dim
+            elif start >= 0 and end >= 0 and start not in sentinels and end not in sentinels:
                 slice_len = max(0, -(-max(0, end - start) // abs(step)))
                 output_dims[axis] = slice_len
             else:
@@ -108,7 +146,13 @@ def infer_slice(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
 
         # Propagate symbolic_value for 1-D tensors sliced on axis 0
         sym_val = ctx.get_symbolic_value(data)
-        if sym_val is not None and rank == 1 and len(axes) == 1 and axes[0] == 0:
+        if (
+            sym_val is not None
+            and ends is not None
+            and rank == 1
+            and len(axes) == 1
+            and axes[0] == 0
+        ):
             n = len(sym_val)
             s, e, st = starts[0], ends[0], steps[0]
             # Clamp start/end like Python slicing
