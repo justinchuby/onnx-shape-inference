@@ -1,3 +1,8 @@
+---
+name: shape-inference-ops
+description: Guide for implementing and testing shape inference operators in src/onnx_ir/shape_inference/_ops/.
+---
+
 # Shape Inference Op Development Skill
 
 This skill provides guidance for implementing and testing shape inference operators in `src/onnx_ir/shape_inference/_ops/`.

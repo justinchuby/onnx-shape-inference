@@ -1,3 +1,8 @@
+---
+name: debugging-shape-inference
+description: Guide for debugging shape inference errors, particularly "Inferred shape and existing shape differ" from ONNX C++.
+---
+
 # Debugging Shape Inference Errors
 
 ## Diagnosing "Inferred shape and existing shape differ" from ONNX C++
