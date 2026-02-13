@@ -106,6 +106,41 @@ def infer_my_op(ctx, node):
     ctx.set_shape(node.outputs[0], output_shape)
 ```
 
+### Shape data propagation (`pkg.onnx_shape_inference.sym_data`)
+
+Shape inference alone cannot resolve output shapes when ops like `Reshape` consume
+non-constant shape tensors that were computed at runtime (e.g. `Shape → Slice → Concat → Reshape`).
+The **sym_data** feature bridges this gap by tracking the known element values of
+1-D integer tensors as they flow through the graph.
+
+After inference, each value that carries propagated data has a
+`pkg.onnx_shape_inference.sym_data` entry in its `metadata_props`. You can read
+it directly or use the `SYM_DATA_KEY` constant:
+
+```python
+import ast
+import numpy as np
+import onnx_ir as ir
+from onnx_shape_inference import SYM_DATA_KEY
+
+model = infer_symbolic_shapes(model)
+
+for node in model.graph:
+    for value in node.inputs:
+        if SYM_DATA_KEY in value.metadata_props:
+            text = value.metadata_props[SYM_DATA_KEY]  # e.g. '["N",3,768]'
+            elements = ast.literal_eval(text)          # ["N", 3, 768]
+
+            # You can create an ir.Shape from it
+            shape = ir.Shape(elements)
+
+            # Then you can replace this input with a constant value
+```
+
+When all elements are concrete integers the value is also stored as a constant
+tensor, so downstream consumers that read constants directly can access it
+without parsing `metadata_props`.
+
 ## Development
 
 ```console
