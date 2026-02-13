@@ -167,9 +167,7 @@ class SliceTest(unittest.TestCase):
         )
         self.assertEqual(actual, [ts(FLOAT, ["_d0", "_d1"])])
 
-    def _run_with_symbolic_ends(
-        self, input_ts, starts, ends_sym, axes=None, steps=None
-    ):
+    def _run_with_symbolic_ends(self, input_ts, starts, ends_sym, axes=None, steps=None):
         """Run Slice inference with a symbolic (non-constant) ends input."""
         from onnx_shape_inference import _context, _registry
 

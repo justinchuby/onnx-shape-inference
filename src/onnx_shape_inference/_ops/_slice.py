@@ -146,7 +146,13 @@ def infer_slice(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
 
         # Propagate symbolic_value for 1-D tensors sliced on axis 0
         sym_val = ctx.get_symbolic_value(data)
-        if sym_val is not None and ends is not None and rank == 1 and len(axes) == 1 and axes[0] == 0:
+        if (
+            sym_val is not None
+            and ends is not None
+            and rank == 1
+            and len(axes) == 1
+            and axes[0] == 0
+        ):
             n = len(sym_val)
             s, e, st = starts[0], ends[0], steps[0]
             # Clamp start/end like Python slicing
