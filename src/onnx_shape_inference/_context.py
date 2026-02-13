@@ -497,8 +497,24 @@ class ShapeInferenceContext:
         self._symbolic_values[value] = data
 
         # When fully concrete, also store as a constant tensor
-        if all(isinstance(d, int) for d in data) and value.const_value is None:
-            value.const_value = ir.tensor(data, dtype=ir.DataType.INT64, name=value.name)
+        if value.shape is None:
+            logger.debug("Cannot set const_value for %s since shape is unknown", value.name)
+            return
+        if (
+            len(value.shape) <= 1
+            and all(isinstance(d, int) for d in data)
+            and value.const_value is None
+        ):
+            if value.dtype is not None:
+                dtype = value.dtype
+            else:
+                dtype = ir.DataType.INT64
+            if len(value.shape) == 0 and data:
+                data = data[0]
+                logger.debug("Setting const_value for scalar %s to %s", value.name, data)
+            else:
+                logger.debug("Setting const_value for %s to %s", value.name, data)
+            value.const_value = ir.tensor(data, dtype=dtype, name=value.name)
 
     def get_symbolic_value(
         self,
