@@ -25,7 +25,7 @@ def infer_scatter(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
         ctx.set_shape_and_dtype(node.outputs[0], data.shape, data.dtype)
 
 
-@_registry.registry.register("", "ScatterElements", since_version=18)
+@_registry.registry.register("", "ScatterElements", since_version=11)
 def infer_scatter_elements(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
     """Infer shape and dtype for ScatterElements operator."""
     (data, _indices, _updates) = _context.check_inputs(node, "data", "indices", "updates")
@@ -34,7 +34,7 @@ def infer_scatter_elements(ctx: _context.ShapeInferenceContext, node: ir.Node) -
         ctx.set_shape_and_dtype(node.outputs[0], data.shape, data.dtype)
 
 
-@_registry.registry.register("", "ScatterND", since_version=18)
+@_registry.registry.register("", "ScatterND", since_version=11)
 def infer_scatter_nd(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
     """Infer shape and dtype for ScatterND operator."""
     (data, _indices, _updates) = _context.check_inputs(node, "data", "indices", "updates")
