@@ -12,15 +12,9 @@ __all__ = [
 import onnx_ir as ir
 
 from onnx_shape_inference import _context, _registry
+from onnx_shape_inference._ops._utils import normalize_axis
 
 _reg = _registry.registry.register
-
-
-def _normalize_axis(axis: int, rank: int) -> int:
-    """Normalize a potentially negative axis to a non-negative value."""
-    if axis < 0:
-        axis += rank
-    return axis
 
 
 def _read_axes(node: ir.Node) -> list[int] | None:
@@ -87,7 +81,7 @@ def infer_reduce(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
                 if len(axes) == 0:
                     normalized_axes = set(range(rank))
                 else:
-                    normalized_axes = {_normalize_axis(a, rank) for a in axes}
+                    normalized_axes = {normalize_axis(a, rank) for a in axes}
 
                 new_dims: list[int | ir.SymbolicDim] = []
                 for i in range(rank):

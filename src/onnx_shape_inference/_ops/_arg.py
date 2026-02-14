@@ -11,15 +11,9 @@ __all__ = [
 import onnx_ir as ir
 
 from onnx_shape_inference import _context, _registry
+from onnx_shape_inference._ops._utils import normalize_axis
 
 _reg = _registry.registry.register
-
-
-def _normalize_axis(axis: int, rank: int) -> int:
-    """Normalize a potentially negative axis to a non-negative value."""
-    if axis < 0:
-        axis += rank
-    return axis
 
 
 @_reg("", "ArgMax", since_version=13)
@@ -37,7 +31,7 @@ def infer_argmax_argmin(ctx: _context.ShapeInferenceContext, node: ir.Node) -> N
     output_shape: ir.Shape | None = None
     if data.shape is not None:
         rank = data.shape.rank()
-        axis = _normalize_axis(axis, rank)
+        axis = normalize_axis(axis, rank)
 
         new_dims: list[int | ir.SymbolicDim] = []
         for i in range(rank):

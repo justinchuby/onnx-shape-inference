@@ -82,7 +82,5 @@ def infer_tree_ensemble(ctx: _context.ShapeInferenceContext, node: ir.Node) -> N
 
     if batch_dim is not None and n_targets is not None:
         ctx.set_shape_and_dtype(node.outputs[0], ir.Shape([batch_dim, n_targets]), x.dtype)
-    elif n_targets is not None:
-        ctx.set_shape_and_dtype(node.outputs[0], None, x.dtype)
     else:
         ctx.set_shape_and_dtype(node.outputs[0], None, x.dtype)

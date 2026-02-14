@@ -66,22 +66,15 @@ def _compute_pool_output_shape(
     return spatial_dims
 
 
-@_reg("", "AveragePool", since_version=11)
-def infer_average_pool(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
-    """Infer shape and dtype for AveragePool operator."""
-    (x,) = _context.check_inputs(node, "X")
+def _read_pool_attrs(
+    node: ir.Node,
+    n_spatial: int,
+) -> tuple[str, list[int], list[int], int, list[int]]:
+    """Read common pooling attributes.
 
-    output_dtype = x.dtype
-    x_shape = x.shape
-
-    if x_shape is None:
-        ctx.set_shape_and_dtype(node.outputs[0], None, output_dtype)
-        return
-
-    n_spatial = x_shape.rank() - 2
-
-    kernel_shape = list(_context.require_attr(node, "kernel_shape").as_ints())
-
+    Returns:
+        Tuple of (auto_pad, strides, pads, ceil_mode, dilations)
+    """
     auto_pad_attr = node.attributes.get("auto_pad")
     auto_pad = auto_pad_attr.as_string() if auto_pad_attr is not None else "NOTSET"
 
@@ -98,6 +91,25 @@ def infer_average_pool(ctx: _context.ShapeInferenceContext, node: ir.Node) -> No
     dilations = (
         list(dilations_attr.as_ints()) if dilations_attr is not None else [1] * n_spatial
     )
+
+    return auto_pad, strides, pads, ceil_mode, dilations
+
+
+@_reg("", "AveragePool", since_version=11)
+def infer_average_pool(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
+    """Infer shape and dtype for AveragePool operator."""
+    (x,) = _context.check_inputs(node, "X")
+
+    output_dtype = x.dtype
+    x_shape = x.shape
+
+    if x_shape is None:
+        ctx.set_shape_and_dtype(node.outputs[0], None, output_dtype)
+        return
+
+    n_spatial = x_shape.rank() - 2
+    kernel_shape = list(_context.require_attr(node, "kernel_shape").as_ints())
+    auto_pad, strides, pads, ceil_mode, dilations = _read_pool_attrs(node, n_spatial)
 
     spatial_dims = _compute_pool_output_shape(
         ctx, node, x_shape, kernel_shape, strides, pads, dilations, ceil_mode, auto_pad
@@ -122,25 +134,8 @@ def infer_max_pool(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
         return
 
     n_spatial = x_shape.rank() - 2
-
     kernel_shape = list(_context.require_attr(node, "kernel_shape").as_ints())
-
-    auto_pad_attr = node.attributes.get("auto_pad")
-    auto_pad = auto_pad_attr.as_string() if auto_pad_attr is not None else "NOTSET"
-
-    strides_attr = node.attributes.get("strides")
-    strides = list(strides_attr.as_ints()) if strides_attr is not None else [1] * n_spatial
-
-    pads_attr = node.attributes.get("pads")
-    pads = list(pads_attr.as_ints()) if pads_attr is not None else [0] * (2 * n_spatial)
-
-    ceil_mode_attr = node.attributes.get("ceil_mode")
-    ceil_mode = int(ceil_mode_attr.as_int()) if ceil_mode_attr is not None else 0
-
-    dilations_attr = node.attributes.get("dilations")
-    dilations = (
-        list(dilations_attr.as_ints()) if dilations_attr is not None else [1] * n_spatial
-    )
+    auto_pad, strides, pads, ceil_mode, dilations = _read_pool_attrs(node, n_spatial)
 
     spatial_dims = _compute_pool_output_shape(
         ctx, node, x_shape, kernel_shape, strides, pads, dilations, ceil_mode, auto_pad
@@ -166,25 +161,8 @@ def infer_lp_pool(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
         return
 
     n_spatial = x_shape.rank() - 2
-
     kernel_shape = list(_context.require_attr(node, "kernel_shape").as_ints())
-
-    auto_pad_attr = node.attributes.get("auto_pad")
-    auto_pad = auto_pad_attr.as_string() if auto_pad_attr is not None else "NOTSET"
-
-    strides_attr = node.attributes.get("strides")
-    strides = list(strides_attr.as_ints()) if strides_attr is not None else [1] * n_spatial
-
-    pads_attr = node.attributes.get("pads")
-    pads = list(pads_attr.as_ints()) if pads_attr is not None else [0] * (2 * n_spatial)
-
-    ceil_mode_attr = node.attributes.get("ceil_mode")
-    ceil_mode = int(ceil_mode_attr.as_int()) if ceil_mode_attr is not None else 0
-
-    dilations_attr = node.attributes.get("dilations")
-    dilations = (
-        list(dilations_attr.as_ints()) if dilations_attr is not None else [1] * n_spatial
-    )
+    auto_pad, strides, pads, ceil_mode, dilations = _read_pool_attrs(node, n_spatial)
 
     spatial_dims = _compute_pool_output_shape(
         ctx, node, x_shape, kernel_shape, strides, pads, dilations, ceil_mode, auto_pad

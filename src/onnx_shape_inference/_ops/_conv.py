@@ -56,86 +56,14 @@ def infer_conv(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
     """
     (x, w) = _context.check_inputs(node, "X", "W")
 
-    x_shape = x.shape
-    w_shape = w.shape
-    output_dtype = x.dtype
-
-    if x_shape is None or w_shape is None:
-        if len(node.outputs) > 0:
-            ctx.set_shape_and_dtype(node.outputs[0], None, output_dtype)
+    # Validate rank before computing shape
+    if x.shape is not None and x.shape.rank() < 3:
+        ctx.record_error(node, f"Conv input must be at least rank 3, got {x.shape.rank()}")
         return
 
-    x_rank = x_shape.rank()
-    if x_rank < 3:
-        ctx.record_error(node, f"Conv input must be at least rank 3, got {x_rank}")
-        return
-
-    n_spatial = x_rank - 2
-
-    # Read kernel_shape from attribute or weight tensor
-    kernel_shape_attr = node.attributes.get("kernel_shape")
-    if kernel_shape_attr is not None:
-        kernel_shape: list[int | None] = list(kernel_shape_attr.as_ints())
-    elif w_shape.rank() > 2:
-        kernel_shape = [
-            w_shape[i + 2] if isinstance(w_shape[i + 2], int) else None  # type: ignore[misc]
-            for i in range(n_spatial)
-        ]
-    else:
-        if len(node.outputs) > 0:
-            ctx.set_shape_and_dtype(node.outputs[0], None, output_dtype)
-        return
-
-    strides_attr = node.attributes.get("strides")
-    strides = list(strides_attr.as_ints()) if strides_attr is not None else [1] * n_spatial
-
-    dilations_attr = node.attributes.get("dilations")
-    dilations = (
-        list(dilations_attr.as_ints()) if dilations_attr is not None else [1] * n_spatial
-    )
-
-    auto_pad_attr = node.attributes.get("auto_pad")
-    auto_pad = auto_pad_attr.as_string() if auto_pad_attr is not None else "NOTSET"
-
-    pads_attr = node.attributes.get("pads")
-    if auto_pad == "NOTSET":
-        if pads_attr is not None:
-            pads = list(pads_attr.as_ints())
-        else:
-            pads = [0] * (2 * n_spatial)
-    else:
-        pads = None  # Computed from auto_pad
-
-    # Batch dim and output channels
-    batch_dim = x_shape[0]
-    out_channels = w_shape[0]
-
-    # Compute spatial output dims
-    spatial_dims: list[int | ir.SymbolicDim] = []
-    for i in range(n_spatial):
-        in_dim = x_shape[i + 2]
-        k = kernel_shape[i]
-        s = strides[i]
-        d = dilations[i]
-
-        if k is None:
-            spatial_dims.append(ctx.new_symbolic_dim())
-            continue
-
-        if auto_pad in ("SAME_UPPER", "SAME_LOWER"):
-            out_dim = _compute_auto_pad_output_dim(in_dim, s, auto_pad)
-        elif auto_pad == "VALID":
-            out_dim = _compute_conv_output_dim(in_dim, k, s, d, 0, 0)
-        else:
-            # NOTSET — use explicit pads
-            assert pads is not None
-            out_dim = _compute_conv_output_dim(in_dim, k, s, d, pads[i], pads[i + n_spatial])
-        spatial_dims.append(out_dim)
-
-    output_dims: list[int | ir.SymbolicDim] = [batch_dim, out_channels, *spatial_dims]
-    output_shape = ir.Shape(output_dims)
+    output_shape = _compute_conv_shape(ctx, node, x, w)
     if len(node.outputs) > 0:
-        ctx.set_shape_and_dtype(node.outputs[0], output_shape, output_dtype)
+        ctx.set_shape_and_dtype(node.outputs[0], output_shape, x.dtype)
 
 
 def _compute_conv_shape(

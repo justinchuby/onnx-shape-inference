@@ -86,9 +86,6 @@ def infer_conv_transpose(ctx: _context.ShapeInferenceContext, node: ir.Node) -> 
             ctx.set_shape_and_dtype(node.outputs[0], None, output_dtype)
         return
 
-    strides_attr = node.attributes.get("strides")
-    strides = list(strides_attr.as_ints()) if strides_attr is not None else [1] * n_spatial
-
     dilations_attr = node.attributes.get("dilations")
     dilations = (
         list(dilations_attr.as_ints()) if dilations_attr is not None else [1] * n_spatial
