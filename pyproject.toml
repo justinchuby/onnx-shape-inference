@@ -34,6 +34,9 @@ Documentation = "https://github.com/justinchuby/onnx-shape-inference#readme"
 Issues = "https://github.com/justinchuby/onnx-shape-inference/issues"
 Source = "https://github.com/justinchuby/onnx-shape-inference"
 
+[project.scripts]
+onnx-shape-inference = "onnx_shape_inference.__main__:main"
+
 [tool.setuptools.dynamic]
 version = {attr = "onnx_shape_inference.__version__"}
 
