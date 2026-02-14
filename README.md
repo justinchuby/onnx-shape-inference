@@ -27,6 +27,32 @@ Or install from source (main branch):
 pip install git+https://github.com/justinchuby/onnx-shape-inference.git
 ```
 
+## Command line
+
+Run shape inference on a model and see how many new shapes were inferred:
+
+```console
+onnx-shape-inference model.onnx
+```
+
+Save the inferred model to a file:
+
+```console
+onnx-shape-inference model.onnx -o model_inferred.onnx
+```
+
+Overwrite the input model in place:
+
+```console
+onnx-shape-inference model.onnx --in-place
+```
+
+Select a different merge policy:
+
+```console
+onnx-shape-inference model.onnx --policy strict
+```
+
 ## Usage
 
 ```python
