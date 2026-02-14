@@ -4,12 +4,13 @@
 
 from __future__ import annotations
 
+import json
 import unittest
 
 import numpy as np
 import onnx_ir as ir
 
-from onnx_shape_inference import _context, _registry
+from onnx_shape_inference import SYM_DATA_KEY, _context, _registry
 from onnx_shape_inference._ops._testing import const_value, ts
 
 
@@ -597,6 +598,46 @@ class EndToEndPropagationTest(unittest.TestCase):
         result = ctx.get_symbolic_value(v)
         self.assertIsNotNone(result)
         self.assertEqual(result, [3, 4, 5])
+
+
+class SymDataKeyMetadataTest(unittest.TestCase):
+    """Test that SYM_DATA_KEY metadata is stored and can be loaded with json.loads."""
+
+    def test_sym_data_key_with_symbolic_dims(self):
+        """Test SYM_DATA_KEY metadata contains valid JSON with symbolic dimensions."""
+        ctx = _context.ShapeInferenceContext({"": 17})
+        value = _make_value("x", ts(INT64, [4]))
+        ctx.set_symbolic_value(
+            value, [ir.SymbolicDim("N"), 3, ir.SymbolicDim("H"), ir.SymbolicDim("W")]
+        )
+
+        # Verify SYM_DATA_KEY is in metadata
+        self.assertIn(SYM_DATA_KEY, value.metadata_props)
+
+        # Verify the metadata can be loaded with json.loads
+        metadata_text = value.metadata_props[SYM_DATA_KEY]
+        loaded = json.loads(metadata_text)
+
+        # Symbolic dims are stored as strings, concrete values as ints
+        self.assertEqual(loaded, ["N", 3, "H", "W"])
+
+    def test_sym_data_key_with_concrete_values(self):
+        """Test SYM_DATA_KEY metadata contains valid JSON with all concrete values."""
+        ctx = _context.ShapeInferenceContext({"": 17})
+        value = _make_value("x", ts(INT64, [3]))
+        ctx.set_symbolic_value(value, [10, 20, 30])
+
+        # Verify SYM_DATA_KEY is in metadata
+        self.assertIn(SYM_DATA_KEY, value.metadata_props)
+
+        # Verify the metadata can be loaded with json.loads
+        metadata_text = value.metadata_props[SYM_DATA_KEY]
+        loaded = json.loads(metadata_text)
+
+        # All concrete values should be integers
+        self.assertEqual(loaded, [10, 20, 30])
+        for val in loaded:
+            self.assertIsInstance(val, int)
 
 
 if __name__ == "__main__":

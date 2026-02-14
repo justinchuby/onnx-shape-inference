@@ -12,6 +12,7 @@ __all__ = [
     "SYM_DATA_KEY",
 ]
 
+import json
 import logging
 from collections.abc import Mapping, Sequence
 from typing import Literal
@@ -499,8 +500,8 @@ class ShapeInferenceContext:
         """
         self._symbolic_values[value] = data
         # Call it sym_data because it is always 1d list even for scalars
-        value.metadata_props[SYM_DATA_KEY] = (
-            "[" + ",".join(str(x) if isinstance(x, int) else f'"{x}"' for x in data) + "]"
+        value.metadata_props[SYM_DATA_KEY] = json.dumps(
+            [x if isinstance(x, int) else str(x) for x in data]
         )
 
         # When fully concrete, also store as a constant tensor
