@@ -144,10 +144,10 @@ After inference, each value that carries propagated data has a
 it directly or use the `SYM_DATA_KEY` constant:
 
 ```python
-import ast
+import json
 import numpy as np
 import onnx_ir as ir
-from onnx_shape_inference import SYM_DATA_KEY
+from onnx_shape_inference import SYM_DATA_KEY, infer_symbolic_shapes
 
 model = infer_symbolic_shapes(model)
 
@@ -155,7 +155,7 @@ for node in model.graph:
     for value in node.inputs:
         if SYM_DATA_KEY in value.metadata_props:
             text = value.metadata_props[SYM_DATA_KEY]  # e.g. '["N",3,768]'
-            elements = ast.literal_eval(text)          # ["N", 3, 768]
+            elements = json.loads(text)                # ["N", 3, 768]
 
             # You can create an ir.Shape from it
             shape = ir.Shape(elements)
