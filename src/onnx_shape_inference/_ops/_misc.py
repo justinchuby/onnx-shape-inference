@@ -112,8 +112,6 @@ def infer_sequence_map(ctx: _context.ShapeInferenceContext, node: ir.Node) -> No
         body_out_type = body_out.type
         if body_out_type is not None:
             ctx.set_type(output, ir.SequenceType(body_out_type))
-        elif body_out.dtype is not None:
-            ctx.set_type(output, ir.SequenceType(ir.TensorType(body_out.dtype)))
 
 
 @_registry.registry.register("", "EyeLike", since_version=9)
