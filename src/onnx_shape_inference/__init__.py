@@ -57,7 +57,6 @@ __all__ = [
     "SYM_DATA_KEY",
 ]
 
-from onnx_shape_inference import _patch  # noqa: F401
 from onnx_shape_inference._broadcast import broadcast_shapes
 from onnx_shape_inference._context import (
     SYM_DATA_KEY,
