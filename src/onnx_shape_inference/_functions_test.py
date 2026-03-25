@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import os
+import pathlib
 import unittest
 
 import onnx_ir as ir
@@ -338,13 +339,20 @@ class TestFunctionShapeInference(unittest.TestCase):
     # 11. Integration test -------------------------------------------------
     def test_integration_qwen35_2b(self):
         """infer_symbolic_shapes resolves all function-call outputs on qwen3.5-2B."""
-        # Set ONNX_TEST_MODEL env var to point to the integration model file.
-        # This test is skipped in CI if the env var is unset or the file does not exist.
-        model_path = os.environ.get("ONNX_TEST_MODEL")
+        # Resolution order:
+        # 1. ONNX_TEST_MODEL env var (CI / developer override)
+        # 2. testdata/qwen3.5-2B-f16.onnx relative to the repo root
+        # The model is gitignored (*.onnx), so it must be present locally.
+        _repo_root = pathlib.Path(__file__).parent.parent.parent
+        _testdata_model = _repo_root / "testdata" / "qwen3.5-2B-f16.onnx"
+        model_path = os.environ.get("ONNX_TEST_MODEL") or (
+            str(_testdata_model) if _testdata_model.exists() else None
+        )
         if not model_path:
-            self.skipTest("Set ONNX_TEST_MODEL to run this integration test")
-        if not os.path.exists(model_path):
-            self.skipTest(f"Integration model not found: {model_path}")
+            self.skipTest(
+                "Integration model not found. Set ONNX_TEST_MODEL or place the model at "
+                f"{_testdata_model}"
+            )
 
         model = ir.load(model_path)
         infer_symbolic_shapes(model, warn_on_missing=False)
