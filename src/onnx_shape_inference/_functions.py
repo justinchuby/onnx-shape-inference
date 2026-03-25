@@ -18,8 +18,12 @@ from onnx_shape_inference import _context
 logger = logging.getLogger(__name__)
 
 # Per-inference-run cache type alias — only evaluated by type checkers.
-# At runtime the | syntax for union types requires Python 3.10+, so we guard
-# this definition to avoid a TypeError on Python 3.9.
+# This definition uses `ir.Shape | None` etc. at module level (a value assignment,
+# not an annotation). ir.Shape and friends are typing.Protocol subclasses whose
+# metaclass (_ProtocolMeta) does not implement __or__ in Python 3.9, so evaluating
+# `ir.Shape | None` at runtime would raise TypeError. Annotations elsewhere in this
+# file are safe because `from __future__ import annotations` stores them as strings;
+# only this module-level assignment requires the TYPE_CHECKING guard.
 if TYPE_CHECKING:
     _FuncOutputCache = dict[
         tuple, list[tuple[ir.Shape | None, ir.DataType | None, str | None]]
@@ -153,14 +157,16 @@ def _function_binding_scope(
     """Temporarily bind call-site input shapes to the function's formal inputs.
 
     Saves the complete state (shape, dtype, type, const_value, metadata_props)
-    of ALL values in the function body—including nested subgraph values—then
-    clears them all to a blank slate before binding the caller's actual input
-    information to the formal parameters.  On exit—whether normal or
-    exceptional—all values are restored to their pre-call state unconditionally.
+    of ALL values in the function body—including nested subgraph values. Before
+    binding the caller's actual input information to the formal parameters, it
+    clears only the **top-level** body values to a blank slate, leaving any
+    subgraph values intact. On exit—whether normal or exceptional—all saved
+    values are restored to their pre-call state unconditionally.
 
-    The clear-before-bind step is critical: without it, internal body values
-    left over from a previous inference run would appear as if already inferred,
-    causing later callers with different input shapes to see stale (wrong) results.
+    The clear-before-bind step is critical: without it, internal top-level body
+    values left over from a previous inference run would appear as if already
+    inferred, causing later callers with different input shapes to see stale
+    (wrong) results.
 
     Restore order matters: ``v.type`` must be restored *before* ``v.dtype``
     because the dtype setter mutates the current type object in-place when the
@@ -337,9 +343,9 @@ def infer_function_call_output_shapes(
     restored to their original state after each call, ensuring calls are
     independent of one another regardless of call order or input shapes.
 
-    Results are cached per ``(id(function), input_signature)`` within a single
-    inference run so that repeated calls with identical input shapes incur only
-    a single body traversal.
+    Results are cached per ``(id(function), input_signature, attr_signature)``
+    within a single inference run so that repeated calls with identical input
+    shapes and concrete attribute values incur only a single body traversal.
 
     Args:
         ctx: The current shape inference context (parent graph).
@@ -368,6 +374,14 @@ def infer_function_call_output_shapes(
             node,
             f"Function {getattr(f, 'name', '<anonymous>')} expects {expected} input(s) "
             f"but call-site node provides {actual}.",
+        )
+    expected_outputs = len(f.outputs)
+    actual_outputs = len(node.outputs)
+    if actual_outputs != expected_outputs:
+        raise _context.OpUsageError(
+            node,
+            f"Function {getattr(f, 'name', '<anonymous>')} expects {expected_outputs} "
+            f"output(s) but call-site node declares {actual_outputs}.",
         )
 
     if active_functions is None:

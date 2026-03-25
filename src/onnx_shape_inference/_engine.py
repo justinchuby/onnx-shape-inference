@@ -8,7 +8,7 @@ inference, decoupled from the ``ir.passes`` framework so that
 error wrapping.
 """
 
-from __future__ import annotations
+from __future__ import annotations  # makes all annotations lazy strings (Python 3.9 compat)
 
 __all__ = [
     "infer_symbolic_shapes",
