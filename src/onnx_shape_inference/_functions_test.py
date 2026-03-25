@@ -68,6 +68,11 @@ def _single_op_function(
     ``body_attrs`` are attributes on the inner op node (e.g. ``{"to": ...}`` for Cast).
     ``func_attrs`` are the function-level attribute declarations exposed to callers
     (used with ``ir.RefAttr`` substitution); most single-op wrappers don't need them.
+
+    The key distinction: ``func_attrs`` declares the function's *formal attribute
+    parameters* — its public interface as stored on ``ir.Function`` itself — while
+    ``body_attrs`` supplies *actual attribute values* baked directly into the inner
+    body node at construction time.
     """
     f_inputs = [ir.Value(name=f"x{i}") for i in range(n_inputs)]
     node = ir.Node(
