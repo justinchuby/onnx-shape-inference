@@ -9,6 +9,7 @@ __all__ = ["infer_function_call_output_shapes"]
 import contextlib
 import logging
 from collections.abc import Generator, Mapping
+from typing import TYPE_CHECKING
 
 import onnx_ir as ir
 
@@ -16,9 +17,13 @@ from onnx_shape_inference import _context
 
 logger = logging.getLogger(__name__)
 
-# Per-inference-run cache: maps (id(function), input_signature) to a list of
-# (shape, dtype, sym_data) for each function output.
-_FuncOutputCache = dict[tuple, list[tuple[ir.Shape | None, ir.DataType | None, str | None]]]
+# Per-inference-run cache type alias — only evaluated by type checkers.
+# At runtime the | syntax for union types requires Python 3.10+, so we guard
+# this definition to avoid a TypeError on Python 3.9.
+if TYPE_CHECKING:
+    _FuncOutputCache = dict[
+        tuple, list[tuple[ir.Shape | None, ir.DataType | None, str | None]]
+    ]
 
 
 def _collect_all_body_values(f: ir.Function) -> list[ir.Value]:
