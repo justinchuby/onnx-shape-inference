@@ -136,7 +136,9 @@ class TestFunctionShapeInference(unittest.TestCase):
     def test_cast_dtype_propagates(self):
         """A function wrapping Cast propagates the target dtype to the caller output."""
         func = _single_op_function(
-            "test", "MyCast", "Cast",
+            "test",
+            "MyCast",
+            "Cast",
             body_attrs={"to": ir.Attr("to", ir.AttributeType.INT, int(FLOAT))},
         )
         inp = _make_value("x", shape=[2, 5], dtype=FLOAT16)
@@ -148,7 +150,9 @@ class TestFunctionShapeInference(unittest.TestCase):
     def test_transpose_shape_permuted(self):
         """A function wrapping Transpose produces correctly permuted output shape."""
         func = _single_op_function(
-            "test", "MyTranspose", "Transpose",
+            "test",
+            "MyTranspose",
+            "Transpose",
             body_attrs={"perm": ir.Attr("perm", ir.AttributeType.INTS, [2, 0, 1])},
         )
         inp = _make_value("x", shape=[3, 4, 5], dtype=FLOAT)
@@ -176,7 +180,9 @@ class TestFunctionShapeInference(unittest.TestCase):
         inp2 = _make_value("x2", shape=[7, 8], dtype=FLOAT)
         call1 = ir.Node("test", "MyIdentity", inputs=[inp1], outputs=[ir.Value(name="out1")])
         call2 = ir.Node("test", "MyIdentity", inputs=[inp2], outputs=[ir.Value(name="out2")])
-        model = _make_model([call1, call2], [inp1, inp2], call1.outputs + call2.outputs, [func])
+        model = _make_model(
+            [call1, call2], [inp1, inp2], call1.outputs + call2.outputs, [func]
+        )
 
         infer_symbolic_shapes(model, warn_on_missing=False)
 
@@ -191,7 +197,9 @@ class TestFunctionShapeInference(unittest.TestCase):
         inp2 = _make_value("x2", shape=[5, 6], dtype=FLOAT)
         call1 = ir.Node("test", "MyIdentity", inputs=[inp1], outputs=[ir.Value(name="out1")])
         call2 = ir.Node("test", "MyIdentity", inputs=[inp2], outputs=[ir.Value(name="out2")])
-        model = _make_model([call1, call2], [inp1, inp2], call1.outputs + call2.outputs, [func])
+        model = _make_model(
+            [call1, call2], [inp1, inp2], call1.outputs + call2.outputs, [func]
+        )
 
         infer_symbolic_shapes(model, warn_on_missing=False)
 
@@ -206,7 +214,9 @@ class TestFunctionShapeInference(unittest.TestCase):
         func_b = _identity_function(domain="test", name="FuncB")
 
         fa_input = ir.Value(name="a_in")
-        inner_call = ir.Node("test", "FuncB", inputs=[fa_input], outputs=[ir.Value(name="a_out")])
+        inner_call = ir.Node(
+            "test", "FuncB", inputs=[fa_input], outputs=[ir.Value(name="a_out")]
+        )
         func_a_graph = ir.Graph(
             inputs=[fa_input],
             outputs=inner_call.outputs,
@@ -250,7 +260,9 @@ class TestFunctionShapeInference(unittest.TestCase):
     def test_per_function_opset(self):
         """Function with opset_imports={'': 24} dispatches body nodes using opset 24."""
         func = _single_op_function(
-            "test", "Cast24", "Cast",
+            "test",
+            "Cast24",
+            "Cast",
             body_attrs={"to": ir.Attr("to", ir.AttributeType.INT, int(FLOAT))},
             opset=24,
         )
@@ -372,7 +384,9 @@ class TestFunctionShapeInference(unittest.TestCase):
         inp2 = _make_value("x2", shape=[7, 8], dtype=FLOAT)
         call1 = ir.Node("test", "MyIdentity", inputs=[inp1], outputs=[ir.Value(name="out1")])
         call2 = ir.Node("test", "MyIdentity", inputs=[inp2], outputs=[ir.Value(name="out2")])
-        model = _make_model([call1, call2], [inp1, inp2], call1.outputs + call2.outputs, [func])
+        model = _make_model(
+            [call1, call2], [inp1, inp2], call1.outputs + call2.outputs, [func]
+        )
 
         infer_symbolic_shapes(model, warn_on_missing=False)
         shape1, shape2 = call1.outputs[0].shape, call2.outputs[0].shape
