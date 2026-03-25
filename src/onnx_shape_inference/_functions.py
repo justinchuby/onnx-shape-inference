@@ -91,12 +91,12 @@ def _make_input_signature(
     f: ir.Function,
     node: ir.Node,
 ) -> tuple:
-    """Build a hashable cache key from the call-site input shapes and dtypes.
+    """Build a hashable cache key from the call-site input shapes, dtypes, and data.
 
     Used to detect when the same function is called with identical inputs so
     the cached output shapes can be reused.  The key encodes, for each formal
-    input of the function, the dimension tuple of the caller's corresponding
-    input (or ``None`` when shape is unknown) and its dtype.
+    input of the function, the dimension tuple, dtype, sym_data metadata, and
+    a reference id for any constant value of the caller's corresponding input.
 
     Args:
         f: The function being called.
@@ -111,7 +111,37 @@ def _make_input_signature(
             parts.append(None)
         else:
             shape_key = tuple(n_inp.shape.dims) if n_inp.shape is not None else None
-            parts.append((shape_key, n_inp.dtype))
+            sym_data = n_inp.metadata_props.get(_context.SYM_DATA_KEY)
+            const_id = id(n_inp.const_value) if n_inp.const_value is not None else None
+            parts.append((shape_key, n_inp.dtype, sym_data, const_id))
+    return tuple(parts)
+
+
+def _make_attr_signature(node: ir.Node) -> tuple:
+    """Build a hashable key from the call-site node's concrete attribute values.
+
+    Includes only non-RefAttr attributes (RefAttrs are references, not values).
+    Simple scalar/vector attribute values are encoded directly; complex types
+    fall back to ``id(attr)`` to avoid unhashable values.
+
+    Args:
+        node: The call-site node whose attributes to encode.
+
+    Returns:
+        A sorted, hashable tuple of ``(name, value)`` pairs.
+    """
+    parts: list = []
+    for name in sorted(node.attributes):
+        attr = node.attributes[name]
+        if attr.is_ref():
+            continue
+        val = attr.value
+        if isinstance(val, (int, float, str, bytes)):
+            parts.append((name, val))
+        elif isinstance(val, (list, tuple)):
+            parts.append((name, tuple(val)))
+        else:
+            parts.append((name, id(val)))
     return tuple(parts)
 
 
@@ -329,6 +359,17 @@ def infer_function_call_output_shapes(
     if f is None:
         return
 
+    # Validate call-site arity against the function signature up front so that
+    # malformed models fail fast rather than silently producing wrong results.
+    expected = len(f.inputs)
+    actual = len(node.inputs)
+    if actual != expected:
+        raise _context.OpUsageError(
+            node,
+            f"Function {getattr(f, 'name', '<anonymous>')} expects {expected} input(s) "
+            f"but call-site node provides {actual}.",
+        )
+
     if active_functions is None:
         active_functions = frozenset()
 
@@ -340,10 +381,10 @@ def infer_function_call_output_shapes(
         )
         return
 
-    # Cache lookup: same function + same input shapes → reuse results
+    # Cache lookup: same function + same input shapes/data + same attributes → reuse results
     cache_key: tuple | None = None
     if inference_cache is not None:
-        cache_key = (id(f), _make_input_signature(f, node))
+        cache_key = (id(f), _make_input_signature(f, node), _make_attr_signature(node))
         if cache_key in inference_cache:
             cached_outputs = inference_cache[cache_key]
             for n_out, (c_shape, c_dtype, c_sym_data) in zip(node.outputs, cached_outputs):

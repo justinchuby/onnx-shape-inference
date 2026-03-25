@@ -338,12 +338,11 @@ class TestFunctionShapeInference(unittest.TestCase):
     # 11. Integration test -------------------------------------------------
     def test_integration_qwen35_2b(self):
         """infer_symbolic_shapes resolves all function-call outputs on qwen3.5-2B."""
-        # Set ONNX_TEST_MODEL env var or place the model at the default path.
-        # This test is skipped in CI if the file does not exist.
-        model_path = os.environ.get(
-            "ONNX_TEST_MODEL",
-            "/home/justinchu/dev/mobius-human/output/qwen3.5-2B-f16/model.onnx",
-        )
+        # Set ONNX_TEST_MODEL env var to point to the integration model file.
+        # This test is skipped in CI if the env var is unset or the file does not exist.
+        model_path = os.environ.get("ONNX_TEST_MODEL")
+        if not model_path:
+            self.skipTest("Set ONNX_TEST_MODEL to run this integration test")
         if not os.path.exists(model_path):
             self.skipTest(f"Integration model not found: {model_path}")
 
