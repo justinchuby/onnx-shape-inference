@@ -461,6 +461,8 @@ class TestFunctionShapeInference(unittest.TestCase):
 
         self.assertEqual(call1.outputs[0].shape, shape1_run1)
         self.assertEqual(call2.outputs[0].shape, shape2_run1)
+        self.assertEqual(call1.outputs[0].dtype, FLOAT)
+        self.assertEqual(call2.outputs[0].dtype, FLOAT)
         # Caller input dtypes must be unchanged by the second run
         self.assertEqual(inp1.dtype, inp1_dtype_run1, "inp1 dtype was corrupted on second run")
         self.assertEqual(inp2.dtype, inp2_dtype_run1, "inp2 dtype was corrupted on second run")

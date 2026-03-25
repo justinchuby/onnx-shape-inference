@@ -22,17 +22,15 @@ _FuncOutputCache = dict[tuple, list[tuple[ir.Shape | None, ir.DataType | None, s
 
 
 def _collect_all_body_values(f: ir.Function) -> list[ir.Value]:
-    """Collect every ir.Value owned by the function body, including subgraph values.
+    """Collect every :class:`ir.Value` owned by the function body, including subgraph values.
 
     Includes formal input values, all outputs produced by top-level body nodes, and
     all values from nested subgraphs (Scan/Loop/If bodies).  This complete set is
-    required for save/restore: subgraph values mutated by ``_process_graph``
-    during inference must also be restored so that the function body is clean for
-    subsequent calls.
+    required for save/restore so that the function body is clean for subsequent calls.
 
-    Only the top-level values (function inputs + direct body node outputs) are
-    cleared before inference — subgraph values retain their pre-annotated shapes
-    which the subgraph's own inference logic depends on.
+    See Also:
+        :func:`_collect_top_level_body_values` — the companion function that returns
+        only the top-level subset used for the pre-inference clear step.
 
     Args:
         f: The function whose body values to collect.

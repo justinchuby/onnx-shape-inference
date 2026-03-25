@@ -16,10 +16,14 @@ __all__ = [
 
 import logging
 from collections.abc import Mapping
+from typing import TYPE_CHECKING
 
 import onnx_ir as ir
 
 from onnx_shape_inference import _context, _registry
+
+if TYPE_CHECKING:
+    from onnx_shape_inference._functions import _FuncOutputCache
 
 logger = logging.getLogger(__name__)
 
@@ -69,7 +73,7 @@ def _infer_symbolic_shapes(
     ctx = _context.ShapeInferenceContext(model.opset_imports, policy=policy)
     # Per-run cache maps (id(function), input_signature) to output (shape, dtype, sym_data).
     # A new dict per call ensures no stale hits across separate infer_symbolic_shapes calls.
-    inference_cache: dict[tuple, list[tuple]] = {}
+    inference_cache: _FuncOutputCache = {}
 
     return _process_graph(
         ctx,
@@ -126,7 +130,7 @@ def _process_graph(
     warn_on_missing: bool = True,
     model_functions: Mapping[tuple[str, str, str], ir.Function] | None = None,
     active_functions: frozenset[tuple[str, str, str]] | None = None,
-    inference_cache: dict[tuple, list[tuple]] | None = None,
+    inference_cache: _FuncOutputCache | None = None,
 ) -> bool:
     """Process a single graph.
 
