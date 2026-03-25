@@ -63,7 +63,12 @@ def _single_op_function(
     opset: int = 20,
     func_attrs: list[ir.Attr] | None = None,
 ) -> ir.Function:
-    """Build a function wrapping a single ONNX op."""
+    """Build a function wrapping a single ONNX op.
+
+    ``body_attrs`` are attributes on the inner op node (e.g. ``{"to": ...}`` for Cast).
+    ``func_attrs`` are the function-level attribute declarations exposed to callers
+    (used with ``ir.RefAttr`` substitution); most single-op wrappers don't need them.
+    """
     f_inputs = [ir.Value(name=f"x{i}") for i in range(n_inputs)]
     node = ir.Node(
         "",
