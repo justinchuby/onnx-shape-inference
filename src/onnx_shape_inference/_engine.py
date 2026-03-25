@@ -14,9 +14,8 @@ __all__ = [
     "infer_symbolic_shapes",
 ]
 
-import contextlib
 import logging
-from collections.abc import Generator, Mapping
+from collections.abc import Mapping
 
 import onnx_ir as ir
 
@@ -68,7 +67,9 @@ def _infer_symbolic_shapes(
     _registry.registry.collect()
 
     ctx = _context.ShapeInferenceContext(model.opset_imports, policy=policy)
-    inference_cache: dict = {}
+    # Per-run cache maps (id(function), input_signature) to output (shape, dtype, sym_data).
+    # A new dict per call ensures no stale hits across separate infer_symbolic_shapes calls.
+    inference_cache: dict[tuple, list[tuple]] = {}
 
     return _process_graph(
         ctx,
@@ -118,32 +119,6 @@ def _emit_missing_warning(domain: str, op_type: str, warned_ops: set[tuple[str, 
         warned_ops.add(key)
 
 
-@contextlib.contextmanager
-def _resolve_ref_attrs_ctx(
-    node: ir.Node,
-    resolved_attrs: dict[str, ir.Attr],
-) -> Generator[None, None, None]:
-    """Temporarily substitute RefAttr values in a body node's attributes.
-
-    This is the engine-side helper that applies resolved attribute values from
-    a function call context to individual body nodes before their inference
-    functions are called.  It delegates to the implementation in
-    ``_functions._resolve_ref_attrs`` but is defined here to avoid circular
-    imports at module level (``_engine`` is imported lazily from ``_functions``).
-
-    Args:
-        node: The body node whose attributes to patch.
-        resolved_attrs: Resolved attribute values from the function call context.
-
-    Yields:
-        Nothing.
-    """
-    from onnx_shape_inference import _functions
-
-    with _functions._resolve_ref_attrs(node, resolved_attrs):
-        yield
-
-
 def _process_graph(
     ctx: _context.ShapeInferenceContext,
     graph: ir.Graph,
@@ -151,7 +126,7 @@ def _process_graph(
     warn_on_missing: bool = True,
     model_functions: Mapping[tuple[str, str, str], ir.Function] | None = None,
     active_functions: frozenset[tuple[str, str, str]] | None = None,
-    inference_cache: dict | None = None,
+    inference_cache: dict[tuple, list[tuple]] | None = None,
 ) -> bool:
     """Process a single graph.
 
@@ -221,7 +196,8 @@ def _process_graph(
         op_type = node.op_type
         opset_version = ctx.get_opset_version(domain)
 
-        # Name anonymous dims on node inputs before inference
+        # Name anonymous dims on ALL nodes (not just those with registered inference),
+        # so that function-call inference and subgraph inference also see named dims.
         for inp in node.inputs:
             if inp is not None:
                 ctx.name_anonymous_dims(inp)
@@ -239,10 +215,12 @@ def _process_graph(
         if infer_func is not None:
             try:
                 # Resolve RefAttr references before calling the inference function.
-                # This is a no-op for top-level graph nodes (ctx.resolved_attrs is None)
-                # and for body nodes with no reference attributes (fast path).
+                # ctx.resolved_attrs is None for top-level graph nodes (zero overhead).
+                # The any() check avoids the context manager for body nodes without refs.
                 if ctx.resolved_attrs and any(a.is_ref() for a in node.attributes.values()):
-                    with _resolve_ref_attrs_ctx(node, ctx.resolved_attrs):
+                    from onnx_shape_inference import _functions
+
+                    with _functions._resolve_ref_attrs(node, ctx.resolved_attrs):
                         infer_func(ctx, node)
                 else:
                     infer_func(ctx, node)

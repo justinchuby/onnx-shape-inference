@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import unittest
 
@@ -19,6 +20,7 @@ INT64 = ir.DataType.INT64
 # ---------------------------------------------------------------------------
 # Helpers for building minimal models with local functions
 # ---------------------------------------------------------------------------
+
 
 def _make_value(name: str, shape=None, dtype=None) -> ir.Value:
     """Create an ir.Value with optional shape and dtype."""
@@ -68,9 +70,8 @@ def _identity_function(domain: str = "test", name: str = "MyIdentity") -> ir.Fun
 # Test cases
 # ---------------------------------------------------------------------------
 
-class TestFunctionShapeInference(unittest.TestCase):
-    """Shape inference for ONNX local function call nodes."""
 
+class TestFunctionShapeInference(unittest.TestCase):
     # 1. Basic identity wrapper -------------------------------------------
     def test_identity_wrapper(self):
         """Output shape and dtype match the input for an Identity-wrapping function."""
@@ -137,9 +138,7 @@ class TestFunctionShapeInference(unittest.TestCase):
         func = ir.Function("test", "MyTranspose", "", graph=func_graph, attributes=[])
 
         inp = _make_value("input", shape=[3, 4, 5], dtype=FLOAT)
-        call = ir.Node(
-            "test", "MyTranspose", inputs=[inp], outputs=[ir.Value(name="out")]
-        )
+        call = ir.Node("test", "MyTranspose", inputs=[inp], outputs=[ir.Value(name="out")])
         model = _make_model([call], [inp], call.outputs, [func])
 
         infer_symbolic_shapes(model, warn_on_missing=False)
@@ -252,9 +251,7 @@ class TestFunctionShapeInference(unittest.TestCase):
         func = ir.Function("test", "RecursiveFunc", "", graph=func_graph, attributes=[])
 
         inp = _make_value("input", shape=[2, 2], dtype=FLOAT)
-        call = ir.Node(
-            "test", "RecursiveFunc", inputs=[inp], outputs=[ir.Value(name="out")]
-        )
+        call = ir.Node("test", "RecursiveFunc", inputs=[inp], outputs=[ir.Value(name="out")])
         model = _make_model([call], [inp], call.outputs, [func])
 
         # Must not raise; output shape remains None because the recursion is blocked
@@ -335,13 +332,14 @@ class TestFunctionShapeInference(unittest.TestCase):
         out = call.outputs[0]
         # Shape op on [3,4,5] produces a 1-D tensor [3] with sym_data [3,4,5]
         self.assertIn(_context.SYM_DATA_KEY, out.metadata_props)
-        import json
         sym_data = json.loads(out.metadata_props[_context.SYM_DATA_KEY])
         self.assertEqual(sym_data, [3, 4, 5])
 
     # 11. Integration test -------------------------------------------------
     def test_integration_qwen35_2b(self):
         """infer_symbolic_shapes resolves all function-call outputs on qwen3.5-2B."""
+        # Set ONNX_TEST_MODEL env var or place the model at the default path.
+        # This test is skipped in CI if the file does not exist.
         model_path = os.environ.get(
             "ONNX_TEST_MODEL",
             "/home/justinchu/dev/mobius-human/output/qwen3.5-2B-f16/model.onnx",
@@ -352,7 +350,7 @@ class TestFunctionShapeInference(unittest.TestCase):
         model = ir.load(model_path)
         infer_symbolic_shapes(model, warn_on_missing=False)
 
-        func_keys = {(k[0], k[1]) for k in model.functions.keys()}
+        func_keys = {(k[0], k[1]) for k in model.functions}
         unknown = [
             out
             for node in model.graph
@@ -372,6 +370,100 @@ class TestFunctionShapeInference(unittest.TestCase):
             1683,
             f"Expected ≥1683 known shapes, got {known}",
         )
+
+    # 12. RefAttr substitution ---------------------------------------------
+    def test_ref_attr_substitution(self):
+        """A body node with a RefAttr receives the resolved value from the call site."""
+        # Function: Gather(data, indices, axis=@my_axis)
+        # where @my_axis is a RefAttr pointing to function attribute 'my_axis'.
+        # Call site passes my_axis=1; axis=1 should select columns of a [3,4] input.
+        f_data = ir.Value(name="data")
+        f_indices = ir.Value(name="indices")
+
+        gather_node = ir.Node(
+            "",
+            "Gather",
+            inputs=[f_data, f_indices],
+            outputs=[ir.Value(name="gathered")],
+            attributes={
+                "axis": ir.RefAttr("axis", "my_axis", ir.AttributeType.INT),
+            },
+        )
+        func_graph = ir.Graph(
+            inputs=[f_data, f_indices],
+            outputs=gather_node.outputs,
+            nodes=[gather_node],
+            opset_imports={"": 20},
+            name="gather_func_body",
+        )
+        # Function declares 'my_axis' with default 0
+        func = ir.Function(
+            "test",
+            "GatherWithAxis",
+            "",
+            graph=func_graph,
+            attributes=[ir.Attr("my_axis", ir.AttributeType.INT, 0)],
+        )
+
+        # Call site: data=[3,4], indices=[2], my_axis=1
+        # Gather on axis=1: output shape = data[:axis] + indices.shape + data[axis+1:]
+        #                              = [3] + [2] + [] = [3, 2]
+        data_inp = _make_value("data_inp", shape=[3, 4], dtype=FLOAT)
+        indices_inp = _make_value("indices_inp", shape=[2], dtype=INT64)
+        call = ir.Node(
+            "test",
+            "GatherWithAxis",
+            inputs=[data_inp, indices_inp],
+            outputs=[ir.Value(name="out")],
+            attributes={"my_axis": ir.Attr("my_axis", ir.AttributeType.INT, 1)},
+        )
+        graph = ir.Graph(
+            inputs=[data_inp, indices_inp],
+            outputs=call.outputs,
+            nodes=[call],
+            opset_imports={"": 20, "test": 1},
+            name="main",
+        )
+        model = ir.Model(graph, ir_version=10, functions=[func])
+
+        infer_symbolic_shapes(model, warn_on_missing=False)
+
+        out = call.outputs[0]
+        self.assertEqual(out.shape, ir.Shape([3, 2]), f"Expected [3,2], got {out.shape}")
+        self.assertEqual(out.dtype, FLOAT)
+
+    # 13. Double-run idempotency ------------------------------------------
+    def test_double_run_idempotent(self):
+        """Running infer_symbolic_shapes twice on the same model produces identical results.
+
+        Verifies that the type aliasing bug (dtype setter mutating shared TensorType)
+        and the subgraph save/restore are both correct: no caller input dtypes are
+        corrupted on the second pass.
+        """
+        func = _identity_function()
+
+        inp1 = _make_value("input1", shape=[3, 4], dtype=FLOAT)
+        inp2 = _make_value("input2", shape=[7, 8], dtype=FLOAT)
+        call1 = ir.Node("test", "MyIdentity", inputs=[inp1], outputs=[ir.Value(name="out1")])
+        call2 = ir.Node("test", "MyIdentity", inputs=[inp2], outputs=[ir.Value(name="out2")])
+        model = _make_model(
+            [call1, call2], [inp1, inp2], call1.outputs + call2.outputs, [func]
+        )
+
+        infer_symbolic_shapes(model, warn_on_missing=False)
+        shape1_run1 = call1.outputs[0].shape
+        shape2_run1 = call2.outputs[0].shape
+        inp1_dtype_run1 = inp1.dtype
+        inp2_dtype_run1 = inp2.dtype
+
+        # Second run — must not corrupt caller input dtypes
+        infer_symbolic_shapes(model, warn_on_missing=False)
+
+        self.assertEqual(call1.outputs[0].shape, shape1_run1)
+        self.assertEqual(call2.outputs[0].shape, shape2_run1)
+        # Caller input dtypes must be unchanged by the second run
+        self.assertEqual(inp1.dtype, inp1_dtype_run1, "inp1 dtype was corrupted on second run")
+        self.assertEqual(inp2.dtype, inp2_dtype_run1, "inp2 dtype was corrupted on second run")
 
 
 if __name__ == "__main__":

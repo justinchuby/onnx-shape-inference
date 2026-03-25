@@ -16,20 +16,65 @@ from onnx_shape_inference import _context
 
 logger = logging.getLogger(__name__)
 
+# Per-inference-run cache: maps (id(function), input_signature) to a list of
+# (shape, dtype, sym_data) for each function output.
+_FuncOutputCache = dict[tuple, list[tuple[ir.Shape | None, ir.DataType | None, str | None]]]
+
 
 def _collect_all_body_values(f: ir.Function) -> list[ir.Value]:
-    """Collect every ir.Value owned by the function body.
+    """Collect every ir.Value owned by the function body, including subgraph values.
 
-    Includes formal input values and all outputs produced by body nodes.
-    This complete set is needed for the save/restore cycle: every value
-    must be cleared before a fresh inference run so that stale shapes from
-    a previous call cannot corrupt the current one.
+    Includes formal input values, all outputs produced by top-level body nodes, and
+    all values from nested subgraphs (Scan/Loop/If bodies).  This complete set is
+    required for save/restore: subgraph values mutated by ``_process_graph``
+    during inference must also be restored so that the function body is clean for
+    subsequent calls.
+
+    Only the top-level values (function inputs + direct body node outputs) are
+    cleared before inference — subgraph values retain their pre-annotated shapes
+    which the subgraph's own inference logic depends on.
 
     Args:
         f: The function whose body values to collect.
 
     Returns:
         A flat list of all :class:`ir.Value` objects in the function body.
+    """
+    values: list[ir.Value] = list(f.inputs)
+
+    def _collect_from_graph(graph: ir.Graph) -> None:
+        for node in graph:
+            for v in node.outputs:
+                if v is not None:
+                    values.append(v)
+            for attr in node.attributes.values():
+                if isinstance(attr, ir.Attr) and attr.type == ir.AttributeType.GRAPH:
+                    sg = attr.as_graph()
+                    if sg is not None:
+                        # Subgraph inputs (e.g. Scan loop-carried state variables)
+                        # carry shape/dtype that must also be saved and restored.
+                        values.extend(sg.inputs)
+                        _collect_from_graph(sg)
+
+    _collect_from_graph(f.graph)
+    return values
+
+
+def _collect_top_level_body_values(f: ir.Function) -> list[ir.Value]:
+    """Collect only the top-level (non-subgraph) ir.Value objects.
+
+    Returns function formal inputs plus all direct node outputs in the function
+    body.  This is the set that gets *cleared* before binding, so that stale
+    shapes from a previous inference run cannot corrupt the current one.
+
+    Subgraph values (e.g. Scan body inputs with pre-annotated symbolic dims) are
+    excluded — they must retain their annotated shapes for subgraph inference.
+
+    Args:
+        f: The function whose top-level values to collect.
+
+    Returns:
+        A flat list of top-level :class:`ir.Value` objects.
     """
     values: list[ir.Value] = list(f.inputs)
     for node in f:
@@ -75,15 +120,20 @@ def _function_binding_scope(
     """Temporarily bind call-site input shapes to the function's formal inputs.
 
     Saves the complete state (shape, dtype, type, const_value, metadata_props)
-    of ALL values in the function body, then clears them all to a blank slate
-    before binding the caller's actual input information to the formal
-    parameters.  On exit—whether normal or exceptional—all values are restored
-    to their pre-call state unconditionally.
+    of ALL values in the function body—including nested subgraph values—then
+    clears them all to a blank slate before binding the caller's actual input
+    information to the formal parameters.  On exit—whether normal or
+    exceptional—all values are restored to their pre-call state unconditionally.
 
     The clear-before-bind step is critical: without it, internal body values
     left over from a previous inference run would appear as if already inferred,
-    causing later callers with different input shapes to see stale (wrong)
-    results.
+    causing later callers with different input shapes to see stale (wrong) results.
+
+    Restore order matters: ``v.type`` must be restored *before* ``v.dtype``
+    because the dtype setter mutates the current type object in-place when the
+    type is not ``None``.  Restoring type first detaches the shared reference to
+    the caller's ``TensorType`` before any dtype write, preventing corruption of
+    the caller's input dtype.
 
     Args:
         f: The function definition.
@@ -93,20 +143,31 @@ def _function_binding_scope(
         Nothing; the context establishes the binding for the body of the ``with``.
     """
     all_values = _collect_all_body_values(f)
+    top_level_values = _collect_top_level_body_values(f)
 
-    # Save complete state for every body value
+    # Save complete state for EVERY body value (including subgraph values that
+    # inference may mutate as a side-effect of running _process_graph).
     saved: list[
-        tuple[ir.Value, ir.Shape | None, ir.DataType | None, object, object, dict]
+        tuple[
+            ir.Value,
+            ir.Shape | None,
+            ir.DataType | None,
+            ir.TypeProtocol | None,
+            ir.TensorProtocol | None,
+            dict,
+        ]
     ] = [
         (v, v.shape, v.dtype, v.type, v.const_value, dict(v.metadata_props))
         for v in all_values
     ]
 
-    # Step 1: Clear everything — fresh slate for this inference run
-    for v, _, _, _, _, _ in saved:
+    # Step 1: Clear TOP-LEVEL values only — fresh slate for this inference run.
+    # Subgraph values (e.g. Scan body inputs with pre-annotated symbolic shapes)
+    # are intentionally left intact: they are needed by subgraph inference and
+    # will be fully restored in the finally block.
+    for v in top_level_values:
         v.shape = None
-        v.dtype = None
-        v.type = None
+        v.type = None  # clear type first so dtype setter has no object to mutate
         v.const_value = None
         v.metadata_props.clear()
 
@@ -126,11 +187,14 @@ def _function_binding_scope(
     try:
         yield
     finally:
-        # Restore everything unconditionally
+        # Restore everything unconditionally.
+        # Restore v.type FIRST to detach any shared reference to the caller's
+        # TensorType before the dtype write (which would otherwise mutate it).
         for v, shape, dtype, type_, const_value, metadata in saved:
             v.shape = shape
-            v.dtype = dtype
-            v.type = type_
+            v.type = type_  # FIRST: detach from caller's type object
+            if dtype is not None:  # skip to avoid creating a spurious TensorType(None)
+                v.dtype = dtype
             v.const_value = const_value
             v.metadata_props.clear()
             v.metadata_props.update(metadata)
@@ -186,25 +250,30 @@ def _resolve_ref_attrs(
             node.attributes[attr_name] = original
 
 
-def _warn_ref_attrs_present(f: ir.Function, func_key: tuple[str, str, str]) -> None:
-    """Warn once if any body node has an unresolved RefAttr.
+def _warn_unresolved_ref_attrs(
+    f: ir.Function,
+    func_key: tuple[str, str, str],
+    resolved_attrs: dict[str, ir.Attr],
+) -> None:
+    """Warn once if any body node has a RefAttr that could not be resolved.
 
-    When a body node still carries a RefAttr after resolution (i.e.
-    ``resolved_attrs`` didn't cover it), inference for that attribute will
-    see ``None`` and may produce wrong shapes.  This warning surfaces that
-    situation without crashing.
+    A RefAttr is *unresolved* when its ``ref_attr_name`` is absent from
+    *resolved_attrs* (neither the call site nor the function defaults provided
+    a value for it).  In that case, the inference function for that body node
+    will see ``None`` for the attribute and may produce wrong shapes.
 
-    Emits at most one warning per function call to avoid log spam.
+    Emits at most one warning per call to avoid log spam.
 
     Args:
         f: The function to scan.
         func_key: The ``(domain, name, overload)`` triple used in log messages.
+        resolved_attrs: The already-resolved attribute map for this call.
     """
     for node in f:
         for attr_name, attr in node.attributes.items():
-            if attr.is_ref():
+            if attr.is_ref() and attr.ref_attr_name not in resolved_attrs:
                 logger.warning(
-                    "Function %s::%s body node %s has RefAttr '%s' -> '%s'; "
+                    "Function %s::%s body node %s has unresolvable RefAttr '%s' -> '%s'; "
                     "shapes for this function may be incorrect.",
                     func_key[0],
                     func_key[1],
@@ -222,7 +291,7 @@ def infer_function_call_output_shapes(
     *,
     warn_on_missing: bool,
     active_functions: frozenset[tuple[str, str, str]] | None = None,
-    inference_cache: dict | None = None,
+    inference_cache: _FuncOutputCache | None = None,
 ) -> None:
     """Infer output shapes for a node that calls a local ONNX function.
 
@@ -288,15 +357,13 @@ def infer_function_call_output_shapes(
 
     # Build resolved_attrs from function defaults overridden by call-site values.
     # This gives body nodes concrete attribute values to substitute for any RefAttrs.
-    resolved_attrs: dict[str, ir.Attr] = {}
-    for name, attr in f.attributes.items():
-        resolved_attrs[name] = attr
-    for name, attr in node.attributes.items():
-        if not attr.is_ref():
-            resolved_attrs[name] = attr
+    resolved_attrs: dict[str, ir.Attr] = dict(f.attributes.items())
+    resolved_attrs.update(
+        {name: attr for name, attr in node.attributes.items() if not attr.is_ref()}
+    )
 
-    # Warn if any body node still has an unresolved RefAttr
-    _warn_ref_attrs_present(f, func_key)
+    # Warn if any body node has a RefAttr that resolved_attrs cannot cover
+    _warn_unresolved_ref_attrs(f, func_key, resolved_attrs)
 
     # Child context: function's own opset versions so body dispatch is correct
     child_ctx = _context.ShapeInferenceContext(
@@ -319,7 +386,7 @@ def infer_function_call_output_shapes(
         )
 
         # Collect results while still inside the scope (before restore)
-        output_results: list[tuple] = []
+        output_results: list[tuple[ir.Shape | None, ir.DataType | None, str | None]] = []
         for f_out, n_out in zip(f.outputs, node.outputs):
             sym_data = f_out.metadata_props.get(_context.SYM_DATA_KEY)
             output_results.append((f_out.shape, f_out.dtype, sym_data))
