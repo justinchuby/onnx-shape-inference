@@ -71,8 +71,10 @@ def _infer_symbolic_shapes(
     _registry.registry.collect()
 
     ctx = _context.ShapeInferenceContext(model.opset_imports, policy=policy)
-    # Per-run cache maps (id(function), input_signature) to output (shape, dtype, sym_data).
-    # A new dict per call ensures no stale hits across separate infer_symbolic_shapes calls.
+    # Per-run cache maps (id(function), input_signature, attr_signature) to output
+    # (shape, dtype, sym_data): function identity, call-site input shapes/dtypes/sym_data,
+    # and call-site attribute values.  A new dict per call ensures no stale hits across
+    # separate infer_symbolic_shapes calls.
     inference_cache: _FuncOutputCache = {}
 
     return _process_graph(
@@ -144,7 +146,9 @@ def _process_graph(
         active_functions: Set of function keys currently on the call stack,
             used to detect and break recursive function calls.
         inference_cache: Optional per-inference-run cache for function body
-            results, keyed by ``(id(function), input_signature)``.
+            results, keyed by ``(id(function), input_signature, attr_signature)``
+            (function identity, call-site input shapes/dtypes/sym_data, call-site
+            attribute values).
 
     Returns:
         ``True`` if any shapes were modified.
