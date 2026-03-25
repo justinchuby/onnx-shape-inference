@@ -8,7 +8,7 @@ __all__ = ["infer_function_call_output_shapes"]
 
 import contextlib
 import logging
-from collections.abc import Generator, Mapping
+from collections.abc import Callable, Generator, Mapping
 from typing import TYPE_CHECKING
 
 import onnx_ir as ir
@@ -292,6 +292,7 @@ def infer_function_call_output_shapes(
     node: ir.Node,
     model_functions: Mapping[tuple[str, str, str], ir.Function],
     *,
+    process_graph_fn: Callable[..., bool],
     warn_on_missing: bool,
     active_functions: frozenset[tuple[str, str, str]] | None = None,
     inference_cache: _FuncOutputCache | None = None,
@@ -300,7 +301,7 @@ def infer_function_call_output_shapes(
 
     Looks up the function definition in *model_functions*, temporarily binds
     the call-site input shapes to the function's formal inputs, runs
-    ``_process_graph`` on the function body (using a child context with the
+    *process_graph_fn* on the function body (using a child context with the
     function's own opset imports), then copies the inferred output shapes and
     dtypes back to the calling node's outputs.  All function body values are
     restored to their original state after each call, ensuring calls are
@@ -314,6 +315,8 @@ def infer_function_call_output_shapes(
         ctx: The current shape inference context (parent graph).
         node: The node in the parent graph that calls the function.
         model_functions: All local functions registered in the model.
+        process_graph_fn: The ``_process_graph`` callable from ``_engine``,
+            passed in by the caller to avoid a circular import.
         warn_on_missing: Passed through to inner ``_process_graph`` calls.
         active_functions: Functions currently being inferred on the call stack,
             used to detect and break recursive function calls.
@@ -321,10 +324,6 @@ def infer_function_call_output_shapes(
             inference results.  Pass the same dict across all calls within one
             ``infer_symbolic_shapes`` invocation for maximum reuse.
     """
-    # Lazy import to avoid circular dependency: _engine imports _functions,
-    # so _functions cannot import _engine at module level.
-    from onnx_shape_inference import _engine
-
     func_key = (node.domain or "", node.op_type, node.overload or "")
     f = model_functions.get(func_key)
     if f is None:
@@ -379,7 +378,7 @@ def infer_function_call_output_shapes(
     child_ctx._dim_counter = ctx._dim_counter
 
     with _function_binding_scope(f, node):
-        _engine._process_graph(
+        process_graph_fn(
             child_ctx,
             f.graph,
             warn_on_missing=warn_on_missing,

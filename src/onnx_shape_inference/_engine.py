@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING
 
 import onnx_ir as ir
 
-from onnx_shape_inference import _context, _registry
+from onnx_shape_inference import _context, _functions, _registry
 
 if TYPE_CHECKING:
     from onnx_shape_inference._functions import _FuncOutputCache
@@ -222,8 +222,6 @@ def _process_graph(
                 # ctx.resolved_attrs is None for top-level graph nodes (zero overhead).
                 # The any() check avoids the context manager for body nodes without refs.
                 if ctx.resolved_attrs and any(a.is_ref() for a in node.attributes.values()):
-                    from onnx_shape_inference import _functions
-
                     with _functions._resolve_ref_attrs(node, ctx.resolved_attrs):
                         infer_func(ctx, node)
                 else:
@@ -240,12 +238,11 @@ def _process_graph(
         elif model_functions is not None:
             func_key = (domain, op_type, node.overload or "")
             if func_key in model_functions:
-                from onnx_shape_inference import _functions
-
                 _functions.infer_function_call_output_shapes(
                     ctx,
                     node,
                     model_functions,
+                    process_graph_fn=_process_graph,
                     warn_on_missing=warn_on_missing,
                     active_functions=active_functions,
                     inference_cache=inference_cache,
