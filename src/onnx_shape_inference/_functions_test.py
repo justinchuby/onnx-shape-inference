@@ -341,20 +341,17 @@ class TestFunctionShapeInference(unittest.TestCase):
         """infer_symbolic_shapes resolves all function-call outputs on qwen3.5-2B."""
         # Resolution order:
         # 1. ONNX_TEST_MODEL env var (CI / developer override)
-        # 2. testdata/qwen3.5-2B-f16.onnx relative to the repo root
-        # The model is gitignored (*.onnx), so it must be present locally.
+        # 2. testdata/qwen3.5-2B-f16.onnx.pbtxt relative to the repo root
         _repo_root = pathlib.Path(__file__).parent.parent.parent
-        _testdata_model = _repo_root / "testdata" / "qwen3.5-2B-f16.onnx"
-        model_path = os.environ.get("ONNX_TEST_MODEL") or (
-            str(_testdata_model) if _testdata_model.exists() else None
-        )
-        if not model_path:
+        _testdata_model = _repo_root / "testdata" / "qwen3.5-2B-f16.onnx.pbtxt"
+        model_path = pathlib.Path(os.environ.get("ONNX_TEST_MODEL") or _testdata_model)
+        if not model_path.exists():
             self.skipTest(
-                "Integration model not found. Set ONNX_TEST_MODEL or place the model at "
-                f"{_testdata_model}"
+                f"Integration model not found at {model_path}. "
+                "Set ONNX_TEST_MODEL to override."
             )
 
-        model = ir.load(model_path)
+        model = ir.load(str(model_path))
         infer_symbolic_shapes(model, warn_on_missing=False)
 
         func_keys = {(k[0], k[1]) for k in model.functions}
