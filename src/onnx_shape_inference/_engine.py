@@ -14,7 +14,9 @@ __all__ = [
     "infer_symbolic_shapes",
 ]
 
+import contextlib
 import logging
+from collections.abc import Generator, Mapping
 
 import onnx_ir as ir
 
@@ -66,8 +68,15 @@ def _infer_symbolic_shapes(
     _registry.registry.collect()
 
     ctx = _context.ShapeInferenceContext(model.opset_imports, policy=policy)
+    inference_cache: dict = {}
 
-    return _process_graph(ctx, model.graph, warn_on_missing=warn_on_missing)
+    return _process_graph(
+        ctx,
+        model.graph,
+        warn_on_missing=warn_on_missing,
+        model_functions=model.functions,
+        inference_cache=inference_cache,
+    )
 
 
 def _propagate_types_to_subgraph_inputs(
@@ -101,11 +110,48 @@ def _propagate_types_to_subgraph_inputs(
                 ctx.set_shape(body_inp, init_val.shape)
 
 
+def _emit_missing_warning(domain: str, op_type: str, warned_ops: set[tuple[str, str]]) -> None:
+    """Log a warning for an op with no registered shape inference (once per op)."""
+    key = (domain, op_type)
+    if key not in warned_ops:
+        logger.warning("No shape inference registered for %s::%s", domain, op_type)
+        warned_ops.add(key)
+
+
+@contextlib.contextmanager
+def _resolve_ref_attrs_ctx(
+    node: ir.Node,
+    resolved_attrs: dict[str, ir.Attr],
+) -> Generator[None, None, None]:
+    """Temporarily substitute RefAttr values in a body node's attributes.
+
+    This is the engine-side helper that applies resolved attribute values from
+    a function call context to individual body nodes before their inference
+    functions are called.  It delegates to the implementation in
+    ``_functions._resolve_ref_attrs`` but is defined here to avoid circular
+    imports at module level (``_engine`` is imported lazily from ``_functions``).
+
+    Args:
+        node: The body node whose attributes to patch.
+        resolved_attrs: Resolved attribute values from the function call context.
+
+    Yields:
+        Nothing.
+    """
+    from onnx_shape_inference import _functions
+
+    with _functions._resolve_ref_attrs(node, resolved_attrs):
+        yield
+
+
 def _process_graph(
     ctx: _context.ShapeInferenceContext,
     graph: ir.Graph,
     *,
     warn_on_missing: bool = True,
+    model_functions: Mapping[tuple[str, str, str], ir.Function] | None = None,
+    active_functions: frozenset[tuple[str, str, str]] | None = None,
+    inference_cache: dict | None = None,
 ) -> bool:
     """Process a single graph.
 
@@ -114,6 +160,12 @@ def _process_graph(
         graph: The graph to process.
         warn_on_missing: If ``True``, log warnings for ops without
             registered shape inference.
+        model_functions: All local functions defined in the model, used to
+            dispatch function-call nodes that have no registered handler.
+        active_functions: Set of function keys currently on the call stack,
+            used to detect and break recursive function calls.
+        inference_cache: Optional per-inference-run cache for function body
+            results, keyed by ``(id(function), input_signature)``.
 
     Returns:
         ``True`` if any shapes were modified.
@@ -155,36 +207,45 @@ def _process_graph(
             ):
                 subgraph = attr.as_graph()
                 if subgraph is not None:
-                    if _process_graph(ctx, subgraph, warn_on_missing=warn_on_missing):
+                    if _process_graph(
+                        ctx,
+                        subgraph,
+                        warn_on_missing=warn_on_missing,
+                        model_functions=model_functions,
+                        active_functions=active_functions,
+                        inference_cache=inference_cache,
+                    ):
                         modified = True
 
         domain = node.domain or ""
         op_type = node.op_type
         opset_version = ctx.get_opset_version(domain)
 
+        # Name anonymous dims on node inputs before inference
+        for inp in node.inputs:
+            if inp is not None:
+                ctx.name_anonymous_dims(inp)
+
+        # Capture pre-inference output states for change detection.
+        # Must be outside the infer_func block so function-call inference
+        # also triggers the modified flag.
+        old_states: list[tuple[ir.Shape | None, ir.TypeProtocol | None]] = [
+            (out.shape, out.type) for out in node.outputs
+        ]
+
         # Look up shape inference function
         infer_func = _registry.registry.get(domain, op_type, version=opset_version)
 
         if infer_func is not None:
             try:
-                # Name anonymous dims on node inputs before inference
-                for inp in node.inputs:
-                    if inp is not None:
-                        ctx.name_anonymous_dims(inp)
-
-                # Track which outputs had shapes and dtypes before
-                old_states: list[tuple[ir.Shape | None, ir.TypeProtocol | None]] = []
-                for out in node.outputs:
-                    old_states.append((out.shape, out.type))
-
-                # Run inference
-                infer_func(ctx, node)
-
-                # Check if any shapes or dtypes changed
-                for out, (old_shape, old_type) in zip(node.outputs, old_states):
-                    if out.shape != old_shape or out.type != old_type:
-                        modified = True
-
+                # Resolve RefAttr references before calling the inference function.
+                # This is a no-op for top-level graph nodes (ctx.resolved_attrs is None)
+                # and for body nodes with no reference attributes (fast path).
+                if ctx.resolved_attrs and any(a.is_ref() for a in node.attributes.values()):
+                    with _resolve_ref_attrs_ctx(node, ctx.resolved_attrs):
+                        infer_func(ctx, node)
+                else:
+                    infer_func(ctx, node)
             except (_context.OpUsageError, _context.ShapeInferenceError):
                 raise
             except Exception as e:
@@ -194,14 +255,27 @@ def _process_graph(
                     domain=domain,
                     message=f"Shape inference failed for {domain}::{op_type}",
                 ) from e
-        elif warn_on_missing:
-            key = (domain, op_type)
-            if key not in warned_ops:
-                logger.warning(
-                    "No shape inference registered for %s::%s",
-                    domain,
-                    op_type,
+        elif model_functions is not None:
+            func_key = (domain, op_type, node.overload or "")
+            if func_key in model_functions:
+                from onnx_shape_inference import _functions
+
+                _functions.infer_function_call_output_shapes(
+                    ctx,
+                    node,
+                    model_functions,
+                    warn_on_missing=warn_on_missing,
+                    active_functions=active_functions,
+                    inference_cache=inference_cache,
                 )
-                warned_ops.add(key)
+            elif warn_on_missing:
+                _emit_missing_warning(domain, op_type, warned_ops)
+        elif warn_on_missing:
+            _emit_missing_warning(domain, op_type, warned_ops)
+
+        # Check if any output shapes or types changed
+        for out, (old_shape, old_type) in zip(node.outputs, old_states):
+            if out.shape != old_shape or out.type != old_type:
+                modified = True
 
     return modified

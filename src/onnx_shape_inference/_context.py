@@ -185,6 +185,7 @@ class ShapeInferenceContext:
         self,
         opset_imports: Mapping[str, int] | None = None,
         policy: ShapeMergePolicy = "refine",
+        resolved_attrs: dict[str, ir.Attr] | None = None,
     ) -> None:
         """Initialize the shape inference context.
 
@@ -192,9 +193,16 @@ class ShapeInferenceContext:
             opset_imports: Mapping from ONNX domain to opset version
                 (e.g. ``{"": 17}``).  When ``None``, defaults to ``{"": 1}``.
             policy: The shape merge policy to use.
+            resolved_attrs: Resolved attribute values for a function body context.
+                When inferring inside a function body, this maps function-level
+                attribute parameter names to their actual :class:`ir.Attr` values
+                (from the call site or function defaults).  Used to substitute
+                RefAttr references before calling each op's inference function.
+                ``None`` for top-level (non-function) graph inference.
         """
         self.opset_imports: Mapping[str, int] = opset_imports or {"": 1}
         self.policy = policy
+        self.resolved_attrs: dict[str, ir.Attr] | None = resolved_attrs
 
         # Recorded errors from shape inference
         self._errors: list[ShapeInferenceError] = []
