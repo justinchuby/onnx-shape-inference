@@ -367,9 +367,13 @@ def infer_function_call_output_shapes(
 
     # Validate call-site arity against the function signature up front so that
     # malformed models fail fast rather than silently producing wrong results.
+    # Trailing function inputs are optional in ONNX: a call site may omit them
+    # (providing fewer inputs than declared).  This matches the behaviour of the
+    # official ONNX C++ shape inference.  Providing *more* inputs than the
+    # function declares is always an error.
     expected = len(f.inputs)
     actual = len(node.inputs)
-    if actual != expected:
+    if actual > expected:
         raise _context.OpUsageError(
             node,
             f"Function {getattr(f, 'name', '<anonymous>')} expects {expected} input(s) "
