@@ -25,7 +25,7 @@ _reg = _registry.registry.register
 @_reg("", "LpNormalization", since_version=1)
 @_reg("", "Mish", since_version=22)
 @_reg("", "Shrink", since_version=9)
-@_reg("", "Swish", since_version=22)
+@_reg("", "Swish", since_version=24)
 @_reg("", "Trilu", since_version=14)
 @_reg("", "Abs", since_version=6)
 @_reg("", "Acos", since_version=7)
@@ -132,7 +132,7 @@ def infer_prelu(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
 
 
 @_reg("", "CumSum", since_version=14)
-@_reg("", "CumProd", since_version=22)
+@_reg("", "CumProd", since_version=26)
 def infer_cumsum(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
     """Infer shape and dtype for CumSum/CumProd operator.
 

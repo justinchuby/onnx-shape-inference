@@ -132,12 +132,17 @@ def infer_lrn(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
 def infer_dequantize_linear(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
     """Infer shape and dtype for DequantizeLinear operator."""
     (x,) = _context.check_inputs(node, "x")
-    # Output dtype matches the scale's dtype (input[1])
-    output_dtype = ir.DataType.FLOAT
-    if len(node.inputs) > 1 and node.inputs[1] is not None:
-        scale_dtype = node.inputs[1].dtype
-        if scale_dtype is not None:
-            output_dtype = scale_dtype
+    # Check output_dtype attribute first (opset 24+)
+    output_dtype_attr = node.attributes.get("output_dtype")
+    if output_dtype_attr is not None:
+        output_dtype = ir.DataType(output_dtype_attr.as_int())
+    else:
+        # Output dtype matches the scale's dtype (input[1])
+        output_dtype = ir.DataType.FLOAT
+        if len(node.inputs) > 1 and node.inputs[1] is not None:
+            scale_dtype = node.inputs[1].dtype
+            if scale_dtype is not None:
+                output_dtype = scale_dtype
     if len(node.outputs) > 0:
         ctx.set_shape_and_dtype(node.outputs[0], x.shape, output_dtype)
 

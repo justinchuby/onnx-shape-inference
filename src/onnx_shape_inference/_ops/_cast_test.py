@@ -140,5 +140,43 @@ class CastLikeTest(unittest.TestCase):
             )
 
 
+class BitCastTest(unittest.TestCase):
+    @parameterized.parameterized.expand(
+        [
+            ("float_to_int32", FLOAT, [3, 4], ir.DataType.INT32),
+            ("float16_to_int16", FLOAT16, ["batch", 128], ir.DataType.INT16),
+            ("int64_to_double", INT64, [2, 3], ir.DataType.DOUBLE),
+        ]
+    )
+    def test_bitcast(self, _name, src_dtype, shape, target_dtype):
+        actual = run_shape_inference(
+            "",
+            "BitCast",
+            [ts(src_dtype, shape)],
+            {"to": ir.Attr("to", ir.AttributeType.INT, target_dtype)},
+            opset_version=26,
+        )
+        self.assertEqual(actual, [ts(target_dtype, shape)])
+
+    def test_missing_shape(self):
+        actual = run_shape_inference(
+            "",
+            "BitCast",
+            [ts(FLOAT)],
+            {"to": ir.Attr("to", ir.AttributeType.INT, ir.DataType.INT32)},
+            opset_version=26,
+        )
+        self.assertEqual(actual, [ts(ir.DataType.INT32)])
+
+    def test_missing_to_attribute(self):
+        with self.assertRaises(OpUsageError):
+            run_shape_inference(
+                "",
+                "BitCast",
+                [ts(FLOAT, [3])],
+                opset_version=26,
+            )
+
+
 if __name__ == "__main__":
     unittest.main()

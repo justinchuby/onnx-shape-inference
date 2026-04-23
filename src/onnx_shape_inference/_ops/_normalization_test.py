@@ -196,6 +196,42 @@ class DequantizeLinearTest(unittest.TestCase):
         )
         self.assertEqual(actual, [ts(FLOAT, [2, 3])])
 
+    def test_output_dtype_from_scale(self):
+        x = ir.Value(name="x", shape=ir.Shape([3, 4]), type=ir.TensorType(UINT8))
+        x_scale = ir.Value(
+            name="x_scale",
+            shape=ir.Shape([]),
+            type=ir.TensorType(ir.DataType.FLOAT16),
+        )
+        actual = run_shape_inference_with_values(
+            "",
+            "DequantizeLinear",
+            [x, x_scale],
+            opset_version=24,
+        )
+        self.assertEqual(actual, [ts(ir.DataType.FLOAT16, [3, 4])])
+
+    def test_output_dtype_attribute(self):
+        """Test DequantizeLinear with output_dtype attribute (opset 24+)."""
+        x = ir.Value(name="x", shape=ir.Shape([3, 4]), type=ir.TensorType(UINT8))
+        x_scale = ir.Value(
+            name="x_scale",
+            shape=ir.Shape([]),
+            type=ir.TensorType(FLOAT),
+        )
+        actual = run_shape_inference_with_values(
+            "",
+            "DequantizeLinear",
+            [x, x_scale],
+            attributes={
+                "output_dtype": ir.Attr(
+                    "output_dtype", ir.AttributeType.INT, ir.DataType.FLOAT16.value
+                )
+            },
+            opset_version=24,
+        )
+        self.assertEqual(actual, [ts(ir.DataType.FLOAT16, [3, 4])])
+
 
 class QuantizeLinearTest(unittest.TestCase):
     def test_default_uint8(self):
