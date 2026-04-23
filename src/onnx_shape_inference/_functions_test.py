@@ -372,7 +372,37 @@ class TestFunctionShapeInference(unittest.TestCase):
         self.assertEqual(out.shape, ir.Shape([3, 2]), f"Expected [3,2], got {out.shape}")
         self.assertEqual(out.dtype, FLOAT)
 
-    # 13. Double-run idempotency ------------------------------------------
+    # 13. Trailing optional inputs (fewer call-site inputs than function declares) -----
+    def test_trailing_optional_inputs_omitted(self):
+        """Call site may provide fewer inputs than the function declares.
+
+        ONNX allows trailing function inputs to be optional.  The call site
+        omits them (providing fewer inputs); this must not raise an error.
+        The function body uses only the provided inputs, and the output shape
+        must still be inferred correctly.
+        """
+        # Function: Add(x, y, z) → out   (z is unused; only x + y are consumed)
+        f_x = ir.Value(name="x")
+        f_y = ir.Value(name="y")
+        f_z = ir.Value(name="z")  # trailing optional — not used in the body
+        add_node = ir.Node("", "Add", inputs=[f_x, f_y], outputs=[ir.Value(name="out")])
+        func_graph = ir.Graph(
+            inputs=[f_x, f_y, f_z],
+            outputs=add_node.outputs,
+            nodes=[add_node],
+            opset_imports={"": 20},
+            name="myfunc_body",
+        )
+        func = ir.Function("test", "MyFunc", "", graph=func_graph, attributes=[])
+
+        # Call site provides only 2 of the 3 declared inputs
+        x_inp = _make_value("A", shape=[2, 3], dtype=FLOAT)
+        y_inp = _make_value("B", shape=[2, 3], dtype=FLOAT)
+        [out] = _run_function_call(func, [x_inp, y_inp])
+        self.assertEqual(out.shape, ir.Shape([2, 3]))
+        self.assertEqual(out.dtype, FLOAT)
+
+    # 14. Double-run idempotency ------------------------------------------
     def test_double_run_idempotent(self):
         """Running infer_symbolic_shapes twice produces identical results with no dtype corruption.
 
