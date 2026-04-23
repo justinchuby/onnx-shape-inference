@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 __all__ = [
+    "infer_bitcast",
     "infer_cast",
     "infer_cast_like",
 ]
@@ -35,6 +36,24 @@ def infer_cast(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
         sym_val = ctx.get_symbolic_value(data)
         if sym_val is not None:
             ctx.set_symbolic_value(node.outputs[0], sym_val)
+
+
+@_registry.registry.register("", "BitCast", since_version=26)
+def infer_bitcast(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
+    """Infer shape and dtype for BitCast operator.
+
+    Same shape as the input; dtype comes from the ``to`` attribute.
+    The target type must have the same bit-width as the input type.
+
+    Spec: https://onnx.ai/onnx/operators/onnx__BitCast.html
+    """
+    (data,) = _context.check_inputs(node, "input")
+    to_attr = _context.require_attr(node, "to")
+
+    output_dtype = ir.DataType(to_attr.as_int())
+
+    if len(node.outputs) > 0:
+        ctx.set_shape_and_dtype(node.outputs[0], data.shape, output_dtype)
 
 
 @_registry.registry.register("", "CastLike", since_version=15)

@@ -132,7 +132,7 @@ def infer_prelu(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
 
 
 @_reg("", "CumSum", since_version=14)
-@_reg("", "CumProd", since_version=22)
+@_reg("", "CumProd", since_version=26)
 def infer_cumsum(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
     """Infer shape and dtype for CumSum/CumProd operator.
 
