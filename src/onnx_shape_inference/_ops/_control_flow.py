@@ -10,9 +10,13 @@ __all__ = [
     "infer_scan",
 ]
 
+import logging
+
 import onnx_ir as ir
 
 from onnx_shape_inference import _context, _registry
+
+logger = logging.getLogger(__name__)
 
 
 def _merge_shapes(
@@ -21,7 +25,7 @@ def _merge_shapes(
     shape1: ir.Shape,
     shape2: ir.Shape,
     output_idx: int,
-) -> ir.Shape:
+) -> ir.Shape | None:
     """Merge two shapes from If branches into a compatible output shape.
 
     For each dimension pair:
@@ -29,15 +33,22 @@ def _merge_shapes(
     - Otherwise (different concrete, different symbolic, mixed), create a new
       symbolic dim.
 
-    Raises:
-        OpUsageError: If ranks differ.
+    When the two branches produce **different ranks**, the merged shape is
+    unknown: ``None`` is returned (and the caller leaves the output shape
+    unset).  This matches ONNX's reference shape inference, which tolerates
+    branch rank mismatches rather than failing — some legitimate models (e.g.
+    the ``AffineGrid`` function decomposition) have an ``If`` whose branches
+    emit a scalar in one arm and a rank-1 tensor in the other.
     """
     if shape1.rank() != shape2.rank():
-        raise _context.OpUsageError(
-            node,
-            f"If output {output_idx}: rank mismatch between branches: "
-            f"then={shape1.rank()}, else={shape2.rank()}",
+        logger.debug(
+            "If output %d: rank mismatch between branches (then=%s, else=%s); "
+            "leaving shape unknown",
+            output_idx,
+            shape1.rank(),
+            shape2.rank(),
         )
+        return None
 
     result_dims: list[int | ir.SymbolicDim] = []
     for d1, d2 in zip(shape1.dims, shape2.dims):

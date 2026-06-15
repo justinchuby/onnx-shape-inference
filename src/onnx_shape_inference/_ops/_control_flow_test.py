@@ -48,11 +48,16 @@ class MergeShapesTest(unittest.TestCase):
         self.assertEqual(s[0], 2)
         self.assertIsInstance(s[1], ir.SymbolicDim)
 
-    def test_different_ranks_raises(self):
-        with self.assertRaises(OpUsageError):
-            _merge_shapes(
-                _make_ctx(), self._dummy_node(), ir.Shape([2, 3]), ir.Shape([2, 3, 4]), 0
-            )
+    def test_different_ranks_returns_none(self):
+        """Rank mismatch yields an unknown shape (None) instead of raising.
+
+        Matches ONNX: some valid models have an If with a scalar in one branch
+        and a rank-1 tensor in the other.
+        """
+        s = _merge_shapes(
+            _make_ctx(), self._dummy_node(), ir.Shape([2, 3]), ir.Shape([2, 3, 4]), 0
+        )
+        self.assertIsNone(s)
 
     def test_symbolic_same_name(self):
         s = _merge_shapes(
@@ -128,10 +133,15 @@ class IfShapeInferenceTest(unittest.TestCase):
         self.assertEqual(out.shape[0], 2)
         self.assertIsInstance(out.shape[1], ir.SymbolicDim)
 
-    def test_different_ranks_raises(self):
-        """Rank mismatch between branches raises."""
-        with self.assertRaises(OpUsageError):
-            self._run_if(ir.Shape([2, 3]), ir.Shape([2, 3, 4]))
+    def test_different_ranks_unknown_shape(self):
+        """Rank mismatch between branches yields an unknown shape (not an error).
+
+        Mirrors ONNX reference shape inference, which tolerates branch rank
+        mismatches.  The dtype is still propagated.
+        """
+        out = self._run_if(ir.Shape([2, 3]), ir.Shape([2, 3, 4]))
+        self.assertIsNone(out.shape)
+        self.assertEqual(out.dtype, ir.DataType.FLOAT)
 
     def test_one_branch_none_shape(self):
         out = self._run_if(ir.Shape([2, 3]), None)
