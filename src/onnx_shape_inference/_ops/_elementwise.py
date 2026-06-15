@@ -22,6 +22,31 @@ _reg = _registry.registry.register
 _BinOp = Callable[[object, object], object]
 
 
+def _broadcast_symbolic_values(
+    op_func: _BinOp,
+    val_a: list[int | ir.SymbolicDim] | None,
+    val_b: list[int | ir.SymbolicDim] | None,
+) -> list[int | ir.SymbolicDim] | None:
+    """Apply ``op_func`` element-wise over two 1-D symbolic value lists.
+
+    Mirrors NumPy broadcasting of two 1-D shape tensors: a length-1 operand is
+    repeated to match the other.  Returns ``None`` (no propagation) when either
+    operand is missing or the lengths are incompatible (both > 1 and unequal).
+    """
+    if val_a is None or val_b is None:
+        return None
+    la, lb = len(val_a), len(val_b)
+    if la == lb:
+        pairs = zip(val_a, val_b)
+    elif la == 1:
+        pairs = ((val_a[0], b) for b in val_b)
+    elif lb == 1:
+        pairs = ((a, val_b[0]) for a in val_a)
+    else:
+        return None
+    return [op_func(a, b) for a, b in pairs]  # type: ignore[misc]
+
+
 def infer_binary_elementwise(
     ctx: _context.ShapeInferenceContext,
     node: ir.Node,
@@ -72,11 +97,9 @@ def _infer_arithmetic(ctx: _context.ShapeInferenceContext, node: ir.Node) -> Non
     if op_func is not None and len(node.outputs) > 0:
         val_a = ctx.get_symbolic_value(node.inputs[0])  # type: ignore[arg-type]
         val_b = ctx.get_symbolic_value(node.inputs[1])  # type: ignore[arg-type]
-        if val_a is not None and val_b is not None and len(val_a) == len(val_b):
-            ctx.set_symbolic_value(
-                node.outputs[0],
-                [op_func(a, b) for a, b in zip(val_a, val_b)],  # type: ignore[misc]
-            )
+        result = _broadcast_symbolic_values(op_func, val_a, val_b)
+        if result is not None:
+            ctx.set_symbolic_value(node.outputs[0], result)
 
 
 # --- Comparison ops (output dtype = BOOL) ---

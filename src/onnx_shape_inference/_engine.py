@@ -86,6 +86,45 @@ def _infer_symbolic_shapes(
     )
 
 
+def _refine_body_input(
+    ctx: _context.ShapeInferenceContext,
+    body_inp: ir.Value,
+    actual_shape: ir.Shape | None,
+    actual_dtype: ir.DataType | None,
+) -> None:
+    """Push an actual input's dtype/shape onto a subgraph formal input.
+
+    The subgraph's declared ``value_info`` is advisory; the real type comes
+    from the actual value bound at the call site.  Concrete dims from the
+    actual input therefore take precedence over symbolic dims declared on the
+    body input, while symbolic body dims are kept where the actual dim is
+    unknown.
+    """
+    if actual_dtype is not None and body_inp.dtype is None:
+        ctx.set_dtype(body_inp, actual_dtype)
+
+    if actual_shape is None:
+        return
+    body_shape = body_inp.shape
+    if body_shape is None or body_shape.rank() != actual_shape.rank():
+        ctx.set_shape(body_inp, actual_shape)
+        return
+
+    merged: list[int | ir.SymbolicDim] = []
+    for body_dim, actual_dim in zip(body_shape.dims, actual_shape.dims):
+        # Prefer a concrete dim from the actual input; otherwise keep whichever
+        # side carries a named/concrete value.
+        if isinstance(actual_dim, int):
+            merged.append(actual_dim)
+        elif isinstance(body_dim, int):
+            merged.append(body_dim)
+        elif isinstance(body_dim, ir.SymbolicDim) and body_dim.value is not None:
+            merged.append(body_dim)
+        else:
+            merged.append(actual_dim)
+    ctx.set_shape(body_inp, ir.Shape(merged))
+
+
 def _propagate_types_to_subgraph_inputs(
     ctx: _context.ShapeInferenceContext, node: ir.Node
 ) -> None:
@@ -95,6 +134,12 @@ def _propagate_types_to_subgraph_inputs(
     types from the corresponding node inputs ``[max_trip_count, cond,
     v_init_0, ..., v_init_N]``, so that the body graph can be inferred with
     correct type information.
+
+    Scan body inputs ``[state_0, ..., scan_slice_0, ...]`` get the state
+    initializer shapes directly and the scan-input shapes with the scanned
+    axis removed, so concrete state dims (e.g. from a zeros initializer)
+    propagate into the body instead of leaving the body's declared symbolic
+    dims in place.
     """
     if (node.domain or "") != "":
         return
@@ -115,6 +160,54 @@ def _propagate_types_to_subgraph_inputs(
                 ctx.set_dtype(body_inp, init_val.dtype)
             if init_val is not None and body_inp.shape is None and init_val.shape is not None:
                 ctx.set_shape(body_inp, init_val.shape)
+    elif node.op_type == "Scan":
+        _propagate_types_to_scan_body(ctx, node)
+
+
+def _propagate_types_to_scan_body(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
+    """Bind Scan node input shapes onto the body's formal inputs."""
+    body_attr = node.attributes.get("body")
+    if body_attr is None:
+        return
+    body_graph = body_attr.as_graph()
+    if body_graph is None:
+        return
+
+    num_scan_attr = node.attributes.get("num_scan_inputs")
+    if num_scan_attr is None:
+        return
+    num_scan_inputs = num_scan_attr.as_int()
+    num_state = len(node.inputs) - num_scan_inputs
+    if num_state < 0:
+        return
+
+    scan_input_axes_attr = node.attributes.get("scan_input_axes")
+    input_axes = (
+        list(scan_input_axes_attr.as_ints()) if scan_input_axes_attr is not None else []
+    )
+
+    for j in range(min(len(node.inputs), len(body_graph.inputs))):
+        actual = node.inputs[j]
+        if actual is None:
+            continue
+        body_inp = body_graph.inputs[j]
+        if j < num_state:
+            _refine_body_input(ctx, body_inp, actual.shape, actual.dtype)
+        else:
+            # Scan slice: drop the scanned axis from the input shape.
+            sliced: ir.Shape | None = None
+            if actual.shape is not None and actual.shape.rank() is not None:
+                idx = j - num_state
+                axis = input_axes[idx] if idx < len(input_axes) else 0
+                rank = actual.shape.rank()
+                if rank > 0:
+                    if axis < 0:
+                        axis += rank
+                    if 0 <= axis < rank:
+                        dims = list(actual.shape.dims)
+                        del dims[axis]
+                        sliced = ir.Shape(dims)
+            _refine_body_input(ctx, body_inp, sliced, actual.dtype)
 
 
 def _emit_missing_warning(domain: str, op_type: str, warned_ops: set[tuple[str, str]]) -> None:

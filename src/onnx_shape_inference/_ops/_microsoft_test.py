@@ -479,13 +479,15 @@ class GroupQueryAttentionTest(unittest.TestCase):
         self.assertEqual(actual[1].shape[3], 16)
 
     def test_present_with_past(self):
+        # Non-packed decode: query hidden=64 (num_heads=4, head_size=16),
+        # key/value hidden=16 (kv_num_heads=1, head_size=16), past seq=10.
         actual = run_shape_inference_with_values(
             MSFT,
             "GroupQueryAttention",
             [
                 ir.Value(name="q", shape=ir.Shape([2, 1, 64]), type=ir.TensorType(FLOAT)),
-                None,  # key
-                None,  # value
+                ir.Value(name="k", shape=ir.Shape([2, 1, 16]), type=ir.TensorType(FLOAT)),
+                ir.Value(name="v", shape=ir.Shape([2, 1, 16]), type=ir.TensorType(FLOAT)),
                 ir.Value(name="pk", shape=ir.Shape([2, 1, 10, 16]), type=ir.TensorType(FLOAT)),
                 ir.Value(name="pv", shape=ir.Shape([2, 1, 10, 16]), type=ir.TensorType(FLOAT)),
             ],
@@ -497,8 +499,34 @@ class GroupQueryAttentionTest(unittest.TestCase):
             num_outputs=3,
         )
         self.assertEqual(actual[0], ts(FLOAT, [2, 1, 64]))
-        # present_key: [2, 1, 11, 16]
+        # present_key: [2, 1, 11, 16]  (past_seq=10 + cur_seq=1)
         self.assertEqual(actual[1].shape, ir.Shape([2, 1, 11, 16]))
+
+    def test_non_packed_hidden_divisible_by_packed_total(self):
+        """Non-packed query with hidden divisible by the packed total stays non-packed.
+
+        Regression guard: ``num_heads + 2*kv_num_heads`` dividing the hidden size
+        must NOT trigger packed detection.  Here hidden=128 == 8 * (8 + 2*4), but
+        key/value are present so the layout is non-packed and output hidden=128.
+        """
+        actual = run_shape_inference(
+            MSFT,
+            "GroupQueryAttention",
+            [
+                ts(FLOAT, [2, 8, 128]),  # query (num_heads=8, head_size=16)
+                ts(FLOAT, [2, 8, 64]),  # key   (kv_num_heads=4, head_size=16)
+                ts(FLOAT, [2, 8, 64]),  # value
+            ],
+            attributes={
+                "num_heads": ir.Attr("num_heads", ir.AttributeType.INT, 8),
+                "kv_num_heads": ir.Attr("kv_num_heads", ir.AttributeType.INT, 4),
+            },
+            opset_version=1,
+            num_outputs=3,
+        )
+        self.assertEqual(actual[0], ts(FLOAT, [2, 8, 128]))
+        # present_key: [2, kv_num_heads=4, seq=8, head_size=16]
+        self.assertEqual(actual[1].shape, ir.Shape([2, 4, 8, 16]))
 
 
 class MatMulNBitsTest(unittest.TestCase):
@@ -1077,17 +1105,19 @@ class PackedMHATest(unittest.TestCase):
 
 class GroupQueryAttentionPresentTest(unittest.TestCase):
     def test_with_past(self):
-        # query hidden=64, num_heads=4, kv_num_heads=2
-        # packed_total=4+2*2=8, head_size=64//8=8, out_hidden=4*8=32
+        # Non-packed decode with past. query hidden=64 (num_heads=4,
+        # head_size=16); key/value hidden=32 (kv_num_heads=2, head_size=16);
+        # past_key/value [2, 2, 10, 16].  Output keeps the query hidden size,
+        # and present grows the past sequence by the current step (10 + 1).
         actual = run_shape_inference(
             MSFT,
             "GroupQueryAttention",
             [
-                ts(FLOAT, [2, 1, 64]),  # query (packed QKV)
-                ts(FLOAT, [2, 1, 16]),  # key
-                ts(FLOAT, [2, 1, 16]),  # value
-                ts(FLOAT, [2, 2, 10, 8]),  # past_key
-                ts(FLOAT, [2, 2, 10, 8]),  # past_value
+                ts(FLOAT, [2, 1, 64]),  # query
+                ts(FLOAT, [2, 1, 32]),  # key
+                ts(FLOAT, [2, 1, 32]),  # value
+                ts(FLOAT, [2, 2, 10, 16]),  # past_key
+                ts(FLOAT, [2, 2, 10, 16]),  # past_value
             ],
             attributes={
                 "num_heads": ir.Attr("num_heads", ir.AttributeType.INT, 4),
@@ -1096,20 +1126,20 @@ class GroupQueryAttentionPresentTest(unittest.TestCase):
             opset_version=1,
             num_outputs=3,
         )
-        self.assertEqual(actual[0].shape, ir.Shape([2, 1, 32]))
-        # present: [2, 2, 11, 8]  (past_seq=10 + cur_seq=1)
-        self.assertEqual(actual[1].shape, ir.Shape([2, 2, 11, 8]))
+        self.assertEqual(actual[0].shape, ir.Shape([2, 1, 64]))
+        # present: [2, 2, 11, 16]  (past_seq=10 + cur_seq=1)
+        self.assertEqual(actual[1].shape, ir.Shape([2, 2, 11, 16]))
 
     def test_non_packed(self):
-        # query hidden=128 which is NOT divisible by (4+2*2)=8 evenly
-        # Actually 128/8=16, so it IS packed. Use hidden=192 with num_heads=8, kv_num_heads=2
-        # packed_total=8+2*2=12, 192/12=16, 192==16*12 → packed, out=8*16=128
-        # Use separate Q/K/V: hidden=128, num_heads=4, kv_num_heads=1
-        # packed_total=4+2*1=6, 128/6=21.33 → NOT packed, out=128
+        # Non-packed (key & value present): output hidden equals query hidden.
         actual = run_shape_inference(
             MSFT,
             "GroupQueryAttention",
-            [ts(FLOAT, [2, 8, 128])],
+            [
+                ts(FLOAT, [2, 8, 128]),  # query
+                ts(FLOAT, [2, 8, 32]),  # key   (kv_num_heads=1, head_size=32)
+                ts(FLOAT, [2, 8, 32]),  # value
+            ],
             attributes={
                 "num_heads": ir.Attr("num_heads", ir.AttributeType.INT, 4),
                 "kv_num_heads": ir.Attr("kv_num_heads", ir.AttributeType.INT, 1),

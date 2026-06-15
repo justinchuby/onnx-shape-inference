@@ -178,6 +178,17 @@ def infer_loop(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
     # Number of loop-carried dependencies (node inputs beyond max_trip_count and cond)
     num_loop_carried = len(node.inputs) - 2
 
+    # The scan-output stacking dimension is the trip count.  When the
+    # ``max_trip_count`` input carries a known symbolic value (e.g. it was
+    # computed as ``Gather(Shape(X), 0)``), reuse it so the scan dimension is
+    # related to the originating dim instead of an opaque fresh symbol.
+    trip_dim: int | ir.SymbolicDim | None = None
+    max_trip = node.inputs[0] if len(node.inputs) > 0 else None
+    if max_trip is not None:
+        trip_sym = ctx.get_symbolic_value(max_trip)
+        if trip_sym is not None and len(trip_sym) == 1:
+            trip_dim = trip_sym[0]
+
     for i, output in enumerate(node.outputs):
         # Body output index: offset by 1 because body output[0] is the condition
         body_out_idx = i + 1
@@ -198,8 +209,8 @@ def infer_loop(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
         else:
             # Scan output: prepend a trip-count dimension to body output shape
             if body_shape is not None:
-                trip_dim = ctx.new_symbolic_dim()
-                scan_shape = ir.Shape([trip_dim, *body_shape.dims])
+                dim = trip_dim if trip_dim is not None else ctx.new_symbolic_dim()
+                scan_shape = ir.Shape([dim, *body_shape.dims])
             else:
                 scan_shape = None
             ctx.set_shape_and_dtype(output, scan_shape, dtype)

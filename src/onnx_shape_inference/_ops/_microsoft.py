@@ -574,9 +574,10 @@ def infer_group_query_attention(ctx: _context.ShapeInferenceContext, node: ir.No
     """com.microsoft GroupQueryAttention.
 
     Inputs:
-      0: query  [B, S, hidden_size] or packed QKV [B, S, d]
-      1: key    (optional) [B, kv_S, kv_hidden_size]
-      2: value  (optional) [B, kv_S, kv_hidden_size]
+      0: query  [B, S, num_heads*head_size] or packed QKV
+                [B, S, (num_heads + 2*kv_num_heads)*head_size]
+      1: key    (optional) [B, kv_S, kv_num_heads*head_size]
+      2: value  (optional) [B, kv_S, kv_num_heads*head_size]
       3: past_key   (optional) [B, kv_num_heads, past_S, head_size]
       4: past_value (optional) [B, kv_num_heads, past_S, head_size]
       5: seqlens_k  [B]
@@ -584,69 +585,109 @@ def infer_group_query_attention(ctx: _context.ShapeInferenceContext, node: ir.No
       ...
 
     Outputs:
-      0: output       [B, S, hidden_size]
+      0: output       [B, S, num_heads*head_size]
       1: present_key  [B, kv_num_heads, total_S, head_size]
       2: present_value [B, kv_num_heads, total_S, head_size]
       3: output_qk    (optional)
+
+    Packed QKV is signalled by the *absence* of the ``value`` input (input 2),
+    matching onnxruntime's ``BaseGroupQueryAttentionTypeAndShapeInference``
+    (``hasInputShape(ctx, 2)``).  When key/value are present the layout is
+    non-packed and the output keeps the query's hidden size verbatim.
     """
     if not node.inputs or node.inputs[0] is None:
         raise _context.OpUsageError(node, "Expected at least 1 input (query)")
     query = node.inputs[0]
+
+    def _input(idx: int) -> ir.Value | None:
+        return node.inputs[idx] if len(node.inputs) > idx else None
+
+    key = _input(1)
+    value = _input(2)
+    past_key = _input(3)
 
     num_heads_attr = node.attributes.get("num_heads")
     kv_num_heads_attr = node.attributes.get("kv_num_heads")
     num_heads = num_heads_attr.as_int() if num_heads_attr is not None else None
     kv_num_heads = kv_num_heads_attr.as_int() if kv_num_heads_attr is not None else None
 
-    # Output[0]: [B, S, num_heads * head_size]
-    if query.shape is not None and query.shape.rank() == 3:
-        hidden = query.shape[2]
-        if num_heads is not None and kv_num_heads is not None and isinstance(hidden, int):
-            # Check if packed QKV: d = (num_heads + 2*kv_num_heads) * head_size
-            packed_total = num_heads + 2 * kv_num_heads
-            head_size_check = hidden // packed_total
-            if hidden == head_size_check * packed_total:
-                out_hidden: int | ir.SymbolicDim = num_heads * head_size_check
-            else:
-                out_hidden = hidden
+    # Packed QKV iff the value input is not supplied (ORT uses input 2).
+    is_packed = value is None
+
+    has_rank3_query = query.shape is not None and query.shape.rank() == 3
+    hidden = query.shape[2] if has_rank3_query else None
+
+    # --- Output 0: [B, S, num_heads*head_size] ---------------------------
+    output_shape: ir.Shape | None
+    if has_rank3_query:
+        if not is_packed:
+            # Non-packed: output hidden equals the query hidden size.
+            output_shape = query.shape
+        elif num_heads is not None and kv_num_heads is not None and isinstance(hidden, int):
+            denom = num_heads + 2 * kv_num_heads
+            head_size = hidden // denom
+            output_shape = ir.Shape([query.shape[0], query.shape[1], num_heads * head_size])
         else:
-            out_hidden = hidden
-        output_shape: ir.Shape | None = ir.Shape([query.shape[0], query.shape[1], out_hidden])
+            # Packed but hidden is symbolic / attrs missing: hidden is unknown.
+            output_shape = ir.Shape([query.shape[0], query.shape[1], ctx.new_symbolic_dim()])
     else:
         output_shape = query.shape
 
     if len(node.outputs) > 0:
         ctx.set_shape_and_dtype(node.outputs[0], output_shape, query.dtype)
 
-    # Present key/value: [B, kv_num_heads, total_seq, head_size]
-    if kv_num_heads is not None and query.shape is not None and query.shape.rank() == 3:
-        batch = query.shape[0]
+    # --- Outputs 1 & 2: present_key / present_value ----------------------
+    if len(node.outputs) <= 1:
+        return
 
-        head_size: int | ir.SymbolicDim = ctx.new_symbolic_dim()
-        hidden = query.shape[2]
-        if num_heads is not None and isinstance(hidden, int):
-            packed_total = num_heads + 2 * kv_num_heads
-            head_size_check = hidden // packed_total
-            if hidden == head_size_check * packed_total:
-                head_size = head_size_check
-            else:
-                head_size = hidden // num_heads
+    # Effective head_size derived from the query hidden size.
+    def _head_size() -> int | ir.SymbolicDim:
+        if isinstance(hidden, int) and num_heads is not None and num_heads > 0:
+            if is_packed and kv_num_heads is not None:
+                return hidden // (num_heads + 2 * kv_num_heads)
+            return hidden // num_heads
+        return ctx.new_symbolic_dim()
 
-        total_seq: int | ir.SymbolicDim = ctx.new_symbolic_dim()
-        past_key = (
-            node.inputs[3] if len(node.inputs) > 3 and node.inputs[3] is not None else None
-        )
-        if past_key is not None and past_key.shape is not None and past_key.shape.rank() == 4:
-            past_seq = past_key.shape[2]
-            cur_seq = query.shape[1]
-            if isinstance(past_seq, int) and isinstance(cur_seq, int):
-                total_seq = past_seq + cur_seq
+    # Sequence length contributed by the current step's key/value.
+    def _kv_sequence_length() -> int | ir.SymbolicDim | None:
+        if not is_packed:
+            for kv in (value, key):
+                if kv is not None and kv.shape is not None and kv.shape.rank() == 3:
+                    return kv.shape[1]
+            return None
+        # Packed: the current key/value length equals the query length.
+        return query.shape[1] if has_rank3_query else None
 
-        present_shape = ir.Shape([batch, kv_num_heads, total_seq, head_size])
+    kv_seq = _kv_sequence_length()
+
+    present_shape: ir.Shape | None = None
+    if past_key is not None and past_key.shape is not None and past_key.shape.rank() == 4:
+        # present = past with the sequence dim grown by the current kv length.
+        # batch / kv_num_heads / head_size are taken from past_key directly so
+        # they remain correct regardless of packing.
+        past_dims = list(past_key.shape.dims)
+        past_seq = past_dims[2]
+        if isinstance(past_seq, int) and isinstance(kv_seq, int):
+            present_seq: int | ir.SymbolicDim = past_seq + kv_seq
+        else:
+            present_seq = ctx.new_symbolic_dim()
+        present_shape = ir.Shape([past_dims[0], past_dims[1], present_seq, past_dims[3]])
+    elif has_rank3_query and kv_num_heads is not None:
+        # Prefill (no past): derive present from query + attributes.
+        present_seq = kv_seq if kv_seq is not None else ctx.new_symbolic_dim()
+        present_shape = ir.Shape([query.shape[0], kv_num_heads, present_seq, _head_size()])
+
+    # present_key/value carry past_key's dtype when available (it may be a
+    # quantized type), otherwise the query dtype.
+    present_dtype = query.dtype
+    if past_key is not None and past_key.dtype is not None:
+        present_dtype = past_key.dtype
+
+    if present_shape is not None:
         if len(node.outputs) > 1 and node.outputs[1] is not None:
-            ctx.set_shape_and_dtype(node.outputs[1], present_shape, query.dtype)
+            ctx.set_shape_and_dtype(node.outputs[1], present_shape, present_dtype)
         if len(node.outputs) > 2 and node.outputs[2] is not None:
-            ctx.set_shape_and_dtype(node.outputs[2], present_shape, query.dtype)
+            ctx.set_shape_and_dtype(node.outputs[2], present_shape, present_dtype)
 
 
 # ---------------------------------------------------------------------------

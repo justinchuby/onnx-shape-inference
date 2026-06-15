@@ -11,6 +11,7 @@ __all__ = [
 import onnx_ir as ir
 
 from onnx_shape_inference import _context, _registry
+from onnx_shape_inference._ops import _utils
 
 
 @_registry.registry.register("", "Split", since_version=2)
@@ -49,16 +50,29 @@ def infer_split(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
             split_sizes = list(split_attr.as_ints())
 
     if split_sizes is None:
-        # Equal split
+        # Equal split. With a concrete axis dim we can compute exact integer
+        # chunk sizes; with a symbolic axis dim we still know the relationship
+        # (each of the first ``num_outputs - 1`` chunks is ``ceil(dim/n)`` and
+        # the last is the remainder), so propagate that symbolically instead of
+        # minting opaque fresh dims.
         dim = input_shape[axis]
-        if isinstance(dim, int) and num_outputs > 0:
-            base = dim // num_outputs
-            remainder = dim % num_outputs
-            split_sizes = [base + (1 if i < remainder else 0) for i in range(num_outputs)]
+        if num_outputs > 0:
+            if isinstance(dim, int):
+                base = dim // num_outputs
+                remainder = dim % num_outputs
+                split_sizes = [base + (1 if i < remainder else 0) for i in range(num_outputs)]
+            else:
+                chunk = _utils.ceil_div_dim(dim, num_outputs)
+                last = dim - chunk * (num_outputs - 1)
+                split_sizes = [chunk] * (num_outputs - 1) + [last]
 
     if split_sizes is not None:
-        # Propagate symbolic values when splitting a 1-D tensor along axis 0
-        sym_val = ctx.get_symbolic_value(data) if axis == 0 and rank == 1 else None
+        # Propagate symbolic values only when every chunk size is a concrete
+        # int (slicing the known element list requires integer offsets).
+        all_concrete = all(isinstance(s, int) for s in split_sizes)
+        sym_val = (
+            ctx.get_symbolic_value(data) if axis == 0 and rank == 1 and all_concrete else None
+        )
 
         offset = 0
         for i, out in enumerate(node.outputs):
@@ -68,8 +82,10 @@ def infer_split(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
                 ctx.set_shape_and_dtype(out, ir.Shape(new_dims), input_dtype)
 
                 if sym_val is not None:
-                    ctx.set_symbolic_value(out, sym_val[offset : offset + split_sizes[i]])
-                offset += split_sizes[i]
+                    size = split_sizes[i]
+                    assert isinstance(size, int)
+                    ctx.set_symbolic_value(out, sym_val[offset : offset + size])
+                    offset += size
             else:
                 ctx.set_shape_and_dtype(out, None, input_dtype)
     else:

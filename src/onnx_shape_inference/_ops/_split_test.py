@@ -117,7 +117,12 @@ class SplitTest(unittest.TestCase):
         self.assertEqual(actual, [ts(FLOAT, [2, 3]), ts(FLOAT, [2, 1])])
 
     def test_unknown_split_dim(self):
-        """When split axis dim is symbolic, outputs have symbolic split dims."""
+        """When the split axis dim is symbolic, equal split keeps the relationship.
+
+        For ``num_outputs=2`` over a symbolic dim ``N`` the first chunk is
+        ``ceil(N / 2)`` and the second is the remainder ``N - ceil(N / 2)``,
+        rather than two unrelated fresh symbolic dims.
+        """
         actual = run_shape_inference(
             "",
             "Split",
@@ -126,7 +131,9 @@ class SplitTest(unittest.TestCase):
             opset_version=17,
             num_outputs=2,
         )
-        self.assertEqual(actual[0], ts(FLOAT, ["_d0", 4]))
+        # ceil(N/2) is rendered by SymPy as -floor(-N/2).
+        self.assertEqual(actual[0], ts(FLOAT, ["-floor(-N/2)", 4]))
+        self.assertEqual(actual[1], ts(FLOAT, ["N + floor(-N/2)", 4]))
 
     def test_split_no_inputs(self):
         with self.assertRaises(OpUsageError):

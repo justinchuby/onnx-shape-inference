@@ -9,11 +9,10 @@ __all__ = [
 ]
 
 
-import math
-
 import onnx_ir as ir
 
 from onnx_shape_inference import _context, _registry
+from onnx_shape_inference._ops import _utils
 
 
 @_registry.registry.register("", "Reshape", since_version=5)
@@ -73,64 +72,33 @@ def infer_reshape(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
         else:
             output_dims.append(dim_val)
 
-    # Try to compute the inferred dimension
+    # Try to compute the inferred (-1) dimension via product division.
+    #
+    # ``inferred_dim = product(input_dims) / product(other_output_dims)``.
+    # Both products may be symbolic; ``ir.SymbolicDim`` arithmetic (backed by
+    # SymPy) cancels shared factors, e.g. reshaping ``[a, b, c]`` with
+    # ``[0, 0, 2, -1]`` yields ``c // 2`` rather than an opaque fresh dim.
     if inferred_idx is not None and input_shape is not None:
-        if input_shape.is_static():
-            total_input = math.prod(d if isinstance(d, int) else 0 for d in input_shape.dims)
-            known_output = 1
-            all_known = True
-            for i, d in enumerate(output_dims):
-                if i == inferred_idx:
-                    continue
-                if isinstance(d, int) and d > 0:
-                    known_output *= d
-                else:
-                    all_known = False
-                    break
+        # Every non-inferred output dim must be a definite (non-zero) value.
+        other_dims: list[int | ir.SymbolicDim] = []
+        computable = True
+        for i, d in enumerate(output_dims):
+            if i == inferred_idx:
+                continue
+            if isinstance(d, int) and d <= 0:
+                computable = False
+                break
+            other_dims.append(d)
 
-            if all_known and known_output > 0 and total_input > 0:
-                output_dims[inferred_idx] = total_input // known_output
-            else:
+        if computable:
+            total_input = _utils.dim_product(list(input_shape.dims))
+            known_output = _utils.dim_product(other_dims)
+            if isinstance(known_output, int) and known_output == 0:
                 output_dims[inferred_idx] = ctx.new_symbolic_dim()
+            else:
+                output_dims[inferred_idx] = _utils.floor_div_dim(total_input, known_output)
         else:
-            # Try symbolic inference: if all other output dims are concrete
-            # and the input has exactly one symbolic dim with the rest concrete,
-            # we can compute the -1 dim symbolically.
-            known_output = 1
-            all_output_known = True
-            for i, d in enumerate(output_dims):
-                if i == inferred_idx:
-                    continue
-                if isinstance(d, int) and d > 0:
-                    known_output *= d
-                else:
-                    all_output_known = False
-                    break
-
-            known_input = 1
-            symbolic_input_dims: list[ir.SymbolicDim] = []
-            for d in input_shape.dims:
-                if isinstance(d, int):
-                    known_input *= d
-                elif isinstance(d, ir.SymbolicDim):
-                    symbolic_input_dims.append(d)
-
-            if (
-                all_output_known
-                and known_output > 0
-                and len(symbolic_input_dims) == 1
-                and known_input > 0
-            ):
-                # inferred_dim = symbolic_dim * known_input / known_output
-                factor = known_input // known_output
-                if factor == 1:
-                    output_dims[inferred_idx] = symbolic_input_dims[0]
-                elif factor > 1:
-                    output_dims[inferred_idx] = symbolic_input_dims[0] * factor
-                else:
-                    output_dims[inferred_idx] = ctx.new_symbolic_dim()
-            else:
-                output_dims[inferred_idx] = ctx.new_symbolic_dim()
+            output_dims[inferred_idx] = ctx.new_symbolic_dim()
     elif inferred_idx is not None:
         output_dims[inferred_idx] = ctx.new_symbolic_dim()
 
