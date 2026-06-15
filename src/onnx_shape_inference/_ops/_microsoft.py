@@ -617,19 +617,40 @@ def infer_group_query_attention(ctx: _context.ShapeInferenceContext, node: ir.No
     has_rank3_query = query.shape is not None and query.shape.rank() == 3
     hidden = query.shape[2] if has_rank3_query else None
 
+    def _head_size() -> int | ir.SymbolicDim | None:
+        """Head size derived from the query hidden size, or ``None`` if unknown.
+
+        Returns ``None`` (rather than a misleading truncated value) when the
+        hidden size is symbolic, the attributes are missing, or the hidden size
+        is not exactly divisible by the relevant head total.
+        """
+        if not isinstance(hidden, int) or num_heads is None or num_heads <= 0:
+            return None
+        if is_packed:
+            if kv_num_heads is None:
+                return None
+            denom = num_heads + 2 * kv_num_heads
+            if denom <= 0 or hidden % denom != 0:
+                return None
+            return hidden // denom
+        if hidden % num_heads != 0:
+            return None
+        return hidden // num_heads
+
     # --- Output 0: [B, S, num_heads*head_size] ---------------------------
     output_shape: ir.Shape | None
     if has_rank3_query:
         if not is_packed:
             # Non-packed: output hidden equals the query hidden size.
             output_shape = query.shape
-        elif num_heads is not None and kv_num_heads is not None and isinstance(hidden, int):
-            denom = num_heads + 2 * kv_num_heads
-            head_size = hidden // denom
-            output_shape = ir.Shape([query.shape[0], query.shape[1], num_heads * head_size])
         else:
-            # Packed but hidden is symbolic / attrs missing: hidden is unknown.
-            output_shape = ir.Shape([query.shape[0], query.shape[1], ctx.new_symbolic_dim()])
+            head_size = _head_size()
+            if head_size is not None and num_heads is not None:
+                out_hidden: int | ir.SymbolicDim = num_heads * head_size
+            else:
+                # Packed but hidden is symbolic / not divisible / attrs missing.
+                out_hidden = ctx.new_symbolic_dim()
+            output_shape = ir.Shape([query.shape[0], query.shape[1], out_hidden])
     else:
         output_shape = query.shape
 
@@ -639,14 +660,6 @@ def infer_group_query_attention(ctx: _context.ShapeInferenceContext, node: ir.No
     # --- Outputs 1 & 2: present_key / present_value ----------------------
     if len(node.outputs) <= 1:
         return
-
-    # Effective head_size derived from the query hidden size.
-    def _head_size() -> int | ir.SymbolicDim:
-        if isinstance(hidden, int) and num_heads is not None and num_heads > 0:
-            if is_packed and kv_num_heads is not None:
-                return hidden // (num_heads + 2 * kv_num_heads)
-            return hidden // num_heads
-        return ctx.new_symbolic_dim()
 
     # Sequence length contributed by the current step's key/value.
     def _kv_sequence_length() -> int | ir.SymbolicDim | None:
@@ -664,10 +677,13 @@ def infer_group_query_attention(ctx: _context.ShapeInferenceContext, node: ir.No
     if past_key is not None and past_key.shape is not None and past_key.shape.rank() == 4:
         # present = past with the sequence dim grown by the current kv length.
         # batch / kv_num_heads / head_size are taken from past_key directly so
-        # they remain correct regardless of packing.
+        # they remain correct regardless of packing.  ``ir.SymbolicDim``
+        # arithmetic keeps the relationship ``present_seq = past_seq + kv_seq``
+        # even when one side is symbolic; only a fully unknown kv length forces
+        # a fresh dim.
         past_dims = list(past_key.shape.dims)
         past_seq = past_dims[2]
-        if isinstance(past_seq, int) and isinstance(kv_seq, int):
+        if kv_seq is not None:
             present_seq: int | ir.SymbolicDim = past_seq + kv_seq
         else:
             present_seq = ctx.new_symbolic_dim()
@@ -675,7 +691,15 @@ def infer_group_query_attention(ctx: _context.ShapeInferenceContext, node: ir.No
     elif has_rank3_query and kv_num_heads is not None:
         # Prefill (no past): derive present from query + attributes.
         present_seq = kv_seq if kv_seq is not None else ctx.new_symbolic_dim()
-        present_shape = ir.Shape([query.shape[0], kv_num_heads, present_seq, _head_size()])
+        head_size = _head_size()
+        present_shape = ir.Shape(
+            [
+                query.shape[0],
+                kv_num_heads,
+                present_seq,
+                head_size if head_size is not None else ctx.new_symbolic_dim(),
+            ]
+        )
 
     # present_key/value carry past_key's dtype when available (it may be a
     # quantized type), otherwise the query dtype.

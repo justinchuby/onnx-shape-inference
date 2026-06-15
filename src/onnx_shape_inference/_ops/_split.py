@@ -49,22 +49,24 @@ def infer_split(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
         if split_attr is not None:
             split_sizes = list(split_attr.as_ints())
 
-    if split_sizes is None:
-        # Equal split. With a concrete axis dim we can compute exact integer
-        # chunk sizes; with a symbolic axis dim we still know the relationship
-        # (each of the first ``num_outputs - 1`` chunks is ``ceil(dim/n)`` and
-        # the last is the remainder), so propagate that symbolically instead of
-        # minting opaque fresh dims.
+    if split_sizes is None and num_outputs > 0:
+        # ONNX equal split is front-loaded: chunk = ceil(dim / num_outputs),
+        # and output i gets max(0, min(chunk, dim - i*chunk)) elements (so a
+        # small dim leaves trailing chunks empty, e.g. 10/3 -> [4, 4, 2],
+        # 1/3 -> [1, 0, 0]).
         dim = input_shape[axis]
-        if num_outputs > 0:
-            if isinstance(dim, int):
-                base = dim // num_outputs
-                remainder = dim % num_outputs
-                split_sizes = [base + (1 if i < remainder else 0) for i in range(num_outputs)]
-            else:
-                chunk = _utils.ceil_div_dim(dim, num_outputs)
-                last = dim - chunk * (num_outputs - 1)
-                split_sizes = [chunk] * (num_outputs - 1) + [last]
+        if isinstance(dim, int):
+            chunk = -(-dim // num_outputs)  # ceil for non-negative dim
+            split_sizes = [max(0, min(chunk, dim - i * chunk)) for i in range(num_outputs)]
+        elif num_outputs == 2:
+            # The 2-way split is the only symbolic case with a guaranteed
+            # non-negative closed form: ceil(dim/2) and the remainder
+            # floor(dim/2) (always >= 0).  This keeps the relationship to the
+            # original dim (e.g. [2*b + 2*c] -> [b + c, b + c]).  For
+            # num_outputs >= 3 the front-loaded chunks can clamp to 0 with no
+            # clean symbolic form, so those fall through to fresh dims below.
+            first = _utils.ceil_div_dim(dim, 2)
+            split_sizes = [first, dim - first]
 
     if split_sizes is not None:
         # Propagate symbolic values only when every chunk size is a concrete

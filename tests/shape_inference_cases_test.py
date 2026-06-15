@@ -10,23 +10,18 @@ Each model is built directly with ``onnx_ir`` and run through
 :func:`infer_symbolic_shapes`.  The assertions check, for every value of
 interest, that:
 
-* the inferred element type matches exactly, and
-* every **concrete** (integer) dimension matches exactly, while **symbolic**
-  dimensions only have to be present (any name / expression is accepted).
+* the inferred element type matches exactly,
+* every **concrete** (integer) dimension matches exactly, and
+* every **symbolic** dimension is *mathematically equivalent* to the expected
+  expression (compared via SymPy), so the relationships between related
+  shapes are verified — e.g. ``concat_out`` really is ``2 * d_model`` and
+  ``flat_nz`` really is ``2 * nnz``.
 
-This mirrors the comparison the upstream C++ harness performs
-(``CheckValueInfoMatches`` only enforces concrete-dim equality and treats
-symbolic axes as "unknown").
-
-Two cases are currently known gaps and are marked
-:func:`unittest.expectedFailure`:
-
-* ``value_as_shape`` — value-as-shape data does not propagate through
-  ``Add``/``Sub`` of a shape tensor, so ``Expand`` cannot recover its output
-  shape.
-* ``scan_running_sum`` — the concrete state shape from the ``zero_acc``
-  initializer is not merged into the symbolic body input, so the state /
-  scan-output dim stays symbolic instead of the concrete ``3``.
+Genuinely data-dependent dims that shape inference must invent (the ``nnz``
+count from ``NonZero``, a merged ``If``-branch axis) appear as engine-anonymous
+``_dN`` symbols.  These are bound to the expected wildcard symbol on first
+sight and then enforced consistently across the rest of the model, so a
+relationship such as ``flat_nz == 2 * nnz`` is still checked end to end.
 """
 
 from __future__ import annotations
