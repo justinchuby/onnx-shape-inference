@@ -9,6 +9,7 @@ import os
 import pathlib
 import unittest
 
+import onnx
 import onnx_ir as ir
 
 from onnx_shape_inference import _context, infer_symbolic_shapes
@@ -429,6 +430,274 @@ class TestFunctionShapeInference(unittest.TestCase):
         self.assertEqual(call2.outputs[0].dtype, FLOAT)
         self.assertEqual(inp1.dtype, FLOAT, "inp1 dtype was corrupted on second run")
         self.assertEqual(inp2.dtype, FLOAT, "inp2 dtype was corrupted on second run")
+
+
+class OpSchemaFunctionExpansionTest(unittest.TestCase):
+    """Inference for standard ops via their ONNX op-schema function bodies.
+
+    Newer ONNX operators define their semantics as a (often context-dependent)
+    function of more primitive ops.  When we have no hand-written rule for such
+    an op, the engine materializes and runs shape inference on that function
+    body, which lets us track new ops automatically.
+    """
+
+    def _build_attention(self, opset: int = 24):
+        b, h, s, d = 2, 4, 8, 16
+        helper = onnx.helper
+
+        def vi(name):
+            return helper.make_tensor_value_info(name, onnx.TensorProto.FLOAT, [b, h, s, d])
+
+        node = helper.make_node("Attention", ["Q", "K", "V"], ["Y"])
+        graph = helper.make_graph(
+            [node],
+            "g",
+            [vi("Q"), vi("K"), vi("V")],
+            [helper.make_tensor_value_info("Y", onnx.TensorProto.FLOAT, None)],
+        )
+        proto = helper.make_model(
+            graph, opset_imports=[helper.make_opsetid("", opset)], ir_version=10
+        )
+        return ir.serde.deserialize_model(proto), (b, h, s, d)
+
+    def _build_hardswish(self, opset: int = 22):
+        helper = onnx.helper
+        x = helper.make_tensor_value_info("X", onnx.TensorProto.FLOAT, [3, 4])
+        node = helper.make_node("HardSwish", ["X"], ["Y"])
+        graph = helper.make_graph(
+            [node],
+            "g",
+            [x],
+            [helper.make_tensor_value_info("Y", onnx.TensorProto.FLOAT, None)],
+        )
+        proto = helper.make_model(
+            graph, opset_imports=[helper.make_opsetid("", opset)], ir_version=10
+        )
+        return ir.serde.deserialize_model(proto)
+
+    def test_fallback_used_when_no_native_rule(self):
+        """The op-schema fallback recovers the shape when no native rule exists.
+
+        ``HardSwish`` has a native (elementwise) rule, so to exercise the
+        *fallback* end to end we mask that rule (return ``None`` from the
+        registry lookup) and confirm the engine materializes and runs the op's
+        static function body to recover the output shape.
+        """
+        import unittest.mock as mock
+
+        from onnx_shape_inference import _registry
+
+        try:
+            schema = onnx.defs.get_schema("HardSwish", max_inclusive_version=22, domain="")
+        except Exception:
+            self.skipTest("HardSwish op not available in this onnx build")
+        if not schema.has_function:
+            self.skipTest("HardSwish has no function body in this onnx build")
+
+        model = self._build_hardswish()
+        real_get = _registry.registry.get
+
+        def fake_get(domain, op_type, version):
+            if op_type == "HardSwish":
+                return None  # pretend we have no native rule
+            return real_get(domain, op_type, version)
+
+        with mock.patch.object(_registry.registry, "get", side_effect=fake_get):
+            infer_symbolic_shapes(model, warn_on_missing=False)
+
+        out = model.graph.outputs[0]
+        self.assertEqual(out.dtype, FLOAT)
+        self.assertEqual(out.shape, ir.Shape([3, 4]))
+
+    def test_attention_native_rule_infers_output(self):
+        """With the native rule active, ``Attention`` infers the output shape."""
+        try:
+            onnx.defs.get_schema("Attention", max_inclusive_version=24, domain="")
+        except Exception:
+            self.skipTest("Attention op (opset 24) not available in this onnx build")
+
+        model, (b, h, s, d) = self._build_attention()
+        infer_symbolic_shapes(model, warn_on_missing=False)
+        out = model.graph.outputs[0]
+        self.assertEqual(out.dtype, FLOAT)
+        self.assertEqual(out.shape, ir.Shape([b, h, s, d]))
+
+    def test_unknown_op_still_warns(self):
+        """An op with no registered rule and no function body is a safe no-op.
+
+        The output stays unset and inference does not raise.
+        """
+        x = _make_value("x", shape=[2, 3], dtype=FLOAT)
+        node = ir.Node(
+            "com.example", "TotallyMadeUpOp", inputs=[x], outputs=[ir.Value(name="y")]
+        )
+        graph = ir.Graph(
+            inputs=[x],
+            outputs=node.outputs,
+            nodes=[node],
+            opset_imports={"": 24, "com.example": 1},
+            name="g",
+        )
+        model = ir.Model(graph, ir_version=10)
+        infer_symbolic_shapes(model, warn_on_missing=False)
+        self.assertIsNone(node.outputs[0].shape)
+
+
+class OpSchemaFunctionUnitTest(unittest.TestCase):
+    """White-box tests for the op-schema function fallback machinery."""
+
+    @staticmethod
+    def _tiny_function(n_in: int, n_out: int) -> ir.Function:
+        ins = [ir.Value(name=f"fi{i}") for i in range(n_in)]
+        outs = [ir.Value(name=f"fo{i}") for i in range(n_out)]
+        nodes = []
+        if n_in and n_out:
+            nodes = [ir.Node("", "Identity", inputs=[ins[0]], outputs=[outs[0]])]
+        graph = ir.Graph(
+            inputs=ins, outputs=outs, nodes=nodes, opset_imports={"": 18}, name="fb"
+        )
+        return ir.Function(domain="", name="Foo", graph=graph, attributes=[])
+
+    def _seed(self, cache, node, opset, f):
+        from onnx_shape_inference import _functions
+
+        key = (
+            node.domain or "",
+            node.op_type,
+            opset,
+            _functions._input_type_signature(node),
+            _functions._make_attr_signature(node),
+        )
+        cache[key] = f
+
+    def _call(self, node, *, process_graph_fn, cache, opset=18, active=None):
+        from onnx_shape_inference import _functions
+
+        ctx = _context.ShapeInferenceContext({"": opset})
+        return _functions.infer_via_op_schema_function(
+            ctx,
+            node,
+            process_graph_fn=process_graph_fn,
+            warn_on_missing=False,
+            opset_version=opset,
+            active_functions=active,
+            op_function_cache=cache,
+        )
+
+    def test_happy_path_copies_shape_dtype_and_sym_data(self):
+        x = _make_value("x", shape=[2, 3], dtype=FLOAT)
+        node = ir.Node("", "Foo", inputs=[x], outputs=[ir.Value(name="y")])
+        f = self._tiny_function(1, 1)
+
+        def pg(child_ctx, graph, **kw):
+            for o in graph.outputs:
+                o.shape = ir.Shape([5, 6])
+                o.dtype = FLOAT
+                child_ctx.set_symbolic_value(o, [5, 6])
+            return True
+
+        cache: dict = {}
+        self._seed(cache, node, 18, f)
+        ok = self._call(node, process_graph_fn=pg, cache=cache)
+        self.assertTrue(ok)
+        self.assertEqual(node.outputs[0].shape, ir.Shape([5, 6]))
+        self.assertEqual(node.outputs[0].dtype, FLOAT)
+        self.assertIn(_context.SYM_DATA_KEY, node.outputs[0].metadata_props)
+
+    def test_recursion_guard_returns_false(self):
+        x = _make_value("x", shape=[2], dtype=FLOAT)
+        node = ir.Node("", "Foo", inputs=[x], outputs=[ir.Value(name="y")])
+
+        def pg(child_ctx, graph, **kw):  # pragma: no cover - must not run
+            raise AssertionError("body should not run under recursion guard")
+
+        ok = self._call(
+            node, process_graph_fn=pg, cache={}, active=frozenset({("", "Foo", "")})
+        )
+        self.assertFalse(ok)
+
+    def test_degenerate_body_rejected(self):
+        x = _make_value("x", shape=[2], dtype=FLOAT)
+        node = ir.Node("", "Foo", inputs=[x], outputs=[ir.Value(name="y")])
+        f = self._tiny_function(1, 0)  # no outputs
+
+        def pg(child_ctx, graph, **kw):  # pragma: no cover - must not run
+            raise AssertionError("body should not run for degenerate function")
+
+        cache: dict = {}
+        self._seed(cache, node, 18, f)
+        self.assertFalse(self._call(node, process_graph_fn=pg, cache=cache))
+
+    def test_more_inputs_than_formals_rejected(self):
+        a = _make_value("a", shape=[2], dtype=FLOAT)
+        b = _make_value("b", shape=[2], dtype=FLOAT)
+        node = ir.Node("", "Foo", inputs=[a, b], outputs=[ir.Value(name="y")])
+        f = self._tiny_function(1, 1)  # only one formal input
+        cache: dict = {}
+        self._seed(cache, node, 18, f)
+        self.assertFalse(self._call(node, process_graph_fn=lambda *a, **k: True, cache=cache))
+
+    def test_op_usage_error_propagates(self):
+        x = _make_value("x", shape=[2], dtype=FLOAT)
+        node = ir.Node("", "Foo", inputs=[x], outputs=[ir.Value(name="y")])
+        f = self._tiny_function(1, 1)
+
+        def pg(child_ctx, graph, **kw):
+            raise _context.OpUsageError(node, "boom")
+
+        cache: dict = {}
+        self._seed(cache, node, 18, f)
+        with self.assertRaises(_context.OpUsageError):
+            self._call(node, process_graph_fn=pg, cache=cache)
+
+    def test_generic_exception_returns_false(self):
+        x = _make_value("x", shape=[2], dtype=FLOAT)
+        node = ir.Node("", "Foo", inputs=[x], outputs=[ir.Value(name="y")])
+        f = self._tiny_function(1, 1)
+
+        def pg(child_ctx, graph, **kw):
+            raise ValueError("unexpected")
+
+        cache: dict = {}
+        self._seed(cache, node, 18, f)
+        self.assertFalse(self._call(node, process_graph_fn=pg, cache=cache))
+
+    def test_materialize_unknown_op_returns_none(self):
+        from onnx_shape_inference import _functions
+
+        x = _make_value("x", shape=[2], dtype=FLOAT)
+        node = ir.Node("com.example", "NoSuchOp", inputs=[x], outputs=[ir.Value(name="y")])
+        self.assertIsNone(_functions._materialize_op_schema_function(node, 18))
+
+    def test_materialize_static_function_body(self):
+        """An op with a *static* function body materializes to an ir.Function."""
+        from onnx_shape_inference import _functions
+
+        try:
+            schema = onnx.defs.get_schema("HardSwish", max_inclusive_version=22, domain="")
+        except Exception:
+            self.skipTest("HardSwish not available")
+        if not schema.has_function or schema.has_context_dependent_function:
+            self.skipTest("HardSwish is not a static-function op in this build")
+
+        x = _make_value("x", shape=[2, 3], dtype=FLOAT)
+        node = ir.Node("", "HardSwish", inputs=[x], outputs=[ir.Value(name="y")])
+        f = _functions._materialize_op_schema_function(node, 22)
+        self.assertIsNotNone(f)
+        self.assertGreaterEqual(len(f.graph), 1)
+
+    def test_materialize_handles_deserialize_failure(self):
+        """If body materialization/deserialization raises, the helper returns None."""
+        import unittest.mock as mock
+
+        from onnx_shape_inference import _functions
+
+        x = _make_value("x", shape=[2, 8, 96], dtype=FLOAT)
+        node = ir.Node("", "Attention", inputs=[x], outputs=[ir.Value(name="y")])
+        with mock.patch.object(
+            ir.serde, "deserialize_function", side_effect=RuntimeError("boom")
+        ):
+            self.assertIsNone(_functions._materialize_op_schema_function(node, 24))
 
 
 if __name__ == "__main__":

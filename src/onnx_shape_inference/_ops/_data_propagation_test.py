@@ -259,6 +259,121 @@ class ConcatPropagationTest(unittest.TestCase):
         self.assertEqual(sym_val[1], 3)
         self.assertEqual(sym_val[2], 768)
 
+    def test_concat_partial_unknown_segment(self):
+        """An unknown input with a concrete 1-D length still propagates.
+
+        Its segment is filled with fresh symbolic dims so the known surrounding
+        elements remain available downstream.
+        """
+        ctx = _context.ShapeInferenceContext({"": 17})
+        a = const_value([2, 3], "a")
+        # ``b`` has a known rank-1 length (1) but no symbolic value.
+        b = ir.Value(name="b", type=ir.TensorType(INT64), shape=ir.Shape([1]))
+        c = const_value([6, 8], "c")
+        [out] = _run_node(
+            ctx,
+            "",
+            "Concat",
+            [a, b, c],
+            attributes={"axis": ir.Attr("axis", ir.AttributeType.INT, 0)},
+        )
+        sym_val = ctx.get_symbolic_value(out)
+        self.assertIsNotNone(sym_val)
+        self.assertEqual(len(sym_val), 5)
+        self.assertEqual(sym_val[0], 2)
+        self.assertEqual(sym_val[1], 3)
+        self.assertIsInstance(sym_val[2], ir.SymbolicDim)  # the unknown segment
+        self.assertEqual(sym_val[3], 6)
+        self.assertEqual(sym_val[4], 8)
+
+    def test_concat_unknown_length_skips(self):
+        """If a segment's length itself is unknown, propagation is skipped."""
+        ctx = _context.ShapeInferenceContext({"": 17})
+        a = const_value([2, 3], "a")
+        b = ir.Value(name="b", type=ir.TensorType(INT64))  # no shape
+        [out] = _run_node(
+            ctx,
+            "",
+            "Concat",
+            [a, b],
+            attributes={"axis": ir.Attr("axis", ir.AttributeType.INT, 0)},
+        )
+        self.assertIsNone(ctx.get_symbolic_value(out))
+
+
+class WherePropagationTest(unittest.TestCase):
+    """Test that Where propagates symbolic_value over shape tensors."""
+
+    def test_where_equal_branches_select_value(self):
+        """Equal branches select that value regardless of the unknown condition."""
+        ctx = _context.ShapeInferenceContext({"": 17})
+        cond = ir.Value(name="cond", type=ir.TensorType(ir.DataType.BOOL))
+        cond.shape = ir.Shape([1])
+        x = const_value([1], "x")
+        y = const_value([1], "y")
+        [out] = _run_node(ctx, "", "Where", [cond, x, y])
+        sym_val = ctx.get_symbolic_value(out)
+        self.assertIsNotNone(sym_val)
+        self.assertEqual(sym_val, [1])
+
+    def test_where_differing_branches_fresh_symbol(self):
+        """When branches differ, the data-dependent result gets a fresh dim."""
+        ctx = _context.ShapeInferenceContext({"": 17})
+        cond = ir.Value(name="cond", type=ir.TensorType(ir.DataType.BOOL))
+        cond.shape = ir.Shape([1])
+        x = const_value([3], "x")
+        y = const_value([1], "y")
+        [out] = _run_node(ctx, "", "Where", [cond, x, y])
+        sym_val = ctx.get_symbolic_value(out)
+        self.assertIsNotNone(sym_val)
+        self.assertEqual(len(sym_val), 1)
+        self.assertIsInstance(sym_val[0], ir.SymbolicDim)
+
+    def test_where_equal_symbolic_branches(self):
+        """Equal *symbolic* values on both branches are selected directly."""
+        ctx = _context.ShapeInferenceContext({"": 17})
+        cond = ir.Value(name="cond", type=ir.TensorType(ir.DataType.BOOL))
+        cond.shape = ir.Shape([1])
+        x = ir.Value(name="x", type=ir.TensorType(INT64), shape=ir.Shape([1]))
+        y = ir.Value(name="y", type=ir.TensorType(INT64), shape=ir.Shape([1]))
+        ctx.set_symbolic_value(x, [ir.SymbolicDim("N")])
+        ctx.set_symbolic_value(y, [ir.SymbolicDim("N")])
+        [out] = _run_node(ctx, "", "Where", [cond, x, y])
+        sym_val = ctx.get_symbolic_value(out)
+        self.assertIsNotNone(sym_val)
+        self.assertEqual(str(sym_val[0]), "N")
+
+    def test_where_missing_value_skips(self):
+        """No propagation when a branch lacks a known symbolic value."""
+        ctx = _context.ShapeInferenceContext({"": 17})
+        cond = ir.Value(name="cond", type=ir.TensorType(ir.DataType.BOOL))
+        cond.shape = ir.Shape([1])
+        x = const_value([3], "x")
+        y = ir.Value(name="y", type=ir.TensorType(INT64), shape=ir.Shape([1]))
+        [out] = _run_node(ctx, "", "Where", [cond, x, y])
+        self.assertIsNone(ctx.get_symbolic_value(out))
+
+    def test_where_no_outputs_is_safe(self):
+        """Directly invoking Where inference on a 0-output node is a no-op."""
+        from onnx_shape_inference._ops import _where
+
+        ctx = _context.ShapeInferenceContext({"": 17})
+        cond = ir.Value(name="cond", type=ir.TensorType(ir.DataType.BOOL), shape=ir.Shape([1]))
+        x = const_value([1], "x")
+        y = const_value([1], "y")
+        node = ir.Node("", "Where", inputs=[cond, x, y], outputs=[])
+        _where.infer_where(ctx, node)  # must not raise
+
+    def test_where_length_one_broadcast(self):
+        """A length-1 branch broadcasts elementwise against the longer branch."""
+        ctx = _context.ShapeInferenceContext({"": 17})
+        cond = ir.Value(name="cond", type=ir.TensorType(ir.DataType.BOOL), shape=ir.Shape([2]))
+        x = const_value([5, 5], "x")
+        y = const_value([5], "y")
+        [out] = _run_node(ctx, "", "Where", [cond, x, y])
+        # Lengths differ (2 vs 1) so per-element propagation is skipped.
+        self.assertIsNone(ctx.get_symbolic_value(out))
+
 
 class ArithmeticPropagationTest(unittest.TestCase):
     """Test that Add/Sub/Mul/Div propagate symbolic_value."""
@@ -289,6 +404,32 @@ class ArithmeticPropagationTest(unittest.TestCase):
         self.assertIsNotNone(sym_val)
         self.assertEqual(str(sym_val[0]), "H + 10")
         self.assertEqual(str(sym_val[1]), "W + 20")
+
+    def test_add_length_one_broadcasts(self):
+        """A length-1 operand broadcasts over the longer operand's elements."""
+        ctx = _context.ShapeInferenceContext({"": 17})
+        a = ir.Value(name="a", type=ir.TensorType(INT64), shape=ir.Shape([1]))
+        ctx.set_symbolic_value(a, [5])  # length-1 "scalar" shape tensor
+
+        b = ir.Value(name="b", type=ir.TensorType(INT64), shape=ir.Shape([3]))
+        ctx.set_symbolic_value(b, [ir.SymbolicDim("N"), 10, ir.SymbolicDim("M")])
+        [out] = _run_node(ctx, "", "Add", [a, b])
+        sym_val = ctx.get_symbolic_value(out)
+        self.assertIsNotNone(sym_val)
+        self.assertEqual(len(sym_val), 3)
+        self.assertEqual(str(sym_val[0]), "N + 5")
+        self.assertEqual(sym_val[1], 15)
+        self.assertEqual(str(sym_val[2]), "M + 5")
+
+    def test_incompatible_lengths_skip(self):
+        """Operands with mismatched (both > 1) lengths do not propagate."""
+        ctx = _context.ShapeInferenceContext({"": 17})
+        a = ir.Value(name="a", type=ir.TensorType(INT64), shape=ir.Shape([2]))
+        ctx.set_symbolic_value(a, [1, 2])
+        b = ir.Value(name="b", type=ir.TensorType(INT64), shape=ir.Shape([3]))
+        ctx.set_symbolic_value(b, [3, 4, 5])
+        [out] = _run_node(ctx, "", "Add", [a, b])
+        self.assertIsNone(ctx.get_symbolic_value(out))
 
 
 class UnaryPropagationTest(unittest.TestCase):

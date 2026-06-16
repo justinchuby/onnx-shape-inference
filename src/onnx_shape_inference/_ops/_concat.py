@@ -74,18 +74,30 @@ def infer_concat(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
     if len(node.outputs) > 0:
         ctx.set_shape_and_dtype(node.outputs[0], output_shape, output_dtype)
 
-        # Propagate symbolic_value for 1-D tensors concatenated on axis 0
+        # Propagate symbolic_value for 1-D tensors concatenated on axis 0.
+        # When an input lacks a known symbolic value but has a concrete 1-D
+        # length, fill that segment with fresh symbolic dims (one per element)
+        # rather than abandoning propagation entirely — this keeps the
+        # surrounding known elements available downstream (e.g. a shape tensor
+        # ``[B, H, <unknown>, S, D]`` built by Concat for a later Reshape /
+        # Expand).  Propagation is only skipped when a segment length itself is
+        # unknown.
         if rank == 1 and axis == 0:
+            # All inputs are guaranteed non-None here (the shape-collection loop
+            # above raises for any None input).
             combined: list[int | ir.SymbolicDim] = []
-            all_available = True
+            propagate = True
             for inp in node.inputs:
-                if inp is None:
-                    all_available = False
-                    break
                 sv = ctx.get_symbolic_value(inp)
-                if sv is None:
-                    all_available = False
+                if sv is not None:
+                    combined.extend(sv)
+                    continue
+                # No known values: fall back to the input's own length.
+                length = inp.shape[0] if inp.shape is not None else None
+                if isinstance(length, int):
+                    combined.extend(ctx.new_symbolic_dim() for _ in range(length))
+                else:
+                    propagate = False
                     break
-                combined.extend(sv)
-            if all_available:
+            if propagate:
                 ctx.set_symbolic_value(node.outputs[0], combined)

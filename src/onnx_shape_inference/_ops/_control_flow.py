@@ -10,9 +10,13 @@ __all__ = [
     "infer_scan",
 ]
 
+import logging
+
 import onnx_ir as ir
 
 from onnx_shape_inference import _context, _registry
+
+logger = logging.getLogger(__name__)
 
 
 def _merge_shapes(
@@ -21,7 +25,7 @@ def _merge_shapes(
     shape1: ir.Shape,
     shape2: ir.Shape,
     output_idx: int,
-) -> ir.Shape:
+) -> ir.Shape | None:
     """Merge two shapes from If branches into a compatible output shape.
 
     For each dimension pair:
@@ -29,15 +33,22 @@ def _merge_shapes(
     - Otherwise (different concrete, different symbolic, mixed), create a new
       symbolic dim.
 
-    Raises:
-        OpUsageError: If ranks differ.
+    When the two branches produce **different ranks**, the merged shape is
+    unknown: ``None`` is returned (and the caller leaves the output shape
+    unset).  This matches ONNX's reference shape inference, which tolerates
+    branch rank mismatches rather than failing — some legitimate models (e.g.
+    the ``AffineGrid`` function decomposition) have an ``If`` whose branches
+    emit a scalar in one arm and a rank-1 tensor in the other.
     """
     if shape1.rank() != shape2.rank():
-        raise _context.OpUsageError(
-            node,
-            f"If output {output_idx}: rank mismatch between branches: "
-            f"then={shape1.rank()}, else={shape2.rank()}",
+        logger.debug(
+            "If output %d: rank mismatch between branches (then=%s, else=%s); "
+            "leaving shape unknown",
+            output_idx,
+            shape1.rank(),
+            shape2.rank(),
         )
+        return None
 
     result_dims: list[int | ir.SymbolicDim] = []
     for d1, d2 in zip(shape1.dims, shape2.dims):
@@ -178,6 +189,17 @@ def infer_loop(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
     # Number of loop-carried dependencies (node inputs beyond max_trip_count and cond)
     num_loop_carried = len(node.inputs) - 2
 
+    # The scan-output stacking dimension is the trip count.  When the
+    # ``max_trip_count`` input carries a known symbolic value (e.g. it was
+    # computed as ``Gather(Shape(X), 0)``), reuse it so the scan dimension is
+    # related to the originating dim instead of an opaque fresh symbol.
+    trip_dim: int | ir.SymbolicDim | None = None
+    max_trip = node.inputs[0] if len(node.inputs) > 0 else None
+    if max_trip is not None:
+        trip_sym = ctx.get_symbolic_value(max_trip)
+        if trip_sym is not None and len(trip_sym) == 1:
+            trip_dim = trip_sym[0]
+
     for i, output in enumerate(node.outputs):
         # Body output index: offset by 1 because body output[0] is the condition
         body_out_idx = i + 1
@@ -198,8 +220,8 @@ def infer_loop(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
         else:
             # Scan output: prepend a trip-count dimension to body output shape
             if body_shape is not None:
-                trip_dim = ctx.new_symbolic_dim()
-                scan_shape = ir.Shape([trip_dim, *body_shape.dims])
+                dim = trip_dim if trip_dim is not None else ctx.new_symbolic_dim()
+                scan_shape = ir.Shape([dim, *body_shape.dims])
             else:
                 scan_shape = None
             ctx.set_shape_and_dtype(output, scan_shape, dtype)

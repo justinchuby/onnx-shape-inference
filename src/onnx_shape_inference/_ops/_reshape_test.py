@@ -181,6 +181,26 @@ class ReshapeTest(unittest.TestCase):
         )
         self.assertEqual(actual, [ts(FLOAT, [2, 3])])
 
+    def test_neg_one_with_literal_zero_allowzero(self):
+        """[-1, 0] with allowzero=1 keeps the literal 0, so -1 can't be computed.
+
+        A non-positive output dim makes the inferred (-1) dim data-dependent, so
+        it becomes a fresh symbolic dim instead of a concrete value.
+        """
+        data = ir.Value(name="data", shape=ir.Shape([2, 3]), type=ir.TensorType(FLOAT))
+        shape_val = const_value([-1, 0])
+        actual = run_shape_inference_with_values(
+            "",
+            "Reshape",
+            [data, shape_val],
+            attributes={"allowzero": ir.Attr("allowzero", ir.AttributeType.INT, 1)},
+            opset_version=17,
+        )
+        out_shape = actual[0].shape
+        self.assertEqual(out_shape.rank(), 2)
+        self.assertIsInstance(out_shape[0], ir.SymbolicDim)  # the unresolved -1
+        self.assertEqual(out_shape[1], 0)
+
     def test_no_inputs(self):
         with self.assertRaises(OpUsageError):
             run_shape_inference_with_values(

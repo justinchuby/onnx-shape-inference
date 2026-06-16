@@ -456,5 +456,65 @@ class QLinearConvTest(unittest.TestCase):
             )
 
 
+class CausalConvWithStateTest(unittest.TestCase):
+    def test_basic(self):
+        """Output == input shape; present_state == [B, C, k-1]."""
+        actual = run_shape_inference(
+            "",
+            "CausalConvWithState",
+            [ts(FLOAT, [2, 4, 8]), ts(FLOAT, [4, 1, 4])],  # input, weight (k=4)
+            opset_version=27,
+            num_outputs=2,
+        )
+        self.assertEqual(actual[0], ts(FLOAT, [2, 4, 8]))
+        self.assertEqual(actual[1], ts(FLOAT, [2, 4, 3]))
+
+    def test_kernel_size_one_zero_state(self):
+        actual = run_shape_inference(
+            "",
+            "CausalConvWithState",
+            [ts(FLOAT, [2, 4, 8]), ts(FLOAT, [4, 1, 1])],
+            opset_version=27,
+            num_outputs=2,
+        )
+        self.assertEqual(actual[1], ts(FLOAT, [2, 4, 0]))
+
+    def test_short_input_large_kernel(self):
+        actual = run_shape_inference(
+            "",
+            "CausalConvWithState",
+            [ts(FLOAT, [2, 4, 2]), ts(FLOAT, [4, 1, 5])],
+            opset_version=27,
+            num_outputs=2,
+        )
+        self.assertEqual(actual[0], ts(FLOAT, [2, 4, 2]))
+        self.assertEqual(actual[1], ts(FLOAT, [2, 4, 4]))
+
+    def test_symbolic_kernel(self):
+        """A symbolic kernel size yields a symbolic state length."""
+        actual = run_shape_inference(
+            "",
+            "CausalConvWithState",
+            [ts(FLOAT, ["B", "C", "L"]), ts(FLOAT, ["C", 1, "K"])],
+            opset_version=27,
+            num_outputs=2,
+        )
+        self.assertEqual(actual[0].shape, ir.Shape(["B", "C", "L"]))
+        present = actual[1].shape
+        self.assertEqual(str(present[0]), "B")
+        self.assertEqual(str(present[1]), "C")
+        self.assertIsInstance(present[2], ir.SymbolicDim)
+
+    def test_output_only(self):
+        actual = run_shape_inference(
+            "",
+            "CausalConvWithState",
+            [ts(FLOAT, [2, 4, 8]), ts(FLOAT, [4, 1, 4])],
+            opset_version=27,
+            num_outputs=1,
+        )
+        self.assertEqual(actual[0], ts(FLOAT, [2, 4, 8]))
+
+
 if __name__ == "__main__":
     unittest.main()

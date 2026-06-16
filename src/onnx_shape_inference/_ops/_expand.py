@@ -24,12 +24,16 @@ def infer_expand(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
     input_dtype = data.dtype
     input_shape = data.shape
 
-    # Try to read the target shape from const_value
+    # Try to read the target shape from const_value, then symbolic_value.
     target_shape: ir.Shape | None = None
     shape_const = ir.convenience.get_const_tensor(shape_input)
     if shape_const is not None:
         target_dims = [int(x) for x in shape_const.numpy().flatten()]
         target_shape = ir.Shape(target_dims)
+    else:
+        sym_val = ctx.get_symbolic_value(shape_input)
+        if sym_val is not None:
+            target_shape = ir.Shape(list(sym_val))
 
     output_shape: ir.Shape | None = None
     if input_shape is not None and target_shape is not None:

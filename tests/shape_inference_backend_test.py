@@ -42,13 +42,7 @@ _test_args = [
 
 # Expanded multi-op models where shape info is lost through If/Loop/complex
 # subgraphs or where intermediate Constant/Shape ops don't preserve shapes.
-_SKIP_EXPANDED_MODELS: set[str] = {
-    # AffineGrid: rank mismatch between If branches (scalar vs 1D)
-    "test_affine_grid_2d_align_corners_expanded",
-    "test_affine_grid_2d_expanded",
-    "test_affine_grid_3d_align_corners_expanded",
-    "test_affine_grid_3d_expanded",
-}
+_SKIP_EXPANDED_MODELS: set[str] = set()
 
 _ALL_SKIPS = _SKIP_EXPANDED_MODELS
 
