@@ -498,5 +498,162 @@ class OpSchemaFunctionExpansionTest(unittest.TestCase):
         self.assertIsNone(node.outputs[0].shape)
 
 
+class OpSchemaFunctionUnitTest(unittest.TestCase):
+    """White-box tests for the op-schema function fallback machinery."""
+
+    @staticmethod
+    def _tiny_function(n_in: int, n_out: int) -> ir.Function:
+        ins = [ir.Value(name=f"fi{i}") for i in range(n_in)]
+        outs = [ir.Value(name=f"fo{i}") for i in range(n_out)]
+        nodes = []
+        if n_in and n_out:
+            nodes = [ir.Node("", "Identity", inputs=[ins[0]], outputs=[outs[0]])]
+        graph = ir.Graph(
+            inputs=ins, outputs=outs, nodes=nodes, opset_imports={"": 18}, name="fb"
+        )
+        return ir.Function(domain="", name="Foo", graph=graph, attributes=[])
+
+    def _seed(self, cache, node, opset, f):
+        from onnx_shape_inference import _functions
+
+        key = (
+            node.domain or "",
+            node.op_type,
+            opset,
+            _functions._input_type_signature(node),
+            _functions._make_attr_signature(node),
+        )
+        cache[key] = f
+
+    def _call(self, node, *, process_graph_fn, cache, opset=18, active=None):
+        from onnx_shape_inference import _functions
+
+        ctx = _context.ShapeInferenceContext({"": opset})
+        return _functions.infer_via_op_schema_function(
+            ctx,
+            node,
+            process_graph_fn=process_graph_fn,
+            warn_on_missing=False,
+            opset_version=opset,
+            active_functions=active,
+            op_function_cache=cache,
+        )
+
+    def test_happy_path_copies_shape_dtype_and_sym_data(self):
+        x = _make_value("x", shape=[2, 3], dtype=FLOAT)
+        node = ir.Node("", "Foo", inputs=[x], outputs=[ir.Value(name="y")])
+        f = self._tiny_function(1, 1)
+
+        def pg(child_ctx, graph, **kw):
+            for o in graph.outputs:
+                o.shape = ir.Shape([5, 6])
+                o.dtype = FLOAT
+                child_ctx.set_symbolic_value(o, [5, 6])
+            return True
+
+        cache: dict = {}
+        self._seed(cache, node, 18, f)
+        ok = self._call(node, process_graph_fn=pg, cache=cache)
+        self.assertTrue(ok)
+        self.assertEqual(node.outputs[0].shape, ir.Shape([5, 6]))
+        self.assertEqual(node.outputs[0].dtype, FLOAT)
+        self.assertIn(_context.SYM_DATA_KEY, node.outputs[0].metadata_props)
+
+    def test_recursion_guard_returns_false(self):
+        x = _make_value("x", shape=[2], dtype=FLOAT)
+        node = ir.Node("", "Foo", inputs=[x], outputs=[ir.Value(name="y")])
+
+        def pg(child_ctx, graph, **kw):  # pragma: no cover - must not run
+            raise AssertionError("body should not run under recursion guard")
+
+        ok = self._call(
+            node, process_graph_fn=pg, cache={}, active=frozenset({("", "Foo", "")})
+        )
+        self.assertFalse(ok)
+
+    def test_degenerate_body_rejected(self):
+        x = _make_value("x", shape=[2], dtype=FLOAT)
+        node = ir.Node("", "Foo", inputs=[x], outputs=[ir.Value(name="y")])
+        f = self._tiny_function(1, 0)  # no outputs
+
+        def pg(child_ctx, graph, **kw):  # pragma: no cover - must not run
+            raise AssertionError("body should not run for degenerate function")
+
+        cache: dict = {}
+        self._seed(cache, node, 18, f)
+        self.assertFalse(self._call(node, process_graph_fn=pg, cache=cache))
+
+    def test_more_inputs_than_formals_rejected(self):
+        a = _make_value("a", shape=[2], dtype=FLOAT)
+        b = _make_value("b", shape=[2], dtype=FLOAT)
+        node = ir.Node("", "Foo", inputs=[a, b], outputs=[ir.Value(name="y")])
+        f = self._tiny_function(1, 1)  # only one formal input
+        cache: dict = {}
+        self._seed(cache, node, 18, f)
+        self.assertFalse(self._call(node, process_graph_fn=lambda *a, **k: True, cache=cache))
+
+    def test_op_usage_error_propagates(self):
+        x = _make_value("x", shape=[2], dtype=FLOAT)
+        node = ir.Node("", "Foo", inputs=[x], outputs=[ir.Value(name="y")])
+        f = self._tiny_function(1, 1)
+
+        def pg(child_ctx, graph, **kw):
+            raise _context.OpUsageError(node, "boom")
+
+        cache: dict = {}
+        self._seed(cache, node, 18, f)
+        with self.assertRaises(_context.OpUsageError):
+            self._call(node, process_graph_fn=pg, cache=cache)
+
+    def test_generic_exception_returns_false(self):
+        x = _make_value("x", shape=[2], dtype=FLOAT)
+        node = ir.Node("", "Foo", inputs=[x], outputs=[ir.Value(name="y")])
+        f = self._tiny_function(1, 1)
+
+        def pg(child_ctx, graph, **kw):
+            raise ValueError("unexpected")
+
+        cache: dict = {}
+        self._seed(cache, node, 18, f)
+        self.assertFalse(self._call(node, process_graph_fn=pg, cache=cache))
+
+    def test_materialize_unknown_op_returns_none(self):
+        from onnx_shape_inference import _functions
+
+        x = _make_value("x", shape=[2], dtype=FLOAT)
+        node = ir.Node("com.example", "NoSuchOp", inputs=[x], outputs=[ir.Value(name="y")])
+        self.assertIsNone(_functions._materialize_op_schema_function(node, 18))
+
+    def test_materialize_static_function_body(self):
+        """An op with a *static* function body materializes to an ir.Function."""
+        from onnx_shape_inference import _functions
+
+        try:
+            schema = onnx.defs.get_schema("HardSwish", max_inclusive_version=22, domain="")
+        except Exception:
+            self.skipTest("HardSwish not available")
+        if not schema.has_function or schema.has_context_dependent_function:
+            self.skipTest("HardSwish is not a static-function op in this build")
+
+        x = _make_value("x", shape=[2, 3], dtype=FLOAT)
+        node = ir.Node("", "HardSwish", inputs=[x], outputs=[ir.Value(name="y")])
+        f = _functions._materialize_op_schema_function(node, 22)
+        self.assertIsNotNone(f)
+        self.assertGreaterEqual(len(f.graph), 1)
+
+    def test_materialize_handles_deserialize_failure(self):
+        """If body materialization/deserialization raises, the helper returns None."""
+        import unittest.mock as mock
+
+        from onnx_shape_inference import _functions
+
+        x = _make_value("x", shape=[2, 8, 96], dtype=FLOAT)
+        node = ir.Node("", "Attention", inputs=[x], outputs=[ir.Value(name="y")])
+        with mock.patch.object(
+            ir.serde, "deserialize_function", side_effect=RuntimeError("boom")
+        ):
+            self.assertIsNone(_functions._materialize_op_schema_function(node, 24))
+
+
 if __name__ == "__main__":
     unittest.main()

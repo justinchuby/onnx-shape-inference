@@ -267,5 +267,171 @@ class FailingOpTest(unittest.TestCase):
             _engine.infer_symbolic_shapes(model)
 
 
+class RefineBodyInputTest(unittest.TestCase):
+    """Tests for _refine_body_input (Scan/Loop body input shape refinement)."""
+
+    def _ctx(self) -> _context.ShapeInferenceContext:
+        return _context.ShapeInferenceContext({"": 18}, policy="override")
+
+    def test_actual_none_keeps_body_shape(self):
+        ctx = self._ctx()
+        body = ir.Value(
+            name="b", shape=ir.Shape([3, 4]), type=ir.TensorType(ir.DataType.FLOAT)
+        )
+        _engine._refine_body_input(ctx, body, None, ir.DataType.FLOAT)
+        self.assertEqual(body.shape, ir.Shape([3, 4]))
+
+    def test_rank_mismatch_replaces_with_actual(self):
+        ctx = self._ctx()
+        body = ir.Value(name="b", shape=ir.Shape([3]), type=ir.TensorType(ir.DataType.FLOAT))
+        _engine._refine_body_input(ctx, body, ir.Shape([5, 6]), ir.DataType.FLOAT)
+        self.assertEqual(body.shape, ir.Shape([5, 6]))
+
+    def test_concrete_body_dim_kept_over_symbolic_actual(self):
+        """A concrete body dim is kept when the actual dim is symbolic.
+
+        The trailing (anonymous) body position falls through to the actual dim.
+        """
+        ctx = self._ctx()
+        # body: [3, anonymous], actual: ["X", "Y"]
+        body = ir.Value(
+            name="b",
+            shape=ir.Shape([3, ir.SymbolicDim(None)]),
+            type=ir.TensorType(ir.DataType.FLOAT),
+        )
+        _engine._refine_body_input(
+            ctx, body, ir.Shape([ir.SymbolicDim("X"), ir.SymbolicDim("Y")]), ir.DataType.FLOAT
+        )
+        # dim0: concrete body 3 wins; dim1: anonymous body -> actual "Y".
+        self.assertEqual(body.shape[0], 3)
+        self.assertEqual(str(body.shape[1]), "Y")
+
+    def test_named_body_dim_preferred_when_actual_symbolic(self):
+        ctx = self._ctx()
+        body = ir.Value(
+            name="b",
+            shape=ir.Shape([ir.SymbolicDim("D")]),
+            type=ir.TensorType(ir.DataType.FLOAT),
+        )
+        _engine._refine_body_input(
+            ctx, body, ir.Shape([ir.SymbolicDim("E")]), ir.DataType.FLOAT
+        )
+        self.assertEqual(str(body.shape[0]), "D")
+
+
+class ScanNegativeAxisTest(unittest.TestCase):
+    """Scan with a negative scan_input_axes exercises the axis-normalization path."""
+
+    def test_negative_scan_input_axis(self):
+        # Body: one state input [D], one scan slice input [D].
+        acc_in = ir.Value(
+            name="acc_in",
+            shape=ir.Shape([ir.SymbolicDim("D")]),
+            type=ir.TensorType(ir.DataType.FLOAT),
+        )
+        x_t = ir.Value(
+            name="x_t",
+            shape=ir.Shape([ir.SymbolicDim("D")]),
+            type=ir.TensorType(ir.DataType.FLOAT),
+        )
+        add = ir.Node("", "Add", inputs=[acc_in, x_t], outputs=[ir.Value(name="acc_out")])
+        ident = ir.Node(
+            "", "Identity", inputs=[add.outputs[0]], outputs=[ir.Value(name="scan_out")]
+        )
+        body = ir.Graph(
+            inputs=[acc_in, x_t],
+            outputs=[add.outputs[0], ident.outputs[0]],
+            nodes=[add, ident],
+            opset_imports={"": 18},
+            name="body",
+        )
+
+        # X scanned along the last axis (-1): shape [D, T].
+        x = ir.Value(
+            name="X",
+            shape=ir.Shape([ir.SymbolicDim("D"), ir.SymbolicDim("T")]),
+            type=ir.TensorType(ir.DataType.FLOAT),
+        )
+        zero = ir.Value(
+            name="zero",
+            shape=ir.Shape([ir.SymbolicDim("D")]),
+            type=ir.TensorType(ir.DataType.FLOAT),
+        )
+        scan = ir.Node(
+            "",
+            "Scan",
+            inputs=[zero, x],
+            outputs=[ir.Value(name="acc_final"), ir.Value(name="Y")],
+            attributes={
+                "num_scan_inputs": ir.Attr("num_scan_inputs", ir.AttributeType.INT, 1),
+                "scan_input_axes": ir.Attr("scan_input_axes", ir.AttributeType.INTS, [-1]),
+                "body": ir.Attr("body", ir.AttributeType.GRAPH, body),
+            },
+        )
+        graph = ir.Graph(
+            inputs=[zero, x],
+            outputs=list(scan.outputs),
+            nodes=[scan],
+            opset_imports={"": 18},
+            name="g",
+        )
+        model = ir.Model(graph, ir_version=10)
+        # Must run without error; the negative axis is normalized to drop dim -1.
+        _engine.infer_symbolic_shapes(model)
+        self.assertIsNotNone(scan.outputs[1].shape)
+
+
+class ScanBodyPropagationGuardTest(unittest.TestCase):
+    """Defensive guards in _propagate_types_to_scan_body for malformed Scan."""
+
+    def _scan(self, attrs: dict) -> ir.Node:
+        x = ir.Value(name="X", shape=ir.Shape([2, 3]), type=ir.TensorType(ir.DataType.FLOAT))
+        return ir.Node(
+            "",
+            "Scan",
+            inputs=[x],
+            outputs=[ir.Value(name="Y")],
+            attributes=attrs,
+        )
+
+    def test_missing_num_scan_inputs_is_noop(self):
+        ctx = _context.ShapeInferenceContext({"": 18})
+        body = ir.Graph(
+            inputs=[ir.Value(name="bi")],
+            outputs=[ir.Value(name="bo")],
+            nodes=[],
+            opset_imports={"": 18},
+            name="body",
+        )
+        node = self._scan({"body": ir.Attr("body", ir.AttributeType.GRAPH, body)})
+        # Must not raise even though num_scan_inputs is absent.
+        _engine._propagate_types_to_scan_body(ctx, node)
+
+    def test_negative_num_state_is_noop(self):
+        ctx = _context.ShapeInferenceContext({"": 18})
+        body = ir.Graph(
+            inputs=[ir.Value(name="bi")],
+            outputs=[ir.Value(name="bo")],
+            nodes=[],
+            opset_imports={"": 18},
+            name="body",
+        )
+        # num_scan_inputs (5) > number of node inputs (1) -> num_state < 0.
+        node = self._scan(
+            {
+                "body": ir.Attr("body", ir.AttributeType.GRAPH, body),
+                "num_scan_inputs": ir.Attr("num_scan_inputs", ir.AttributeType.INT, 5),
+            }
+        )
+        _engine._propagate_types_to_scan_body(ctx, node)
+
+    def test_missing_body_is_noop(self):
+        ctx = _context.ShapeInferenceContext({"": 18})
+        node = self._scan(
+            {"num_scan_inputs": ir.Attr("num_scan_inputs", ir.AttributeType.INT, 1)}
+        )
+        _engine._propagate_types_to_scan_body(ctx, node)
+
+
 if __name__ == "__main__":
     unittest.main()

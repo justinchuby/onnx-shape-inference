@@ -528,6 +528,157 @@ class GroupQueryAttentionTest(unittest.TestCase):
         # present_key: [2, kv_num_heads=4, seq=8, head_size=16]
         self.assertEqual(actual[1].shape, ir.Shape([2, 4, 8, 16]))
 
+    def test_packed_indivisible_hidden_symbolic(self):
+        """Packed QKV with an indivisible hidden keeps output/present symbolic.
+
+        Hidden not divisible by the head total leaves the output hidden and
+        present head_size symbolic rather than truncating.
+        """
+        actual = run_shape_inference(
+            MSFT,
+            "GroupQueryAttention",
+            [ts(FLOAT, [2, 8, 100])],  # 100 % (4 + 2*1) != 0
+            attributes={
+                "num_heads": ir.Attr("num_heads", ir.AttributeType.INT, 4),
+                "kv_num_heads": ir.Attr("kv_num_heads", ir.AttributeType.INT, 1),
+            },
+            opset_version=1,
+            num_outputs=3,
+        )
+        # Output hidden is data-dependent -> symbolic.
+        self.assertEqual(actual[0].shape[0], 2)
+        self.assertEqual(actual[0].shape[1], 8)
+        self.assertIsInstance(actual[0].shape[2], ir.SymbolicDim)
+        # present head_size also symbolic.
+        self.assertIsInstance(actual[1].shape[3], ir.SymbolicDim)
+
+    def test_packed_symbolic_hidden(self):
+        """A symbolic query hidden size leaves packed head_size unknown."""
+        actual = run_shape_inference(
+            MSFT,
+            "GroupQueryAttention",
+            [ts(FLOAT, ["B", "S", "D"])],
+            attributes={
+                "num_heads": ir.Attr("num_heads", ir.AttributeType.INT, 4),
+                "kv_num_heads": ir.Attr("kv_num_heads", ir.AttributeType.INT, 1),
+            },
+            opset_version=1,
+            num_outputs=3,
+        )
+        self.assertIsInstance(actual[0].shape[2], ir.SymbolicDim)
+        # present: [B, 1, S, <symbolic head_size>]
+        self.assertEqual(str(actual[1].shape[0]), "B")
+        self.assertEqual(actual[1].shape[1], 1)
+        self.assertIsInstance(actual[1].shape[3], ir.SymbolicDim)
+
+    def test_past_key_symbolic_kv_seq_fresh_dim(self):
+        """When the current kv length is unknown, present_seq is a fresh dim.
+
+        Packed QKV with a rank-2 (non-3D) query means the kv length can't be
+        read, so the present sequence dim is symbolic while batch / kv_num_heads
+        / head_size still come from past_key.
+        """
+        actual = run_shape_inference_with_values(
+            MSFT,
+            "GroupQueryAttention",
+            [
+                # rank-2 query: _kv_sequence_length() returns None in packed mode
+                ir.Value(name="q", shape=ir.Shape([2, 64]), type=ir.TensorType(FLOAT)),
+                None,
+                None,
+                ir.Value(name="pk", shape=ir.Shape([2, 1, 10, 16]), type=ir.TensorType(FLOAT)),
+                ir.Value(name="pv", shape=ir.Shape([2, 1, 10, 16]), type=ir.TensorType(FLOAT)),
+            ],
+            attributes={
+                "num_heads": ir.Attr("num_heads", ir.AttributeType.INT, 4),
+                "kv_num_heads": ir.Attr("kv_num_heads", ir.AttributeType.INT, 1),
+            },
+            opset_version=1,
+            num_outputs=3,
+        )
+        present = actual[1].shape
+        self.assertEqual(present[0], 2)
+        self.assertEqual(present[1], 1)
+        self.assertIsInstance(present[2], ir.SymbolicDim)  # unknown present_seq
+        self.assertEqual(present[3], 16)
+
+    def test_single_output_skips_present(self):
+        """With a single output, present_key/value inference is skipped."""
+        actual = run_shape_inference(
+            MSFT,
+            "GroupQueryAttention",
+            [ts(FLOAT, [2, 8, 96])],
+            attributes={
+                "num_heads": ir.Attr("num_heads", ir.AttributeType.INT, 4),
+                "kv_num_heads": ir.Attr("kv_num_heads", ir.AttributeType.INT, 1),
+            },
+            opset_version=1,
+            num_outputs=1,
+        )
+        self.assertEqual(actual[0], ts(FLOAT, [2, 8, 64]))
+
+    def test_packed_missing_kv_num_heads_symbolic(self):
+        """Packed QKV without kv_num_heads cannot resolve head_size -> symbolic."""
+        actual = run_shape_inference(
+            MSFT,
+            "GroupQueryAttention",
+            [ts(FLOAT, [2, 8, 96])],
+            attributes={"num_heads": ir.Attr("num_heads", ir.AttributeType.INT, 4)},
+            opset_version=1,
+            num_outputs=3,
+        )
+        self.assertIsInstance(actual[0].shape[2], ir.SymbolicDim)
+
+    def test_non_packed_indivisible_prefill_present_symbolic(self):
+        """Non-packed prefill with an indivisible hidden keeps head_size symbolic.
+
+        When the hidden size is not divisible by num_heads, the present
+        head_size stays symbolic.
+        """
+        actual = run_shape_inference(
+            MSFT,
+            "GroupQueryAttention",
+            [
+                ts(FLOAT, [2, 8, 100]),  # 100 % 3 != 0
+                ts(FLOAT, [2, 8, 30]),
+                ts(FLOAT, [2, 8, 30]),
+            ],
+            attributes={
+                "num_heads": ir.Attr("num_heads", ir.AttributeType.INT, 3),
+                "kv_num_heads": ir.Attr("kv_num_heads", ir.AttributeType.INT, 1),
+            },
+            opset_version=1,
+            num_outputs=3,
+        )
+        # output hidden stays as the query hidden (non-packed); present head_size symbolic.
+        self.assertEqual(actual[0].shape[2], 100)
+        self.assertIsInstance(actual[1].shape[3], ir.SymbolicDim)
+
+    def test_non_packed_rank2_kv_present_seq_symbolic(self):
+        """Non-packed rank-2 key/value makes the prefill present_seq symbolic.
+
+        With a rank-2 (not 3-D) key/value the kv length can't be read, so the
+        present sequence dim is symbolic.
+        """
+        q = ir.Value(name="q", shape=ir.Shape([2, 8, 64]), type=ir.TensorType(FLOAT))
+        k = ir.Value(name="k", shape=ir.Shape([2, 16]), type=ir.TensorType(FLOAT))
+        v = ir.Value(name="v", shape=ir.Shape([2, 16]), type=ir.TensorType(FLOAT))
+        actual = run_shape_inference_with_values(
+            MSFT,
+            "GroupQueryAttention",
+            [q, k, v],
+            attributes={
+                "num_heads": ir.Attr("num_heads", ir.AttributeType.INT, 4),
+                "kv_num_heads": ir.Attr("kv_num_heads", ir.AttributeType.INT, 1),
+            },
+            opset_version=1,
+            num_outputs=3,
+        )
+        present = actual[1].shape
+        self.assertEqual(present[0], 2)
+        self.assertEqual(present[1], 1)
+        self.assertIsInstance(present[2], ir.SymbolicDim)  # unknown present_seq
+
 
 class MatMulNBitsTest(unittest.TestCase):
     def test_basic_2d(self):

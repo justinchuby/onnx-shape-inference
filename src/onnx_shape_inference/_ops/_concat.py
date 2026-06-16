@@ -83,12 +83,11 @@ def infer_concat(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
         # Expand).  Propagation is only skipped when a segment length itself is
         # unknown.
         if rank == 1 and axis == 0:
+            # All inputs are guaranteed non-None here (the shape-collection loop
+            # above raises for any None input).
             combined: list[int | ir.SymbolicDim] = []
             propagate = True
             for inp in node.inputs:
-                if inp is None:
-                    propagate = False
-                    break
                 sv = ctx.get_symbolic_value(inp)
                 if sv is not None:
                     combined.extend(sv)
