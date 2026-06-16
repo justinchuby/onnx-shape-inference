@@ -537,8 +537,11 @@ def _materialize_op_schema_function(
                     continue
                 # Serialize via the value so the TypeProto carries the *shape*
                 # (in onnx-ir the shape lives on the Value, not the type).  Some
-                # context-dependent bodies (e.g. CausalConvWithState) branch on
-                # input rank, so an empty/no-shape type yields a degenerate body.
+                # context-dependent body builders inspect the input shape and
+                # emit an empty body when it is absent — e.g. ONNX's
+                # CausalConvWithState requires a shape of rank >= 2 with a
+                # statically known channel dim (it needs a compile-time ``group``
+                # for the inner Conv), otherwise it returns no body.
                 value_info = ir.serde.serialize_value(v)
                 input_types.append(value_info.type.SerializeToString())
             body_bytes = schema.get_context_dependent_function(
