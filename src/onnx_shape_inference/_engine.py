@@ -98,11 +98,15 @@ def _refine_body_input(
 ) -> None:
     """Push an actual input's dtype/shape onto a subgraph formal input.
 
-    The subgraph's declared ``value_info`` is advisory; the real type comes
-    from the actual value bound at the call site.  Concrete dims from the
-    actual input therefore take precedence over symbolic dims declared on the
-    body input, while symbolic body dims are kept where the actual dim is
-    unknown.
+    The subgraph's declared ``value_info`` is advisory for *shape*: concrete
+    dims from the actual call-site input take precedence over symbolic dims
+    declared on the body input, while symbolic body dims are kept where the
+    actual dim is unknown.
+
+    The body input's declared **dtype** is treated as authoritative and is only
+    filled in when it is missing — it is never overridden here.  A genuine
+    dtype conflict between the body declaration and the actual input is left for
+    the body's own op inference to surface rather than being silently rewritten.
     """
     if actual_dtype is not None and body_inp.dtype is None:
         ctx.set_dtype(body_inp, actual_dtype)

@@ -13,8 +13,6 @@ __all__ = [
 
 import onnx_ir as ir
 
-Dim = "int | ir.SymbolicDim"
-
 
 def dim_product(dims: list[int | ir.SymbolicDim]) -> int | ir.SymbolicDim:
     """Multiply a list of dimensions, keeping the result symbolic when needed.
