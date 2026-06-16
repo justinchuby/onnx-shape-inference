@@ -9,6 +9,7 @@ import os
 import pathlib
 import unittest
 
+import onnx
 import onnx_ir as ir
 
 from onnx_shape_inference import _context, infer_symbolic_shapes
@@ -429,6 +430,72 @@ class TestFunctionShapeInference(unittest.TestCase):
         self.assertEqual(call2.outputs[0].dtype, FLOAT)
         self.assertEqual(inp1.dtype, FLOAT, "inp1 dtype was corrupted on second run")
         self.assertEqual(inp2.dtype, FLOAT, "inp2 dtype was corrupted on second run")
+
+
+class OpSchemaFunctionExpansionTest(unittest.TestCase):
+    """Inference for standard ops via their ONNX op-schema function bodies.
+
+    Newer ONNX operators define their semantics as a (often context-dependent)
+    function of more primitive ops.  When we have no hand-written rule for such
+    an op, the engine materializes and runs shape inference on that function
+    body, which lets us track new ops automatically.
+    """
+
+    def _build_attention(self, opset: int = 24):
+        b, h, s, d = 2, 4, 8, 16
+        helper = onnx.helper
+
+        def vi(name):
+            return helper.make_tensor_value_info(name, onnx.TensorProto.FLOAT, [b, h, s, d])
+
+        node = helper.make_node("Attention", ["Q", "K", "V"], ["Y"])
+        graph = helper.make_graph(
+            [node],
+            "g",
+            [vi("Q"), vi("K"), vi("V")],
+            [helper.make_tensor_value_info("Y", onnx.TensorProto.FLOAT, None)],
+        )
+        proto = helper.make_model(
+            graph, opset_imports=[helper.make_opsetid("", opset)], ir_version=10
+        )
+        return ir.serde.deserialize_model(proto), (b, h, s, d)
+
+    def test_attention_inferred_via_function_body(self):
+        """Standard ``Attention`` (opset 24) is inferred via its function body.
+
+        It has no registered rule, so the engine expands its context-dependent
+        function body to recover the output shape.
+        """
+        try:
+            onnx.defs.get_schema("Attention", max_inclusive_version=24, domain="")
+        except Exception:
+            self.skipTest("Attention op (opset 24) not available in this onnx build")
+
+        model, (b, h, s, d) = self._build_attention()
+        infer_symbolic_shapes(model, warn_on_missing=False)
+        out = model.graph.outputs[0]
+        self.assertEqual(out.dtype, FLOAT)
+        self.assertEqual(out.shape, ir.Shape([b, h, s, d]))
+
+    def test_unknown_op_still_warns(self):
+        """An op with no registered rule and no function body is a safe no-op.
+
+        The output stays unset and inference does not raise.
+        """
+        x = _make_value("x", shape=[2, 3], dtype=FLOAT)
+        node = ir.Node(
+            "com.example", "TotallyMadeUpOp", inputs=[x], outputs=[ir.Value(name="y")]
+        )
+        graph = ir.Graph(
+            inputs=[x],
+            outputs=node.outputs,
+            nodes=[node],
+            opset_imports={"": 24, "com.example": 1},
+            name="g",
+        )
+        model = ir.Model(graph, ir_version=10)
+        infer_symbolic_shapes(model, warn_on_missing=False)
+        self.assertIsNone(node.outputs[0].shape)
 
 
 if __name__ == "__main__":

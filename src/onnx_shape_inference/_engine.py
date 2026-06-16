@@ -76,6 +76,9 @@ def _infer_symbolic_shapes(
     # and call-site attribute values.  A new dict per call ensures no stale hits across
     # separate infer_symbolic_shapes calls.
     inference_cache: _FuncOutputCache = {}
+    # Per-run cache of materialized op-schema function bodies, keyed by
+    # (domain, op_type, opset, input-type signature).
+    op_function_cache: dict = {}
 
     return _process_graph(
         ctx,
@@ -83,6 +86,7 @@ def _infer_symbolic_shapes(
         warn_on_missing=warn_on_missing,
         model_functions=model.functions,
         inference_cache=inference_cache,
+        op_function_cache=op_function_cache,
     )
 
 
@@ -226,6 +230,7 @@ def _process_graph(
     model_functions: Mapping[tuple[str, str, str], ir.Function] | None = None,
     active_functions: frozenset[tuple[str, str, str]] | None = None,
     inference_cache: _FuncOutputCache | None = None,
+    op_function_cache: dict | None = None,
 ) -> bool:
     """Process a single graph.
 
@@ -242,6 +247,9 @@ def _process_graph(
             results, keyed by ``(id(function), input_signature, attr_signature)``
             (function identity, call-site input shapes/dtypes/sym_data, call-site
             attribute values).
+        op_function_cache: Optional per-inference-run cache of materialized
+            op-schema function bodies, keyed by ``(domain, op_type, opset,
+            input-type signature)``.
 
     Returns:
         ``True`` if any shapes were modified.
@@ -290,6 +298,7 @@ def _process_graph(
                         model_functions=model_functions,
                         active_functions=active_functions,
                         inference_cache=inference_cache,
+                        op_function_cache=op_function_cache,
                     ):
                         modified = True
 
@@ -332,20 +341,30 @@ def _process_graph(
                     domain=domain,
                     message=f"Shape inference failed for {domain}::{op_type}",
                 ) from e
-        elif model_functions is not None:
-            func_key = (domain, op_type, node.overload or "")
-            if func_key in model_functions:
-                _functions.infer_function_call_output_shapes(
-                    ctx,
-                    node,
-                    model_functions,
-                    process_graph_fn=_process_graph,
-                    warn_on_missing=warn_on_missing,
-                    active_functions=active_functions,
-                    inference_cache=inference_cache,
-                )
-            elif warn_on_missing:
-                _emit_missing_warning(domain, op_type, warned_ops)
+        elif model_functions is not None and (domain, op_type, node.overload or "") in (
+            model_functions
+        ):
+            _functions.infer_function_call_output_shapes(
+                ctx,
+                node,
+                model_functions,
+                process_graph_fn=_process_graph,
+                warn_on_missing=warn_on_missing,
+                active_functions=active_functions,
+                inference_cache=inference_cache,
+            )
+        elif _functions.infer_via_op_schema_function(
+            ctx,
+            node,
+            process_graph_fn=_process_graph,
+            warn_on_missing=warn_on_missing,
+            opset_version=opset_version,
+            model_functions=model_functions,
+            active_functions=active_functions,
+            inference_cache=inference_cache,
+            op_function_cache=op_function_cache,
+        ):
+            pass
         elif warn_on_missing:
             _emit_missing_warning(domain, op_type, warned_ops)
 

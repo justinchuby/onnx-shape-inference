@@ -4,13 +4,17 @@
 
 from __future__ import annotations
 
-__all__ = ["infer_function_call_output_shapes"]
+__all__ = [
+    "infer_function_call_output_shapes",
+    "infer_via_op_schema_function",
+]
 
 import contextlib
 import logging
 from collections.abc import Callable, Generator, Mapping
 from typing import TYPE_CHECKING
 
+import onnx
 import onnx_ir as ir
 
 from onnx_shape_inference import _context
@@ -467,3 +471,200 @@ def infer_function_call_output_shapes(
 
     # Propagate dim counter back to the parent context
     ctx._dim_counter = child_ctx._dim_counter
+
+
+# Per-inference-run cache of materialized op-schema functions, keyed by
+# (domain, op_type, opset_version, input_type_signature).  Context-dependent
+# function bodies depend on the call-site input types, so the cache key must
+# include them.
+if TYPE_CHECKING:
+    _OpFunctionCache = dict[tuple, "ir.Function | None"]
+
+
+def _input_type_signature(node: ir.Node) -> tuple:
+    """Build a hashable signature of a node's input element types and ranks.
+
+    Context-dependent op functions can branch on the input dtypes/ranks (e.g.
+    an attention op may emit different bodies for 3-D vs 4-D query), so the
+    materialized-function cache key includes this signature.
+    """
+    parts: list = []
+    for v in node.inputs:
+        if v is None:
+            parts.append(None)
+        else:
+            rank = v.shape.rank() if v.shape is not None else None
+            parts.append((v.dtype, rank))
+    return tuple(parts)
+
+
+def _materialize_op_schema_function(
+    node: ir.Node,
+    opset_version: int,
+) -> ir.Function | None:
+    """Materialize the ONNX op-schema function body for *node*, if one exists.
+
+    Many standard ONNX operators (and preview ops) define their semantics as a
+    function of more primitive ops — either a static ``function_body`` or, more
+    commonly for newer ops (Attention, RotaryEmbedding, LinearAttention,
+    CausalConvWithState, FlexAttention, …), a *context-dependent* function that
+    is generated from the concrete node and its input types.  Expanding that
+    body and running shape inference on it lets us infer shapes for ops we have
+    no hand-written rule for — and automatically tracks new ops as ONNX adds
+    them.
+
+    Returns ``None`` when the op has no schema, no function definition, or the
+    body cannot be materialized / deserialized.
+    """
+    domain = node.domain or ""
+    try:
+        schema = onnx.defs.get_schema(
+            node.op_type, max_inclusive_version=opset_version, domain=domain
+        )
+    except Exception:
+        return None
+
+    if not (schema.has_context_dependent_function or schema.has_function):
+        return None
+
+    try:
+        if schema.has_context_dependent_function:
+            node_proto = ir.serde.serialize_node(node)
+            input_types: list[bytes] = []
+            for v in node.inputs:
+                if v is None:
+                    input_types.append(onnx.TypeProto().SerializeToString())
+                    continue
+                # Serialize via the value so the TypeProto carries the *shape*
+                # (in onnx-ir the shape lives on the Value, not the type).  Some
+                # context-dependent bodies (e.g. CausalConvWithState) branch on
+                # input rank, so an empty/no-shape type yields a degenerate body.
+                value_info = ir.serde.serialize_value(v)
+                input_types.append(value_info.type.SerializeToString())
+            body_bytes = schema.get_context_dependent_function(
+                node_proto.SerializeToString(), input_types
+            )
+            function_proto = onnx.FunctionProto()
+            function_proto.ParseFromString(body_bytes)
+        else:
+            function_proto = schema.function_body
+        return ir.serde.deserialize_function(function_proto)
+    except Exception as e:
+        logger.debug(
+            "Could not materialize op-schema function for %s::%s: %s",
+            domain,
+            node.op_type,
+            e,
+        )
+        return None
+
+
+def infer_via_op_schema_function(
+    ctx: _context.ShapeInferenceContext,
+    node: ir.Node,
+    *,
+    process_graph_fn: Callable[..., bool],
+    warn_on_missing: bool,
+    opset_version: int,
+    model_functions: Mapping[tuple[str, str, str], ir.Function] | None = None,
+    active_functions: frozenset[tuple[str, str, str]] | None = None,
+    inference_cache: _FuncOutputCache | None = None,
+    op_function_cache: _OpFunctionCache | None = None,
+) -> bool:
+    """Infer a node's output shapes by expanding its ONNX op-schema function.
+
+    This is the fallback used by the engine when an op has no registered
+    inference rule and is not a model-local function.  It materializes the op's
+    (possibly context-dependent) function body, binds the call-site inputs to
+    the body's formal inputs, runs shape inference on the body, and copies the
+    resulting output shapes/dtypes back to *node*.
+
+    Returns ``True`` if the op had a usable function body and inference ran,
+    ``False`` otherwise (so the caller can fall back to a "missing op" warning).
+    """
+    domain = node.domain or ""
+    func_key = (domain, node.op_type, node.overload or "")
+
+    if active_functions is None:
+        active_functions = frozenset()
+    if func_key in active_functions:
+        # An op whose function body refers back to itself: stop recursing.
+        return False
+
+    # Cache materialized functions per (op, opset, input-type + attribute
+    # signature).  Context-dependent bodies can branch on both the input
+    # dtypes/ranks and the node's attribute values, so both are part of the key.
+    f: ir.Function | None
+    op_cache_key = (
+        domain,
+        node.op_type,
+        opset_version,
+        _input_type_signature(node),
+        _make_attr_signature(node),
+    )
+    if op_function_cache is not None and op_cache_key in op_function_cache:
+        f = op_function_cache[op_cache_key]
+    else:
+        f = _materialize_op_schema_function(node, opset_version)
+        if op_function_cache is not None:
+            op_function_cache[op_cache_key] = f
+
+    if f is None:
+        return False
+
+    # The body's formal inputs are the op's full formal-parameter list; the
+    # call site may legitimately omit trailing optional inputs (providing
+    # fewer).  Binding zips the provided inputs onto the leading formals, so we
+    # only need at least as many formals as provided inputs.  A degenerate body
+    # (e.g. ONNX returns an empty function for some attribute configs) has fewer
+    # formals than the node's inputs and is rejected here.
+    if len(node.inputs) > len(f.inputs) or not f.outputs:
+        return False
+
+    # Child context: merge the parent's opset versions (which carry the correct
+    # default-domain version for the body's standard ops) with the function's
+    # own opset imports.
+    child_opsets = dict(ctx.opset_imports)
+    child_opsets.update(f.opset_imports or {})
+    child_ctx = _context.ShapeInferenceContext(
+        opset_imports=child_opsets,
+        policy=ctx.policy,
+    )
+    child_ctx._dim_counter = ctx._dim_counter
+
+    try:
+        with _function_binding_scope(f, node):
+            process_graph_fn(
+                child_ctx,
+                f.graph,
+                warn_on_missing=warn_on_missing,
+                model_functions=model_functions,
+                active_functions=active_functions | {func_key},
+                inference_cache=inference_cache,
+            )
+
+            for f_out, n_out in zip(f.outputs, node.outputs):
+                if n_out is None:
+                    continue
+                if f_out.shape is not None:
+                    ctx.set_shape(n_out, f_out.shape)
+                if f_out.dtype is not None:
+                    ctx.set_dtype(n_out, f_out.dtype)
+                sym_data = f_out.metadata_props.get(_context.SYM_DATA_KEY)
+                if sym_data is not None:
+                    n_out.metadata_props[_context.SYM_DATA_KEY] = sym_data
+    except (_context.OpUsageError, _context.ShapeInferenceError):
+        # The body genuinely conflicts with the model — propagate.
+        raise
+    except Exception as e:
+        logger.debug(
+            "Op-schema function inference failed for %s::%s: %s",
+            domain,
+            node.op_type,
+            e,
+        )
+        ctx._dim_counter = child_ctx._dim_counter
+        return False
+
+    ctx._dim_counter = child_ctx._dim_counter
+    return True
