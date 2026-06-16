@@ -6,6 +6,8 @@ from __future__ import annotations
 
 __all__ = [
     "infer_attention",
+    "infer_flex_attention",
+    "infer_linear_attention",
     "infer_rotary_embedding",
 ]
 
@@ -14,6 +16,33 @@ import onnx_ir as ir
 from onnx_shape_inference import _context, _registry
 
 _reg = _registry.registry.register
+
+
+def _attr_int(node: ir.Node, name: str) -> int | None:
+    """Read an INT attribute, or ``None`` when absent."""
+    attr = node.attributes.get(name)
+    return attr.as_int() if attr is not None else None
+
+
+def _head_size(
+    ctx: _context.ShapeInferenceContext,
+    hidden: int | ir.SymbolicDim | None,
+    num_heads: int | None,
+) -> int | ir.SymbolicDim:
+    """Split a packed hidden size into per-head size.
+
+    Returns a concrete ``hidden // num_heads`` when both are known integers and
+    divide evenly; otherwise a fresh symbolic dim (the value is data-dependent
+    or not statically resolvable).
+    """
+    if (
+        isinstance(hidden, int)
+        and isinstance(num_heads, int)
+        and num_heads > 0
+        and hidden % num_heads == 0
+    ):
+        return hidden // num_heads
+    return ctx.new_symbolic_dim()
 
 
 @_reg("", "Attention", since_version=23)
@@ -146,3 +175,92 @@ def infer_rotary_embedding(ctx: _context.ShapeInferenceContext, node: ir.Node) -
         if len(node.inputs) > 1 and node.inputs[1] is not None:
             position_ids_shape = node.inputs[1].shape
         ctx.set_shape_and_dtype(node.outputs[1], position_ids_shape, ir.DataType.INT64)
+
+
+@_reg("", "LinearAttention", since_version=27)
+def infer_linear_attention(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
+    """Infer shape and dtype for LinearAttention operator.
+
+    Spec: https://onnx.ai/onnx/operators/onnx__LinearAttention.html
+
+    query/key/value are 3-D packed ``[B, T, H*D]``; ``q_num_heads`` and
+    ``kv_num_heads`` are required.  Outputs:
+
+    * ``output``        ``[B, T, q_num_heads * d_v]`` where
+      ``d_v = value_hidden // kv_num_heads`` (T type = query dtype).
+    * ``present_state`` ``[B, kv_num_heads, d_k, d_v]`` with
+      ``d_k = key_hidden // kv_num_heads``; equal to ``past_state`` when that
+      optional input is provided.
+    """
+    (q, k, v) = _context.check_inputs(node, "query", "key", "value")
+    past_state = (
+        node.inputs[3] if len(node.inputs) > 3 and node.inputs[3] is not None else None
+    )
+
+    q_num_heads = _attr_int(node, "q_num_heads")
+    kv_num_heads = _attr_int(node, "kv_num_heads")
+    output_dtype = q.dtype
+
+    # Output 0: [B, T, q_num_heads * d_v]
+    if len(node.outputs) > 0:
+        output_shape: ir.Shape | None = None
+        if q.shape is not None and q.shape.rank() == 3:
+            v_hidden = v.shape[2] if v.shape is not None else None
+            d_v = _head_size(ctx, v_hidden, kv_num_heads)
+            if isinstance(d_v, int) and q_num_heads is not None:
+                out_hidden: int | ir.SymbolicDim = q_num_heads * d_v
+            else:
+                out_hidden = ctx.new_symbolic_dim()
+            output_shape = ir.Shape([q.shape[0], q.shape[1], out_hidden])
+        ctx.set_shape_and_dtype(node.outputs[0], output_shape, output_dtype)
+
+    # Output 1: present_state [B, kv_num_heads, d_k, d_v]
+    if len(node.outputs) > 1 and node.outputs[1] is not None:
+        present_dtype = (
+            past_state.dtype
+            if past_state is not None and past_state.dtype is not None
+            else output_dtype
+        )
+        present_shape: ir.Shape | None = None
+        if (
+            past_state is not None
+            and past_state.shape is not None
+            and past_state.shape.rank() == 4
+        ):
+            # past_state is ground truth for the recurrent state buffer.
+            present_shape = past_state.shape
+        elif q.shape is not None and q.shape.rank() == 3 and kv_num_heads is not None:
+            k_hidden = k.shape[2] if k.shape is not None else None
+            v_hidden = v.shape[2] if v.shape is not None else None
+            d_k = _head_size(ctx, k_hidden, kv_num_heads)
+            d_v = _head_size(ctx, v_hidden, kv_num_heads)
+            present_shape = ir.Shape([q.shape[0], kv_num_heads, d_k, d_v])
+        ctx.set_shape_and_dtype(node.outputs[1], present_shape, present_dtype)
+
+
+@_reg("ai.onnx.preview", "FlexAttention", since_version=1)
+def infer_flex_attention(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
+    """Infer shape and dtype for ai.onnx.preview FlexAttention operator.
+
+    Inputs are rank-4:
+
+    * Q ``[B, q_num_heads, q_seq, head_size]``
+    * K ``[B, kv_num_heads, kv_seq, head_size]``
+    * V ``[B, kv_num_heads, kv_seq, v_head_size]``
+
+    Output ``Y = [B, q_num_heads, q_seq, v_head_size]`` (same element type as Q).
+    """
+    (q, _k, v) = _context.check_inputs(node, "Q", "K", "V")
+
+    if len(node.outputs) > 0:
+        output_shape: ir.Shape | None
+        if (
+            q.shape is not None
+            and q.shape.rank() == 4
+            and v.shape is not None
+            and v.shape.rank() == 4
+        ):
+            output_shape = ir.Shape([q.shape[0], q.shape[1], q.shape[2], v.shape[3]])
+        else:
+            output_shape = q.shape
+        ctx.set_shape_and_dtype(node.outputs[0], output_shape, q.dtype)

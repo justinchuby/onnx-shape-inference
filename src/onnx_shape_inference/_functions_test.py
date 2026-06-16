@@ -460,12 +460,57 @@ class OpSchemaFunctionExpansionTest(unittest.TestCase):
         )
         return ir.serde.deserialize_model(proto), (b, h, s, d)
 
-    def test_attention_inferred_via_function_body(self):
-        """Standard ``Attention`` (opset 24) is inferred via its function body.
+    def _build_hardswish(self, opset: int = 22):
+        helper = onnx.helper
+        x = helper.make_tensor_value_info("X", onnx.TensorProto.FLOAT, [3, 4])
+        node = helper.make_node("HardSwish", ["X"], ["Y"])
+        graph = helper.make_graph(
+            [node],
+            "g",
+            [x],
+            [helper.make_tensor_value_info("Y", onnx.TensorProto.FLOAT, None)],
+        )
+        proto = helper.make_model(
+            graph, opset_imports=[helper.make_opsetid("", opset)], ir_version=10
+        )
+        return ir.serde.deserialize_model(proto)
 
-        It has no registered rule, so the engine expands its context-dependent
-        function body to recover the output shape.
+    def test_fallback_used_when_no_native_rule(self):
+        """The op-schema fallback recovers the shape when no native rule exists.
+
+        ``HardSwish`` has a native (elementwise) rule, so to exercise the
+        *fallback* end to end we mask that rule (return ``None`` from the
+        registry lookup) and confirm the engine materializes and runs the op's
+        static function body to recover the output shape.
         """
+        import unittest.mock as mock
+
+        from onnx_shape_inference import _registry
+
+        try:
+            schema = onnx.defs.get_schema("HardSwish", max_inclusive_version=22, domain="")
+        except Exception:
+            self.skipTest("HardSwish op not available in this onnx build")
+        if not schema.has_function:
+            self.skipTest("HardSwish has no function body in this onnx build")
+
+        model = self._build_hardswish()
+        real_get = _registry.registry.get
+
+        def fake_get(domain, op_type, version):
+            if op_type == "HardSwish":
+                return None  # pretend we have no native rule
+            return real_get(domain, op_type, version)
+
+        with mock.patch.object(_registry.registry, "get", side_effect=fake_get):
+            infer_symbolic_shapes(model, warn_on_missing=False)
+
+        out = model.graph.outputs[0]
+        self.assertEqual(out.dtype, FLOAT)
+        self.assertEqual(out.shape, ir.Shape([3, 4]))
+
+    def test_attention_native_rule_infers_output(self):
+        """With the native rule active, ``Attention`` infers the output shape."""
         try:
             onnx.defs.get_schema("Attention", max_inclusive_version=24, domain="")
         except Exception:

@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 __all__ = [
+    "infer_causal_conv_with_state",
     "infer_conv",
     "infer_conv_integer",
     "infer_qlinear_conv",
@@ -188,3 +189,41 @@ def infer_qlinear_conv(ctx: _context.ShapeInferenceContext, node: ir.Node) -> No
     output_shape = _compute_conv_shape(ctx, node, x, w)
     if len(node.outputs) > 0:
         ctx.set_shape_and_dtype(node.outputs[0], output_shape, output_dtype)
+
+
+@_registry.registry.register("", "CausalConvWithState", since_version=27)
+def infer_causal_conv_with_state(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
+    """Infer shape and dtype for CausalConvWithState operator.
+
+    Spec: https://onnx.ai/onnx/operators/onnx__CausalConvWithState.html
+
+    A stateful causal depthwise 1-D convolution.  ``input``, ``output`` and the
+    carry ``present_state`` are rank-3 ``[B, C, L]`` / ``[B, C, k-1]`` where
+    ``k`` is the kernel size from ``weight`` of shape ``(C, 1, k)``:
+
+    * ``output``        same shape as ``input``.
+    * ``present_state`` ``[B, C, k - 1]`` (the last ``k-1`` positions kept for
+      incremental decode).
+    """
+    (inp, weight) = _context.check_inputs(node, "input", "weight")
+    output_dtype = inp.dtype
+
+    # Output 0: same shape as input.
+    if len(node.outputs) > 0:
+        ctx.set_shape_and_dtype(node.outputs[0], inp.shape, output_dtype)
+
+    # Output 1: present_state [B, C, k-1].
+    if len(node.outputs) > 1 and node.outputs[1] is not None:
+        present_shape: ir.Shape | None = None
+        if inp.shape is not None and inp.shape.rank() == 3:
+            kernel = (
+                weight.shape[2]
+                if weight.shape is not None and weight.shape.rank() == 3
+                else None
+            )
+            if isinstance(kernel, int):
+                state_len: int | ir.SymbolicDim = max(kernel - 1, 0)
+            else:
+                state_len = ctx.new_symbolic_dim()
+            present_shape = ir.Shape([inp.shape[0], inp.shape[1], state_len])
+        ctx.set_shape_and_dtype(node.outputs[1], present_shape, output_dtype)
