@@ -201,6 +201,30 @@ class MsLayerNormalizationTest(unittest.TestCase):
         )
         self.assertEqual(actual[0], ts(FLOAT, [2, 8, 64]))
 
+    def test_simplified_inv_std_dev(self):
+        # SimplifiedLayerNormalization output[1] is inv_std_var with reduced shape.
+        actual = run_shape_inference(
+            MSFT,
+            "SimplifiedLayerNormalization",
+            [ts(FLOAT, [2, 8, 64])],
+            opset_version=1,
+            num_outputs=2,
+        )
+        self.assertEqual(actual[0], ts(FLOAT, [2, 8, 64]))
+        self.assertEqual(actual[1], ts(FLOAT, [2, 8, 1]))
+
+    def test_simplified_float16_upcasts_inv_std_dev(self):
+        actual = run_shape_inference(
+            MSFT,
+            "SimplifiedLayerNormalization",
+            [ts(FLOAT16, [2, 8, 64])],
+            opset_version=1,
+            num_outputs=2,
+        )
+        self.assertEqual(actual[0], ts(FLOAT16, [2, 8, 64]))
+        # inv_std_var upcasts to FLOAT for float16 input
+        self.assertEqual(actual[1], ts(FLOAT, [2, 8, 1]))
+
 
 class MsSkipLayerNormalizationTest(unittest.TestCase):
     def test_basic(self):
