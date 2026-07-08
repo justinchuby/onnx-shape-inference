@@ -213,7 +213,7 @@ class ShapeInferenceContext:
 
     @property
     def opset(self) -> int:
-        """Get the default opset version for inference."""
+        """The default opset version for inference."""
         return self.opset_imports.get("", 1)
 
     def get_opset_version(self, domain: str) -> int:
