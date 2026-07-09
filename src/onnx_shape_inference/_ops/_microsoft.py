@@ -128,6 +128,9 @@ def infer_rotary_embedding(ctx: _context.ShapeInferenceContext, node: ir.Node) -
 
 @_reg(_MSFT, "LayerNormalization", since_version=1)
 @_reg(_MSFT, "SimplifiedLayerNormalization", since_version=1)
+# ONNX Runtime may mistakenly place SimplifiedLayerNormalization under the
+# default opset domain instead of com.microsoft; support that case too.
+@_reg("", "SimplifiedLayerNormalization", since_version=1)
 def _infer_ms_layer_norm(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
     """LayerNormalization / SimplifiedLayerNormalization.
 

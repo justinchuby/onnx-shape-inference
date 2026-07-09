@@ -225,6 +225,19 @@ class MsLayerNormalizationTest(unittest.TestCase):
         # inv_std_var upcasts to FLOAT for float16 input
         self.assertEqual(actual[1], ts(FLOAT, [2, 8, 1]))
 
+    def test_simplified_default_domain(self):
+        # ONNX Runtime may place SimplifiedLayerNormalization under the default
+        # opset domain instead of com.microsoft; it should still be inferred.
+        actual = run_shape_inference(
+            "",
+            "SimplifiedLayerNormalization",
+            [ts(FLOAT, [2, 8, 64])],
+            opset_version=1,
+            num_outputs=2,
+        )
+        self.assertEqual(actual[0], ts(FLOAT, [2, 8, 64]))
+        self.assertEqual(actual[1], ts(FLOAT, [2, 8, 1]))
+
 
 class MsSkipLayerNormalizationTest(unittest.TestCase):
     def test_basic(self):
