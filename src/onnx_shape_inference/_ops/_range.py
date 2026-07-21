@@ -26,13 +26,17 @@ def infer_range(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
     limit_const = ir.convenience.get_const_tensor(node.inputs[1])  # type: ignore[arg-type]
     delta_const = ir.convenience.get_const_tensor(node.inputs[2])  # type: ignore[arg-type]
     if start_const is not None and limit_const is not None and delta_const is not None:
-        s = float(start_const.numpy().item())
-        lim = float(limit_const.numpy().item())
-        d = float(delta_const.numpy().item())
-        if d == 0.0:  # noqa: RUF069
-            ctx.record_error(node, "Range: delta must not be zero")
-            return
-        output_len = max(0, math.ceil((lim - s) / d))
+        start_array = start_const.numpy()
+        limit_array = limit_const.numpy()
+        delta_array = delta_const.numpy()
+        if start_array.size == 1 and limit_array.size == 1 and delta_array.size == 1:
+            s = float(start_array.item())
+            lim = float(limit_array.item())
+            d = float(delta_array.item())
+            if d == 0.0:  # noqa: RUF069
+                ctx.record_error(node, "Range: delta must not be zero")
+                return
+            output_len = max(0, math.ceil((lim - s) / d))
 
     output_shape = ir.Shape([output_len])
 

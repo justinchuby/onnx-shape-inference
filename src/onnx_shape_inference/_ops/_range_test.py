@@ -75,6 +75,22 @@ class RangeTest(unittest.TestCase):
         # ceil((0 - 10) / -3) = ceil(10/3) = 4
         self.assertEqual(actual, [ts(INT64, [4])])
 
+    def test_non_scalar_constants_fallback_to_symbolic_length(self):
+        start = const_value([1, 2, 3, 4], name="start", dtype=np.float32)
+        start.shape = ir.Shape([4])
+        start.type = ir.TensorType(FLOAT)
+        limit = const_value([2, 3, 4, 5], name="limit", dtype=np.float32)
+        limit.shape = ir.Shape([4])
+        limit.type = ir.TensorType(FLOAT)
+        delta = const_value([1], name="delta", dtype=np.float32)
+        delta.shape = ir.Shape([])
+        delta.type = ir.TensorType(FLOAT)
+
+        actual = run_shape_inference_with_values(
+            "", "Range", [start, limit, delta], opset_version=21
+        )
+        self.assertEqual(actual, [ts(FLOAT, ["_d0"])])
+
 
 if __name__ == "__main__":
     unittest.main()
