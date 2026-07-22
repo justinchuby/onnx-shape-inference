@@ -55,7 +55,7 @@ class MatMulTest(unittest.TestCase):
             "",
             "MatMul",
             [
-                ts(FLOAT, ["_d0", 16, "sequence_length", "total_sequence_length"]),
+                ts(FLOAT, [None, 16, "sequence_length", "total_sequence_length"]),
                 ts(FLOAT, ["batch_size", 16, "total_sequence_length", 128]),
             ],
             opset_version=17,
@@ -71,7 +71,7 @@ class MatMulTest(unittest.TestCase):
             "MatMul",
             [
                 ts(FLOAT, ["batch_size", 2, 3]),
-                ts(FLOAT, ["_d0", 3, 4]),
+                ts(FLOAT, [None, 3, 4]),
             ],
             opset_version=17,
         )
@@ -89,11 +89,35 @@ class MatMulTest(unittest.TestCase):
         )
         self.assertEqual(actual, [ts(FLOAT, ["_d0", 2, 4])])
 
+    def test_author_named_generated_pattern_is_not_treated_as_generated(self):
+        a = ir.Value(
+            name="a",
+            type=ir.TensorType(FLOAT),
+            shape=ir.Shape(["_d0", 2, 3]),
+        )
+        b = ir.Value(
+            name="b",
+            type=ir.TensorType(FLOAT),
+            shape=ir.Shape(["batch_size", 3, 4]),
+        )
+        output = ir.Value(name="output")
+        node = ir.Node("", "MatMul", inputs=[a, b], outputs=[output], attributes={})
+        ctx = _context.ShapeInferenceContext({"": 17})
+        ctx.reserve_symbol_names(["_d0", "batch_size"])
+
+        func = _registry.registry.get("", "MatMul", version=17)
+        func(ctx, node)
+
+        self.assertEqual(
+            ir.TypeAndShape(output.type, output.shape),
+            ts(FLOAT, ["_d1", 2, 4]),
+        )
+
     def test_equal_named_batch_dim_is_substituted(self):
         a = ir.Value(
             name="a",
             type=ir.TensorType(FLOAT),
-            shape=ir.Shape(["_d0", 16, "sequence_length", "total_sequence_length"]),
+            shape=ir.Shape([None, 16, "sequence_length", "total_sequence_length"]),
         )
         b = ir.Value(
             name="b",
@@ -103,6 +127,7 @@ class MatMulTest(unittest.TestCase):
         output = ir.Value(name="output")
         node = ir.Node("", "MatMul", inputs=[a, b], outputs=[output], attributes={})
         ctx = _context.ShapeInferenceContext({"": 17})
+        ctx.name_anonymous_dims(a)
         ctx.add_symbolic_equality("_d0", "batch_size")
 
         func = _registry.registry.get("", "MatMul", version=17)

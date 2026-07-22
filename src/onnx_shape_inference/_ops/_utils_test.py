@@ -137,19 +137,6 @@ class ScaleDimTest(unittest.TestCase):
         self.assertEqual(str(result), str(expected))
 
 
-class GeneratedDimTest(unittest.TestCase):
-    @parameterized.parameterized.expand(
-        [
-            ("generated", ir.SymbolicDim("_d12"), True),
-            ("user_named", ir.SymbolicDim("batch"), False),
-            ("generated_expression", ir.SymbolicDim("2*_d0"), False),
-            ("concrete", 3, False),
-        ]
-    )
-    def test_is_generated_dim(self, _name, dim, expected):
-        self.assertEqual(_utils.is_generated_dim(dim), expected)
-
-
 class MinMaxDimTest(unittest.TestCase):
     @parameterized.parameterized.expand(
         [

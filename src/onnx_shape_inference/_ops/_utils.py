@@ -10,7 +10,6 @@ __all__ = [
     "floor_div_dim",
     "get_known_dim_values",
     "get_known_scalar",
-    "is_generated_dim",
     "max_dim",
     "min_dim",
     "normalize_axis",
@@ -54,14 +53,6 @@ def get_known_scalar(
     if symbolic_value is not None and len(symbolic_value) == 1:
         return symbolic_value[0]
     return None
-
-
-def is_generated_dim(dim: int | ir.SymbolicDim) -> bool:
-    """Return whether a dimension is a fresh context-generated symbol."""
-    if not isinstance(dim, ir.SymbolicDim) or dim.value is None:
-        return False
-    name = dim.value
-    return name.startswith("_d") and name[2:].isdigit()
 
 
 def max_dim(*dims: int | ir.SymbolicDim) -> int | ir.SymbolicDim | None:

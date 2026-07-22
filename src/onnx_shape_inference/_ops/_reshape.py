@@ -96,10 +96,7 @@ def infer_reshape(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
             if isinstance(known_output, int) and known_output == 0:
                 output_dims[inferred_idx] = ctx.new_symbolic_dim()
             else:
-                inferred_dim = _utils.floor_div_dim(total_input, known_output)
-                output_dims[inferred_idx] = ctx.simplify_dim(
-                    inferred_dim, assume_divisible=True
-                )
+                output_dims[inferred_idx] = _utils.floor_div_dim(total_input, known_output)
         else:
             output_dims[inferred_idx] = ctx.new_symbolic_dim()
     elif inferred_idx is not None:

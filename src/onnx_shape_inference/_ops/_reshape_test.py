@@ -146,14 +146,14 @@ class ReshapeTest(unittest.TestCase):
     @parameterized.parameterized.expand(
         [
             (
-                "cancel_half_width",
+                "preserve_inherited_half_width",
                 ["a", "b", 2, "floor(c/2)"],
-                ["a", "b", "c"],
+                ["a", "b", "2*floor(c/2)"],
             ),
             (
-                "cancel_grouped_width",
+                "preserve_inherited_grouped_width",
                 ["a", "b", 16, "floor(V/8)"],
-                ["a", "b", "2*V"],
+                ["a", "b", "16*floor(V/8)"],
             ),
         ]
     )
@@ -170,6 +170,20 @@ class ReshapeTest(unittest.TestCase):
             opset_version=21,
         )
         self.assertEqual(actual, [ts(FLOAT, expected_shape)])
+
+    def test_inherited_floor_is_not_assumed_divisible(self):
+        data = ir.Value(
+            name="data",
+            shape=ir.Shape([2, "floor(H/2)"]),
+            type=ir.TensorType(FLOAT),
+        )
+        actual = run_shape_inference_with_values(
+            "",
+            "Reshape",
+            [data, const_value([-1])],
+            opset_version=21,
+        )
+        self.assertEqual(actual, [ts(FLOAT, ["2*floor(H/2)"])])
 
     @parameterized.parameterized.expand(
         [

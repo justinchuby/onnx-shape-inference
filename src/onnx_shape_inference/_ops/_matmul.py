@@ -13,7 +13,15 @@ __all__ = [
 import onnx_ir as ir
 
 from onnx_shape_inference import _broadcast, _context, _registry
-from onnx_shape_inference._ops import _utils
+
+
+def _is_generated_dim(ctx: _context.ShapeInferenceContext, dim: int | ir.SymbolicDim) -> bool:
+    """Return whether the context minted this symbolic dimension."""
+    return (
+        isinstance(dim, ir.SymbolicDim)
+        and dim.value is not None
+        and ctx.is_generated_symbol(dim.value)
+    )
 
 
 def _resolve_symbolic_batch_dims(
@@ -34,13 +42,13 @@ def _resolve_symbolic_batch_dims(
             continue
         equality_recorded = frozenset((str(dim_a), str(dim_b))) in equalities
         if equality_recorded:
-            if _utils.is_generated_dim(dim_a) and not _utils.is_generated_dim(dim_b):
+            if _is_generated_dim(ctx, dim_a) and not _is_generated_dim(ctx, dim_b):
                 output_dims[i] = dim_b
-            elif _utils.is_generated_dim(dim_b) and not _utils.is_generated_dim(dim_a):
+            elif _is_generated_dim(ctx, dim_b) and not _is_generated_dim(ctx, dim_a):
                 output_dims[i] = dim_a
-        elif _utils.is_generated_dim(dim_a):
+        elif _is_generated_dim(ctx, dim_a):
             output_dims[i] = dim_a
-        elif _utils.is_generated_dim(dim_b):
+        elif _is_generated_dim(ctx, dim_b):
             output_dims[i] = dim_b
         else:
             output_dims[i] = ctx.new_symbolic_dim()
