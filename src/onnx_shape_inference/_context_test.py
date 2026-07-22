@@ -166,7 +166,7 @@ class SymbolicEqualityTest(unittest.TestCase):
         # register them so eligibility is decided by minted-identity (not spelling).
         for dim in anchor:
             if isinstance(dim, str) and dim.startswith("_d") and dim[2:].isdigit():
-                ctx._generated_dim_names.add(dim)
+                ctx._allocator.generated.add(dim)
         ctx.set_shape(value, ir.Shape(inferred))
         if expected is None:
             self.assertEqual(list(ctx.symbolic_equalities), [])
@@ -224,6 +224,67 @@ class NewSymbolicDimTest(unittest.TestCase):
         ctx.new_symbolic_dim()
         # The earlier snapshot is not retroactively mutated.
         self.assertEqual(snapshot, frozenset({"_d0"}))
+
+
+class ChildContextAllocatorTest(unittest.TestCase):
+    """A child context must share the parent's symbol allocator state.
+
+    Regression tests for the re-review gap: function-body child contexts used to
+    share only the counter, so (a) a child could mint a name the parent reserved
+    and (b) names a child minted were not recognised as generated at the parent.
+    """
+
+    def test_child_shares_allocator_object(self):
+        parent = ShapeInferenceContext()
+        child = parent.create_child()
+        self.assertIs(child._allocator, parent._allocator)
+
+    def test_child_inherits_parent_reserved_names(self):
+        # Parent reserves an author-declared `_d0`; the child must not mint it.
+        parent = ShapeInferenceContext()
+        parent.reserve_symbol_names({"_d0"})
+        child = parent.create_child()
+        minted = child.new_symbolic_dim().value
+        self.assertNotEqual(minted, "_d0")
+        self.assertFalse(child.is_generated_symbol("_d0"))
+        self.assertFalse(parent.is_generated_symbol("_d0"))
+
+    def test_child_reservation_visible_to_parent(self):
+        parent = ShapeInferenceContext()
+        child = parent.create_child()
+        child.reserve_symbol_names({"_d0"})
+        # Parent honours the child's reservation too (shared allocator).
+        self.assertNotEqual(parent.new_symbolic_dim().value, "_d0")
+
+    def test_child_minted_symbol_is_generated_at_parent(self):
+        parent = ShapeInferenceContext()
+        child = parent.create_child()
+        minted = child.new_symbolic_dim().value
+        # Recognised as engine-generated upstream, enabling correct renaming.
+        self.assertTrue(parent.is_generated_symbol(minted))
+        self.assertIn(minted, parent.generated_dim_names)
+
+    def test_parent_and_child_names_stay_globally_unique(self):
+        parent = ShapeInferenceContext()
+        p0 = parent.new_symbolic_dim().value
+        child = parent.create_child()
+        c0 = child.new_symbolic_dim().value
+        p1 = parent.new_symbolic_dim().value
+        self.assertEqual([p0, c0, p1], ["_d0", "_d1", "_d2"])
+        self.assertEqual(len({p0, c0, p1}), 3)
+
+    def test_child_inherits_opset_and_policy_by_default(self):
+        parent = ShapeInferenceContext({"": 17}, policy="skip")
+        child = parent.create_child()
+        self.assertEqual(child.opset, 17)
+        self.assertEqual(child.policy, "skip")
+
+    def test_child_can_override_opsets_and_attrs(self):
+        parent = ShapeInferenceContext({"": 17})
+        attrs = {"axis": ir.Attr("axis", ir.AttributeType.INT, 1)}
+        child = parent.create_child({"": 21}, resolved_attrs=attrs)
+        self.assertEqual(child.opset, 21)
+        self.assertIs(child.resolved_attrs, attrs)
 
 
 if __name__ == "__main__":

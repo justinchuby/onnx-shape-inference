@@ -29,7 +29,7 @@ def _generated_ctx(*generated_names: str) -> _context.ShapeInferenceContext:
     for renaming by the propagation pass.
     """
     ctx = _context.ShapeInferenceContext()
-    ctx._generated_dim_names.update(generated_names)
+    ctx._allocator.generated.update(generated_names)
     return ctx
 
 

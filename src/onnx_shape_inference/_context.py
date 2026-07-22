@@ -35,6 +35,40 @@ SYM_DATA_KEY = "pkg.onnx_shape_inference.sym_data"
 _ANON_DIM_PREFIX = "_d"
 
 
+class _SymbolAllocator:
+    """Shared minting state for a context tree (parent + function-body children).
+
+    A single instance is shared *by reference* across a parent context and every
+    child context created for model-local function or op-schema-function bodies
+    (see :meth:`ShapeInferenceContext.create_child`).  Sharing this state keeps
+    every minted name globally unique and — critically for soundness — ensures:
+
+    * ``reserved`` (names already present in the model) is visible to children,
+      so a child never mints a name the parent reserved (e.g. an author-declared
+      ``_d0``), which would falsely conflate independent dims; and
+    * ``generated`` (names the engine minted) is visible to the parent, so a
+      symbol minted inside a child body is still recognised as engine-generated
+      upstream by :meth:`ShapeInferenceContext.is_generated_symbol` — enabling
+      correct renaming and blocking unsound ones.
+    """
+
+    def __init__(self) -> None:
+        self.counter: int = 0
+        # Names already present in the model; never minted.
+        self.reserved: set[str] = set()
+        # Names the engine minted via ``mint`` (rename-eligible).
+        self.generated: set[str] = set()
+
+    def mint(self) -> str:
+        """Return a fresh ``_dN`` name not in ``reserved`` or ``generated``."""
+        while True:
+            name = f"{_ANON_DIM_PREFIX}{self.counter}"
+            self.counter += 1
+            if name not in self.reserved and name not in self.generated:
+                self.generated.add(name)
+                return name
+
+
 def _dim_expr_string(dim: int | ir.SymbolicDim | str | None) -> str | None:
     """Return the canonical expression string for a dimension, or ``None``.
 
@@ -210,6 +244,8 @@ class ShapeInferenceContext:
         opset_imports: Mapping[str, int] | None = None,
         policy: ShapeMergePolicy = "refine",
         resolved_attrs: dict[str, ir.Attr] | None = None,
+        *,
+        allocator: _SymbolAllocator | None = None,
     ) -> None:
         """Initialize the shape inference context.
 
@@ -223,6 +259,10 @@ class ShapeInferenceContext:
                 (from the call site or function defaults).  Used to substitute
                 RefAttr references before calling each op's inference function.
                 ``None`` for top-level (non-function) graph inference.
+            allocator: Shared symbolic-dim minting state.  Defaults to a fresh
+                :class:`_SymbolAllocator`; child contexts for function bodies pass
+                the parent's allocator (via :meth:`create_child`) so reserved and
+                generated names are shared across the whole context tree.
         """
         self.opset_imports: Mapping[str, int] = opset_imports or {"": 1}
         self.policy = policy
@@ -230,18 +270,10 @@ class ShapeInferenceContext:
 
         # Recorded errors from shape inference
         self._errors: list[ShapeInferenceError] = []
-        # Counter for generating unique symbolic dimension names
-        self._dim_counter: int = 0
-        # Exact set of anonymous dimension names this context has minted via
-        # ``new_symbolic_dim``.  ONLY these symbols are eligible for renaming by
-        # the anchor/constraint pass — a model author who literally names a
-        # symbol ``_d0`` must never have it rewritten, so eligibility is tracked
-        # by identity (membership) here, not by spelling.
-        self._generated_dim_names: set[str] = set()
-        # Symbol names already present in the model before inference began.
-        # ``new_symbolic_dim`` avoids these so a freshly minted anonymous name
-        # can never collide with (and thus be confused for) an authored symbol.
-        self._reserved_symbol_names: set[str] = set()
+        # Shared minting state (counter + reserved + generated names).  Shared by
+        # reference with any child context, so names stay globally unique and the
+        # reserved/generated sets propagate both ways across parent and children.
+        self._allocator: _SymbolAllocator = allocator or _SymbolAllocator()
         # Partial data propagation: symbolic element values keyed by ir.Value
         self._symbolic_values: dict[ir.Value, list[int | ir.SymbolicDim]] = {}
         # Symbolic-dimension equality constraints discovered during inference,
@@ -253,6 +285,35 @@ class ShapeInferenceContext:
         # ``NonZero`` count <= number of elements).  Kept for consumers that
         # want provable bounds; not used for renaming.
         self._symbolic_upper_bounds: list[tuple[str, str]] = []
+
+    def create_child(
+        self,
+        opset_imports: Mapping[str, int] | None = None,
+        *,
+        resolved_attrs: dict[str, ir.Attr] | None = None,
+    ) -> ShapeInferenceContext:
+        """Create a child context for function-body inference.
+
+        The child shares this context's :class:`_SymbolAllocator` (counter plus
+        reserved and generated name sets) so that symbolic-dim identities stay
+        globally consistent across parent and child: the child never mints a name
+        the parent reserved, and any name the child mints is recognised as
+        engine-generated at the parent level.
+
+        Args:
+            opset_imports: Opset versions for the child (the function body's own
+                imports).  Defaults to this context's imports.
+            resolved_attrs: Resolved attribute values for the function body.
+
+        Returns:
+            A new :class:`ShapeInferenceContext` sharing this one's allocator.
+        """
+        return ShapeInferenceContext(
+            opset_imports=opset_imports if opset_imports is not None else self.opset_imports,
+            policy=self.policy,
+            resolved_attrs=resolved_attrs,
+            allocator=self._allocator,
+        )
 
     @property
     def opset(self) -> int:
@@ -273,24 +334,27 @@ class ShapeInferenceContext:
         Called by the engine before inference with every symbol name already
         present in the model (graph inputs/outputs, ``value_info``,
         initializers, and subgraphs).  A reserved name is skipped by
-        :meth:`new_symbolic_dim`.
+        :meth:`new_symbolic_dim`.  Because the reserved set lives on the shared
+        allocator, reservations made on a parent context are also honoured by any
+        child context created via :meth:`create_child`.
         """
-        self._reserved_symbol_names.update(names)
+        self._allocator.reserved.update(names)
 
     def is_generated_symbol(self, name: str) -> bool:
-        """Return whether *name* was minted by this context's ``new_symbolic_dim``.
+        """Return whether *name* was minted by ``new_symbolic_dim``.
 
         This is the authoritative (identity-based) test for anonymous-symbol
         eligibility used by the anchor/constraint pass — as opposed to matching
         the ``_dN`` spelling, which would misclassify an author-declared symbol
-        literally named ``_d0``.
+        literally named ``_d0``.  The generated set is shared across the context
+        tree, so a name minted in a function-body child is recognised here too.
         """
-        return name in self._generated_dim_names
+        return name in self._allocator.generated
 
     @property
     def generated_dim_names(self) -> frozenset[str]:
-        """The set of anonymous dim names minted by this context."""
-        return frozenset(self._generated_dim_names)
+        """The set of anonymous dim names minted in this context tree."""
+        return frozenset(self._allocator.generated)
 
     def new_symbolic_dim(self) -> ir.SymbolicDim:
         """Create a new symbolic dimension with a unique auto-generated name.
@@ -306,16 +370,7 @@ class ShapeInferenceContext:
         Returns:
             A :class:`ir.SymbolicDim` with a unique name like ``_d0``, ``_d1``, …
         """
-        while True:
-            name = f"{_ANON_DIM_PREFIX}{self._dim_counter}"
-            self._dim_counter += 1
-            if (
-                name not in self._reserved_symbol_names
-                and name not in self._generated_dim_names
-            ):
-                break
-        self._generated_dim_names.add(name)
-        return ir.SymbolicDim(name)
+        return ir.SymbolicDim(self._allocator.mint())
 
     def simplify_dim(
         self,

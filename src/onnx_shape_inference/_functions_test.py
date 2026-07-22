@@ -700,5 +700,45 @@ class OpSchemaFunctionUnitTest(unittest.TestCase):
             self.assertIsNone(_functions._materialize_op_schema_function(node, 24))
 
 
+class TestChildContextAnchorAdoption(unittest.TestCase):
+    """End-to-end: a dim minted inside a function body must be visible to the
+    parent engine so anchor renaming and reservation work across the boundary.
+
+    These exercise the shared symbol allocator between parent and child contexts.
+    """
+
+    def test_child_minted_dim_adopts_parent_output_anchor(self):
+        # The function wraps NonZero, whose second output dim is data-dependent
+        # and is minted *inside* the function body (a child context).
+        func = _single_op_function("test", "MyNonZero", "NonZero", opset=20)
+        x = _make_value("X", shape=[2, 5], dtype=FLOAT)
+        # The main graph declares a user-visible symbol `dnz` on the output.
+        out = _make_value("Y", shape=[2, "dnz"], dtype=INT64)
+        call = ir.Node("test", "MyNonZero", inputs=[x], outputs=[out], attributes={})
+        model = _make_model([call], [x], [out], [func], extra_domain="test")
+
+        infer_symbolic_shapes(model, warn_on_missing=False)
+
+        # The child-minted anonymous dim was recognised as engine-generated at the
+        # parent level, so it adopted the declared anchor name instead of `_dN`.
+        self.assertEqual(out.shape, ir.Shape([2, "dnz"]))
+
+    def test_function_body_does_not_mint_author_reserved_name(self):
+        # The main graph authors a symbol literally spelled `_d0`; the function
+        # body's minted data-dependent dim must not collide with it.
+        func = _single_op_function("test", "MyNonZero", "NonZero", opset=20)
+        x = _make_value("X", shape=["_d0", 5], dtype=FLOAT)
+        out = _make_value("Y", shape=None, dtype=None)
+        call = ir.Node("test", "MyNonZero", inputs=[x], outputs=[out], attributes={})
+        model = _make_model([call], [x], [out], [func], extra_domain="test")
+
+        infer_symbolic_shapes(model, warn_on_missing=False)
+
+        # NonZero output is [rank, nnz]; the minted nnz dim must not reuse `_d0`.
+        self.assertIsNotNone(out.shape)
+        minted = out.shape[1]
+        self.assertNotEqual(str(minted), "_d0")
+
+
 if __name__ == "__main__":
     unittest.main()
