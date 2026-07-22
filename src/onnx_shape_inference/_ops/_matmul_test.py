@@ -62,7 +62,7 @@ class MatMulTest(unittest.TestCase):
         )
         self.assertEqual(
             actual,
-            [ts(FLOAT, ["_d0", 16, "sequence_length", 128])],
+            [ts(FLOAT, ["_d1", 16, "sequence_length", 128])],
         )
 
     def test_generated_second_batch_dim_is_conservative(self):
@@ -75,7 +75,19 @@ class MatMulTest(unittest.TestCase):
             ],
             opset_version=17,
         )
-        self.assertEqual(actual, [ts(FLOAT, ["_d0", 2, 4])])
+        self.assertEqual(actual, [ts(FLOAT, ["_d1", 2, 4])])
+
+    def test_generated_first_batch_dim_is_conservative(self):
+        actual = run_shape_inference(
+            "",
+            "MatMul",
+            [
+                ts(FLOAT, [None, 2, 3]),
+                ts(FLOAT, ["batch_size", 3, 4]),
+            ],
+            opset_version=17,
+        )
+        self.assertEqual(actual, [ts(FLOAT, ["_d1", 2, 4])])
 
     def test_differing_named_batch_dims_produce_fresh_dim(self):
         actual = run_shape_inference(

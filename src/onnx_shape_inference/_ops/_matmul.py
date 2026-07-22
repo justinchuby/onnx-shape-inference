@@ -46,10 +46,6 @@ def _resolve_symbolic_batch_dims(
                 output_dims[i] = dim_b
             elif _is_generated_dim(ctx, dim_b) and not _is_generated_dim(ctx, dim_a):
                 output_dims[i] = dim_a
-        elif _is_generated_dim(ctx, dim_a):
-            output_dims[i] = dim_a
-        elif _is_generated_dim(ctx, dim_b):
-            output_dims[i] = dim_b
         else:
             output_dims[i] = ctx.new_symbolic_dim()
     return ir.Shape(output_dims)
