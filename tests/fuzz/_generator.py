@@ -1019,5 +1019,6 @@ def generate(seed: int) -> FuzzCase:
     Returns:
         A generated :class:`FuzzCase`. Reusing a seed produces byte-identical
         serialized graphs.
+
     """
     return _Generator(seed).build()
