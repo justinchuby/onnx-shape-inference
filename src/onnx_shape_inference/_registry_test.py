@@ -4,6 +4,9 @@
 
 from __future__ import annotations
 
+import subprocess
+import sys
+import textwrap
 import unittest
 
 from onnx_shape_inference._registry import OpShapeInferenceRegistry
@@ -195,6 +198,37 @@ class OpShapeInferenceRegistryTest(unittest.TestCase):
 
         for domain, op_type, versions in self.registry.iter_supported():
             self.assertEqual(versions, self.registry.version_boundaries(domain, op_type))
+
+    def test_global_registry_autocollects_builtin_ops(self):
+        # The public introspection seams must reflect the built-in operators
+        # without the caller first invoking ``collect()`` or running inference.
+        from onnx_shape_inference._registry import registry
+
+        boundaries = registry.version_boundaries("", "Add")
+        self.assertTrue(boundaries)
+        self.assertIn(("", "Add", boundaries), list(registry.iter_supported()))
+
+    def test_iter_supported_autocollects_in_fresh_process(self):
+        # Cold-start guarantee: a fresh interpreter that only imports the
+        # registry (never ``_ops`` and never runs inference) must still see the
+        # full supported set, so the fuzzer can never silently generate nothing.
+        code = textwrap.dedent(
+            """
+            from onnx_shape_inference._registry import registry
+            boundaries = registry.version_boundaries("", "Add")
+            supported = list(registry.iter_supported())
+            assert boundaries, "version_boundaries did not auto-collect"
+            assert ("", "Add", boundaries) in supported, "iter_supported did not auto-collect"
+            print("OK", len(supported))
+            """
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", code],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertIn("OK", result.stdout)
 
 
 if __name__ == "__main__":

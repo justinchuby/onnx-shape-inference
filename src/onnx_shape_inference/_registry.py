@@ -211,10 +211,15 @@ class OpShapeInferenceRegistry:
             domain: ONNX domain (``"ai.onnx"`` is normalized to ``""``).
             op_type: Operator type (e.g. ``"Add"``).
 
+        The built-in operator modules are imported automatically (via
+        :meth:`collect`) so callers never observe a spuriously empty result
+        just because inference has not run yet in this process.
+
         Returns:
             A tuple of ``since_version`` integers in ascending order, or an
             empty tuple if the operator is not registered.
         """
+        self.collect()
         key = (_normalize_domain(domain), op_type)
         registrations = self._registrations.get(key)
         if not registrations:
@@ -232,11 +237,16 @@ class OpShapeInferenceRegistry:
         :meth:`version_boundaries`).  Domains are already normalized (so
         ``"ai.onnx"`` appears as ``""``).
 
+        The built-in operator modules are imported automatically (via
+        :meth:`collect`), so seed-driven consumers get the full supported set
+        without having to call :meth:`collect` (or run inference) first.
+
         Example::
 
             for domain, op_type, versions in registry.iter_supported():
                 ...
         """
+        self.collect()
         for domain, op_type in sorted(self._registrations):
             registrations = self._registrations[(domain, op_type)]
             yield (
