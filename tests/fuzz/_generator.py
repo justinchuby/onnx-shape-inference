@@ -18,7 +18,7 @@ import onnx
 import onnx_ir as ir
 
 from onnx_shape_inference import _registry
-from onnx_shape_inference._fuzz._types import (
+from tests.fuzz._types import (
     DATA_DEPENDENT_OPS,
     FuzzCase,
     SymbolConstraint,

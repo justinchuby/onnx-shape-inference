@@ -9,8 +9,8 @@ from pathlib import Path
 import onnx
 import onnx_ir as ir
 
-from onnx_shape_inference._fuzz._shrink import FailureSignature
-from onnx_shape_inference._fuzz._types import FuzzCase, OracleResult
+from tests.fuzz._shrink import FailureSignature
+from tests.fuzz._types import FuzzCase, OracleResult
 
 __all__ = ["emit_onnx", "render_reproducer"]
 

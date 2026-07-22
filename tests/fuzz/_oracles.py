@@ -20,14 +20,14 @@ import onnx_ir as ir
 import sympy
 
 from onnx_shape_inference import OpUsageError, ShapeInferenceError, infer_symbolic_shapes
-from onnx_shape_inference._fuzz._binding import (
+from onnx_shape_inference._symbolic_shapes import parse_symbolic_expression
+from tests.fuzz._binding import (
     bind_symbols,
     evaluate_dim,
     iter_values,
     materialize_model,
 )
-from onnx_shape_inference._fuzz._types import FuzzCase, OracleResult
-from onnx_shape_inference._symbolic_shapes import parse_symbolic_expression
+from tests.fuzz._types import FuzzCase, OracleResult
 
 __all__ = [
     "CrashOracle",

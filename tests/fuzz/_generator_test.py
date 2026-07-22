@@ -12,8 +12,8 @@ import onnx_ir as ir
 import parameterized
 
 from onnx_shape_inference import _registry
-from onnx_shape_inference._fuzz import _generator
-from onnx_shape_inference._fuzz._types import DATA_DEPENDENT_OPS
+from tests.fuzz import _generator
+from tests.fuzz._types import DATA_DEPENDENT_OPS
 
 
 def _proto(seed: int) -> onnx.ModelProto:

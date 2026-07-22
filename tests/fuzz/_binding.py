@@ -10,8 +10,8 @@ from collections.abc import Iterator
 
 import onnx_ir as ir
 
-from onnx_shape_inference._fuzz._types import FuzzCase, SymbolConstraint
 from onnx_shape_inference._symbolic_shapes import parse_symbolic_expression
+from tests.fuzz._types import FuzzCase, SymbolConstraint
 
 __all__ = [
     "bind_symbols",

@@ -11,15 +11,15 @@ from unittest import mock
 
 import onnx_ir as ir
 
-from onnx_shape_inference._fuzz._binding import bind_symbols, materialize_model
-from onnx_shape_inference._fuzz._harness import FuzzHarness
-from onnx_shape_inference._fuzz._oracles import (
+from tests.fuzz._binding import bind_symbols, materialize_model
+from tests.fuzz._harness import FuzzHarness
+from tests.fuzz._oracles import (
     CrashOracle,
     DifferentialOracle,
     SimplificationOracle,
     SoundnessOracle,
 )
-from onnx_shape_inference._fuzz._types import FuzzCase, OracleResult, SymbolConstraint
+from tests.fuzz._types import FuzzCase, OracleResult, SymbolConstraint
 
 
 def _case(*, symbolic: bool = False) -> FuzzCase:
@@ -120,7 +120,7 @@ class SoundnessOracleTest(unittest.TestCase):
         wrong_output = next(iter(wrong.graph.outputs))
         wrong_output.shape = ir.Shape([99, 3])
         with mock.patch(
-            "onnx_shape_inference._fuzz._oracles._infer_ours",
+            "tests.fuzz._oracles._infer_ours",
             return_value=wrong,
         ):
             result = SoundnessOracle().check(case)

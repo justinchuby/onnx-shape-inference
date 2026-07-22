@@ -4,8 +4,8 @@
 
 from __future__ import annotations
 
-from onnx_shape_inference._fuzz._generator import generate
-from onnx_shape_inference._fuzz._types import (
+from tests.fuzz._generator import generate
+from tests.fuzz._types import (
     DATA_DEPENDENT_OPS,
     FuzzCase,
     OracleResult,

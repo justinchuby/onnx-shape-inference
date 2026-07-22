@@ -7,9 +7,9 @@ from __future__ import annotations
 import copy
 from dataclasses import dataclass
 
-from onnx_shape_inference._fuzz._binding import materialize_model
-from onnx_shape_inference._fuzz._oracles import Oracle
-from onnx_shape_inference._fuzz._types import FuzzCase, OracleResult
+from tests.fuzz._binding import materialize_model
+from tests.fuzz._oracles import Oracle
+from tests.fuzz._types import FuzzCase, OracleResult
 
 __all__ = ["DeltaShrinker", "FailureSignature", "failure_signature"]
 

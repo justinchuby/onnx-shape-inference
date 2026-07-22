@@ -11,8 +11,8 @@ from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from onnx_shape_inference._fuzz._oracles import Oracle
-from onnx_shape_inference._fuzz._types import FuzzCase, OracleResult, Status
+from tests.fuzz._oracles import Oracle
+from tests.fuzz._types import FuzzCase, OracleResult, Status
 
 __all__ = ["FuzzHarness", "FuzzSummary", "write_coverage_report"]
 
@@ -60,14 +60,14 @@ class FuzzHarness:
     def _failure_message(case: FuzzCase, oracle: Oracle, result: OracleResult) -> str:
         command = f"FUZZ_SEED={case.seed} python3 -m pytest tests/shape_inference_fuzz_test.py"
         snippet = (
-            "from onnx_shape_inference._fuzz._generator import generate\n"
+            "from tests.fuzz._generator import generate\n"
             f"case = generate({case.seed})\n"
             f"# Re-run {oracle.name}; ground truth={result.details.get('ground_truth')!r}."
         )
         artifact_dir = os.environ.get("FUZZ_ARTIFACT_DIR")
         if artifact_dir:
-            from onnx_shape_inference._fuzz._repro import emit_onnx, render_reproducer
-            from onnx_shape_inference._fuzz._shrink import DeltaShrinker, failure_signature
+            from tests.fuzz._repro import emit_onnx, render_reproducer
+            from tests.fuzz._shrink import DeltaShrinker, failure_signature
 
             minimized = DeltaShrinker(oracle).shrink(case)
             artifact = emit_onnx(minimized, Path(artifact_dir) / f"seed-{case.seed}.onnx")

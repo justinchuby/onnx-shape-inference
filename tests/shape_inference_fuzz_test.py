@@ -10,8 +10,8 @@ from pathlib import Path
 
 import pytest
 
-from onnx_shape_inference._fuzz._harness import FuzzHarness, write_coverage_report
-from onnx_shape_inference._fuzz._oracles import (
+from tests.fuzz._harness import FuzzHarness, write_coverage_report
+from tests.fuzz._oracles import (
     CrashOracle,
     DifferentialOracle,
     SimplificationOracle,
@@ -28,7 +28,7 @@ _CORPUS_PATH = Path(__file__).with_name("fuzz_corpus") / "seeds.json"
 
 def _generate():
     try:
-        from onnx_shape_inference._fuzz._generator import generate
+        from tests.fuzz._generator import generate
     except ImportError:
         pytest.skip("fuzz generator is not installed")
     return generate
