@@ -77,13 +77,12 @@ def bind_symbols(case: FuzzCase, *, include_edge_dims: bool = False) -> dict[str
         if include_edge_dims and constraint.minimum == 0 and rng.randrange(8) == 0:
             bindings[name] = rng.choice((0, 1))
         else:
-            candidate = _PRIMES[index % len(_PRIMES)]
+            candidate = max(_PRIMES[index % len(_PRIMES)], constraint.minimum)
             divisor = max(1, constraint.divisible_by)
-            if candidate % divisor:
-                candidate = max(constraint.minimum, divisor)
+            candidate = ((candidate + divisor - 1) // divisor) * divisor
+            if constraint.maximum is not None and candidate > constraint.maximum:
+                candidate = (constraint.maximum // divisor) * divisor
             bindings[name] = candidate
-        if constraint.maximum is not None and bindings[name] > constraint.maximum:
-            bindings[name] = constraint.maximum
     return bindings
 
 

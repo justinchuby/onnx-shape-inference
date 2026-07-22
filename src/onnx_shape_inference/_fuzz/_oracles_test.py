@@ -19,7 +19,7 @@ from onnx_shape_inference._fuzz._oracles import (
     SimplificationOracle,
     SoundnessOracle,
 )
-from onnx_shape_inference._fuzz._types import FuzzCase, OracleResult
+from onnx_shape_inference._fuzz._types import FuzzCase, OracleResult, SymbolConstraint
 
 
 def _case(*, symbolic: bool = False) -> FuzzCase:
@@ -66,6 +66,16 @@ class BindingTest(unittest.TestCase):
             next(iter(concrete.graph.inputs)).shape,
             ir.Shape([bindings["N"], bindings["M"]]),
         )
+
+    def test_divisible_constraint_uses_a_value_inside_its_bounds(self):
+        case = _case(symbolic=True)
+        case.symbol_constraints["N"] = SymbolConstraint(
+            minimum=3,
+            maximum=6,
+            divisible_by=4,
+        )
+        bindings = bind_symbols(case)
+        self.assertEqual(bindings["N"], 4)
 
 
 class SimplificationOracleTest(unittest.TestCase):
