@@ -85,6 +85,10 @@ def _infer_symbolic_shapes(
     _registry.registry.collect()
 
     ctx = _context.ShapeInferenceContext(model.opset_imports, policy=policy)
+    # Reserve every symbol name already present in the model so that anonymous
+    # dims minted during inference can never collide with an author-declared
+    # symbol (and thus never be mistaken for one by the anchor/constraint pass).
+    ctx.reserve_symbol_names(_constraints.collect_symbol_names(model.graph))
     # Per-run cache maps (id(function), input_signature, attr_signature) to output
     # (shape, dtype, sym_data): function identity, call-site input shapes/dtypes/sym_data,
     # and call-site attribute values.  A new dict per call ensures no stale hits across
@@ -104,11 +108,13 @@ def _infer_symbolic_shapes(
     )
 
     # Anchor/constraint pass: adopt user-declared symbolic names for the
-    # engine's anonymous dims and propagate them across the whole model.
-    if adopt_declared_symbols and _constraints.propagate_symbolic_constraints(
-        ctx, model.graph
-    ):
-        modified = True
+    # engine's anonymous dims and propagate them across the whole model.  First
+    # record reshape numel-preservation equalities so any divisibility a reshape
+    # introduces (e.g. ``c == 2*floor(c/2)``) is available to the propagation.
+    if adopt_declared_symbols:
+        _constraints.record_reshape_numel_equalities(ctx, model.graph)
+        if _constraints.propagate_symbolic_constraints(ctx, model.graph):
+            modified = True
 
     return modified
 

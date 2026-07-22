@@ -162,6 +162,11 @@ class SymbolicEqualityTest(unittest.TestCase):
         # The refine merge path is where declared anchors meet inferred symbols.
         value = ir.val("Y", shape=ir.Shape(anchor))
         ctx = ShapeInferenceContext(policy="refine")
+        # Names spelled `_dN` in the anchor stand in for engine-minted symbols;
+        # register them so eligibility is decided by minted-identity (not spelling).
+        for dim in anchor:
+            if isinstance(dim, str) and dim.startswith("_d") and dim[2:].isdigit():
+                ctx._generated_dim_names.add(dim)
         ctx.set_shape(value, ir.Shape(inferred))
         if expected is None:
             self.assertEqual(list(ctx.symbolic_equalities), [])
@@ -174,6 +179,51 @@ class SymbolicEqualityTest(unittest.TestCase):
         ctx = ShapeInferenceContext(policy="override")
         ctx.set_shape(value, ir.Shape(["N", "_d0"]))
         self.assertEqual(list(ctx.symbolic_equalities), [])
+
+
+class NewSymbolicDimTest(unittest.TestCase):
+    """Tests for new_symbolic_dim minting, its registry, and collision avoidance."""
+
+    def test_mints_sequential_unique_names(self):
+        ctx = ShapeInferenceContext()
+        names = [ctx.new_symbolic_dim().value for _ in range(3)]
+        self.assertEqual(names, ["_d0", "_d1", "_d2"])
+        self.assertEqual(len(set(names)), 3)
+
+    def test_minted_names_are_reported_generated(self):
+        ctx = ShapeInferenceContext()
+        dim = ctx.new_symbolic_dim()
+        self.assertTrue(ctx.is_generated_symbol(dim.value))
+        self.assertIn(dim.value, ctx.generated_dim_names)
+
+    def test_unminted_name_is_not_generated(self):
+        # A name that merely LOOKS anonymous but was never minted is not eligible.
+        ctx = ShapeInferenceContext()
+        self.assertFalse(ctx.is_generated_symbol("_d0"))
+        self.assertFalse(ctx.is_generated_symbol("N"))
+
+    def test_reserved_name_is_skipped_when_minting(self):
+        # A reserved (author-declared) `_d0` must not be reused by minting.
+        ctx = ShapeInferenceContext()
+        ctx.reserve_symbol_names({"_d0"})
+        minted = ctx.new_symbolic_dim().value
+        self.assertNotEqual(minted, "_d0")
+        self.assertFalse(ctx.is_generated_symbol("_d0"))
+        self.assertTrue(ctx.is_generated_symbol(minted))
+
+    def test_reserved_run_of_names_all_skipped(self):
+        ctx = ShapeInferenceContext()
+        ctx.reserve_symbol_names({"_d0", "_d1", "_d2"})
+        minted = [ctx.new_symbolic_dim().value for _ in range(2)]
+        self.assertEqual(minted, ["_d3", "_d4"])
+
+    def test_generated_dim_names_is_immutable_snapshot(self):
+        ctx = ShapeInferenceContext()
+        ctx.new_symbolic_dim()
+        snapshot = ctx.generated_dim_names
+        ctx.new_symbolic_dim()
+        # The earlier snapshot is not retroactively mutated.
+        self.assertEqual(snapshot, frozenset({"_d0"}))
 
 
 if __name__ == "__main__":

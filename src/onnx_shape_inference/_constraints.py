@@ -22,8 +22,12 @@ treated as authoritative and preserved.
 from __future__ import annotations
 
 __all__ = [
+    "collect_symbol_names",
     "propagate_symbolic_constraints",
+    "record_reshape_numel_equalities",
 ]
+
+from collections.abc import Callable
 
 import onnx_ir as ir
 import sympy
@@ -88,20 +92,56 @@ def _leaf_equality(a: sympy.Expr, b: sympy.Expr) -> tuple[str, str] | None:
     return (sym1.name, sym2.name)
 
 
-def _canonical_name(names: list[str]) -> str:
+def _reduce_common_factor(a: sympy.Expr, b: sympy.Expr) -> tuple[sympy.Expr, sympy.Expr]:
+    """Cancel the positive common factor shared by both sides of ``a == b``.
+
+    Reshape records a *numel equality* ``product(input_dims) == product(output
+    dims)`` — always true because reshape preserves element count.  For a flatten
+    such as ``[a, b, c] -> [a, b, 2, c//2]`` this is
+    ``a*b*c == a*b*2*floor(c/2)``.  Dividing both sides by the shared factor
+    ``a*b`` (their polynomial GCD, provably positive since every dim is
+    ``positive``) yields the *provenance* fact ``c == 2*floor(c/2)`` — i.e. the
+    reshape asserts ``c`` is even.  This is what lets ``2*floor(c/2)`` be rewritten
+    back to ``c`` **only** where a reshape introduced the divisibility, and never
+    for a floor merely inherited from an operand dim (``2*floor(H/2) ==
+    2*floor(H/2)`` cancels to a tautology and constrains nothing).
+
+    The reduction is truth-preserving: ``a == b`` with ``g = gcd(a, b) > 0``
+    implies ``a/g == b/g``.  ``floor(...)`` terms are treated as opaque
+    generators, so only whole monomial factors are cancelled.
+    """
+    if a == b:
+        return a, b
+    try:
+        g = sympy.gcd(a, b)
+    except sympy.PolynomialError:
+        return a, b
+    if g is None or g == 1 or g == 0:
+        return a, b
+    reduced_a = sympy.simplify(a / g)
+    reduced_b = sympy.simplify(b / g)
+    if reduced_a.has(sympy.zoo, sympy.nan, sympy.oo) or reduced_b.has(
+        sympy.zoo, sympy.nan, sympy.oo
+    ):
+        return a, b
+    return reduced_a, reduced_b
+
+
+def _canonical_name(names: list[str], is_generated: Callable[[str], bool]) -> str:
     """Pick the canonical name for an equivalence class.
 
-    Prefer a user-declared (non-anonymous) name; break ties deterministically by
+    Prefer a user-declared (non-generated) name; break ties deterministically by
     (length, lexicographic order).  Falls back to the same ordering over the
-    anonymous names when the class has no declared name.
+    generated names when the class has no declared name.
     """
-    preferred = [n for n in names if not _context._is_anonymous_symbol_name(n)]
+    preferred = [n for n in names if not is_generated(n)]
     pool = preferred or names
     return min(pool, key=lambda n: (len(n), n))
 
 
 def _build_replacements(
     equalities: list[tuple[str, str]],
+    is_generated: Callable[[str], bool],
 ) -> tuple[dict[sympy.Symbol, sympy.Symbol], list[tuple[sympy.Expr, sympy.Symbol]]]:
     """Build the leaf-symbol map and compound-expression replacements."""
     union = _UnionFind()
@@ -110,6 +150,11 @@ def _build_replacements(
     for a_str, b_str in equalities:
         a_expr = _symbolic_shapes.parse_symbolic_expression(a_str)
         b_expr = _symbolic_shapes.parse_symbolic_expression(b_str)
+        # Cancel any shared positive factor first so numel equalities such as
+        # ``a*b*c == a*b*2*floor(c/2)`` reduce to the useful ``c == 2*floor(c/2)``.
+        a_expr, b_expr = _reduce_common_factor(a_expr, b_expr)
+        if a_expr == b_expr:
+            continue
         leaf = _leaf_equality(a_expr, b_expr)
         if leaf is not None:
             union.union(*leaf)
@@ -120,7 +165,7 @@ def _build_replacements(
         for source, target in pairs:
             if (
                 isinstance(target, sympy.Symbol)
-                and not _context._is_anonymous_symbol_name(target.name)
+                and not is_generated(target.name)
                 and not isinstance(source, sympy.Symbol)
             ):
                 compound.append((source, target))
@@ -128,13 +173,13 @@ def _build_replacements(
 
     symbol_map: dict[sympy.Symbol, sympy.Symbol] = {}
     for members in union.members().values():
-        canonical = _canonical_name(members)
+        canonical = _canonical_name(members, is_generated)
         target = _symbolic_shapes.parse_symbolic_expression(canonical)
         for name in members:
             if name == canonical:
                 continue
-            # Only rename engine-anonymous symbols; never rewrite a declared name.
-            if _context._is_anonymous_symbol_name(name):
+            # Only rename engine-generated symbols; never rewrite a declared name.
+            if is_generated(name):
                 symbol_map[sympy.Symbol(name, integer=True, positive=True)] = target
 
     # Rename internal symbols inside compound sources so they match the graph.
@@ -211,6 +256,91 @@ def _collect_values(graph: ir.Graph) -> list[ir.Value]:
     return list(seen.values())
 
 
+def _iter_nodes(graph: ir.Graph) -> list[ir.Node]:
+    """Return every node in *graph* and nested subgraphs (depth-first)."""
+    nodes: list[ir.Node] = []
+
+    def _visit(g: ir.Graph) -> None:
+        for node in g:
+            nodes.append(node)
+            for subgraph in _iter_subgraphs(node):
+                _visit(subgraph)
+
+    _visit(graph)
+    return nodes
+
+
+def _shape_numel_expr(shape: ir.Shape | None) -> sympy.Expr | None:
+    """Return the product of *shape*'s dims as a SymPy expression, or ``None``.
+
+    Returns ``None`` when the shape is missing or any dim is unknown
+    (``SymbolicDim(None)``), since the element count is then not expressible.
+    """
+    if shape is None:
+        return None
+    product: sympy.Expr = sympy.Integer(1)
+    for dim in shape.dims:
+        if isinstance(dim, int):
+            product = product * dim
+            continue
+        expr = _symbolic_shapes.dim_to_expr(dim)
+        if expr is None:
+            return None
+        product = product * expr
+    return sympy.expand(product)
+
+
+def record_reshape_numel_equalities(
+    ctx: _context.ShapeInferenceContext,
+    graph: ir.Graph,
+) -> None:
+    """Record ``product(input) == product(output)`` for every Reshape node.
+
+    Reshape preserves element count, so this equality is always true for a valid
+    model.  When the output carries a factor absent from the input (e.g. a split
+    ``c -> [2, c//2]``), :func:`_reduce_common_factor` distills the divisibility
+    provenance (``c == 2*floor(c/2)``) that lets the propagation pass rewrite the
+    inherited floor back to the original symbol — soundly, and only where a
+    reshape actually introduced the divisibility.
+    """
+    for node in _iter_nodes(graph):
+        if node.domain != "" or node.op_type != "Reshape":
+            continue
+        if not node.inputs or not node.outputs:
+            continue
+        data, out = node.inputs[0], node.outputs[0]
+        if data is None or out is None:
+            continue
+        in_numel = _shape_numel_expr(data.shape)
+        out_numel = _shape_numel_expr(out.shape)
+        if in_numel is None or out_numel is None or in_numel == out_numel:
+            continue
+        ctx.add_symbolic_equality(str(in_numel), str(out_numel))
+
+
+def collect_symbol_names(graph: ir.Graph) -> set[str]:
+    """Collect every symbolic dimension name already present in *graph*.
+
+    Walks the root graph and nested subgraphs (via :func:`_collect_values`) and
+    returns the free-symbol names appearing in any declared shape.  The engine
+    reserves these before inference so freshly minted anonymous names can never
+    collide with an author-declared symbol (see
+    :meth:`ShapeInferenceContext.reserve_symbol_names`).
+    """
+    names: set[str] = set()
+    for value in _collect_values(graph):
+        shape = value.shape
+        if shape is None:
+            continue
+        for dim in shape.dims:
+            expr = _symbolic_shapes.dim_to_expr(dim)
+            if expr is None:
+                continue
+            for symbol in expr.free_symbols:
+                names.add(symbol.name)
+    return names
+
+
 def propagate_symbolic_constraints(
     ctx: _context.ShapeInferenceContext,
     graph: ir.Graph,
@@ -224,7 +354,7 @@ def propagate_symbolic_constraints(
     if not equalities:
         return False
 
-    symbol_map, compound = _build_replacements(equalities)
+    symbol_map, compound = _build_replacements(equalities, ctx.is_generated_symbol)
     if not symbol_map and not compound:
         return False
 

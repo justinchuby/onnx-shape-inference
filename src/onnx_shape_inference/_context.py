@@ -14,8 +14,7 @@ __all__ = [
 
 import json
 import logging
-import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from typing import Literal
 
 import onnx_ir as ir
@@ -29,15 +28,11 @@ SYM_DATA_KEY = "pkg.onnx_shape_inference.sym_data"
 # Engine-generated anonymous dimension names (see
 # :meth:`ShapeInferenceContext.new_symbolic_dim`).  These are placeholders for
 # genuinely data-dependent dims and are the only symbols the anchor/constraint
-# pass is allowed to rename.  The prefix is the single source of truth for both
-# generation (``new_symbolic_dim``) and detection (``_is_anonymous_symbol_name``).
+# pass is allowed to rename.  Eligibility for renaming is tracked by identity on
+# the context (``ShapeInferenceContext.is_generated_symbol``), NOT by matching
+# this spelling — a model author may legitimately declare a symbol named ``_d0``
+# and must never have it rewritten.  The prefix is only the seed for minting.
 _ANON_DIM_PREFIX = "_d"
-_ANON_DIM_RE = re.compile(rf"^{re.escape(_ANON_DIM_PREFIX)}\d+$")
-
-
-def _is_anonymous_symbol_name(name: str) -> bool:
-    """Return whether *name* is an engine-generated anonymous dim name."""
-    return bool(_ANON_DIM_RE.match(name))
 
 
 def _dim_expr_string(dim: int | ir.SymbolicDim | str | None) -> str | None:
@@ -237,6 +232,16 @@ class ShapeInferenceContext:
         self._errors: list[ShapeInferenceError] = []
         # Counter for generating unique symbolic dimension names
         self._dim_counter: int = 0
+        # Exact set of anonymous dimension names this context has minted via
+        # ``new_symbolic_dim``.  ONLY these symbols are eligible for renaming by
+        # the anchor/constraint pass — a model author who literally names a
+        # symbol ``_d0`` must never have it rewritten, so eligibility is tracked
+        # by identity (membership) here, not by spelling.
+        self._generated_dim_names: set[str] = set()
+        # Symbol names already present in the model before inference began.
+        # ``new_symbolic_dim`` avoids these so a freshly minted anonymous name
+        # can never collide with (and thus be confused for) an authored symbol.
+        self._reserved_symbol_names: set[str] = set()
         # Partial data propagation: symbolic element values keyed by ir.Value
         self._symbolic_values: dict[ir.Value, list[int | ir.SymbolicDim]] = {}
         # Symbolic-dimension equality constraints discovered during inference,
@@ -262,6 +267,31 @@ class ShapeInferenceContext:
             return self.opset
         return 1
 
+    def reserve_symbol_names(self, names: Iterable[str]) -> None:
+        """Reserve pre-existing model symbol names so mints never collide.
+
+        Called by the engine before inference with every symbol name already
+        present in the model (graph inputs/outputs, ``value_info``,
+        initializers, and subgraphs).  A reserved name is skipped by
+        :meth:`new_symbolic_dim`.
+        """
+        self._reserved_symbol_names.update(names)
+
+    def is_generated_symbol(self, name: str) -> bool:
+        """Return whether *name* was minted by this context's ``new_symbolic_dim``.
+
+        This is the authoritative (identity-based) test for anonymous-symbol
+        eligibility used by the anchor/constraint pass — as opposed to matching
+        the ``_dN`` spelling, which would misclassify an author-declared symbol
+        literally named ``_d0``.
+        """
+        return name in self._generated_dim_names
+
+    @property
+    def generated_dim_names(self) -> frozenset[str]:
+        """The set of anonymous dim names minted by this context."""
+        return frozenset(self._generated_dim_names)
+
     def new_symbolic_dim(self) -> ir.SymbolicDim:
         """Create a new symbolic dimension with a unique auto-generated name.
 
@@ -269,11 +299,22 @@ class ShapeInferenceContext:
         dimension gets a distinct identity.  Subsequent inference steps can
         then establish relationships between these named dimensions.
 
+        The generated name is guaranteed not to collide with any symbol already
+        present in the model (see :meth:`reserve_symbol_names`) and is recorded
+        as engine-generated so the anchor/constraint pass may rename it.
+
         Returns:
             A :class:`ir.SymbolicDim` with a unique name like ``_d0``, ``_d1``, …
         """
-        name = f"{_ANON_DIM_PREFIX}{self._dim_counter}"
-        self._dim_counter += 1
+        while True:
+            name = f"{_ANON_DIM_PREFIX}{self._dim_counter}"
+            self._dim_counter += 1
+            if (
+                name not in self._reserved_symbol_names
+                and name not in self._generated_dim_names
+            ):
+                break
+        self._generated_dim_names.add(name)
         return ir.SymbolicDim(name)
 
     def simplify_dim(
@@ -512,10 +553,10 @@ class ShapeInferenceContext:
         """Record an equality when a declared anchor dim meets a different symbol.
 
         Only fires when the *existing* dim carries a user-visible name (i.e. it
-        is not concrete, not unknown, and not itself an engine-anonymous ``_dN``
-        placeholder) and the inferred dim is a different symbolic expression.
-        This is the hook that turns declared output / value_info names into
-        rename constraints for the engine's anchor pass.
+        is not concrete, not unknown, and not one this context itself minted)
+        and the inferred dim is a different symbolic expression.  This is the
+        hook that turns declared output / value_info names into rename
+        constraints for the engine's anchor pass.
         """
         if not isinstance(existing_dim, ir.SymbolicDim) or existing_dim.value is None:
             return
@@ -527,7 +568,7 @@ class ShapeInferenceContext:
         # otherwise this is internal-vs-internal noise not worth relating.
         anchor_expr = _symbolic_shapes.dim_to_expr(existing_dim)
         if anchor_expr is None or all(
-            _is_anonymous_symbol_name(s.name) for s in anchor_expr.free_symbols
+            self.is_generated_symbol(s.name) for s in anchor_expr.free_symbols
         ):
             return
         self.add_symbolic_equality(inferred_dim.value, existing_dim.value)

@@ -555,6 +555,47 @@ class AnchorConstraintPropagationTest(unittest.TestCase):
         self.assertEqual(nonzero.outputs[0].shape, ir.Shape([2, "dnz"]))
         self.assertEqual(flattened.outputs[0].shape, ir.Shape(["2*dnz"]))
 
+    def test_author_declared_underscore_dn_symbol_is_not_renamed(self):
+        # ISSUE A regression: a model that literally authors `_d0` on its input
+        # must never have that symbol adopted/renamed by the anchor pass, even
+        # when an Identity forwards it to a declared output `K`.  Eligibility is
+        # by minted-identity, not by `_dN` spelling.
+        x = ir.Value(name="X", type=ir.TensorType(ir.DataType.FLOAT), shape=ir.Shape(["_d0"]))
+        y = ir.Value(name="Y", type=ir.TensorType(ir.DataType.FLOAT), shape=ir.Shape(["K"]))
+        identity = ir.Node("", "Identity", [x], outputs=[y])
+        model = ir.Model(
+            ir.Graph([x], [y], nodes=[identity], opset_imports={"": 21}), ir_version=10
+        )
+
+        _engine.infer_symbolic_shapes(model)
+
+        # The authored input symbol is untouched.
+        self.assertEqual(x.shape[0], ir.SymbolicDim("_d0"))
+
+    def test_minted_symbol_avoids_colliding_with_authored_name(self):
+        # ISSUE A regression: when the model already authors `_d0`, a freshly
+        # minted anonymous dim (for the genuinely unknown NonZero last dim) must
+        # NOT reuse `_d0` — otherwise the two would be conflated.
+        x = ir.Value(
+            name="X",
+            type=ir.TensorType(ir.DataType.FLOAT),
+            shape=ir.Shape(["_d0", 5]),
+        )
+        nz = ir.Node("", "NonZero", inputs=[x], num_outputs=1)
+        nz.outputs[0].name = "Z"
+        model = ir.Model(
+            ir.Graph([x], [nz.outputs[0]], nodes=[nz], opset_imports={"": 21}),
+            ir_version=10,
+        )
+
+        _engine.infer_symbolic_shapes(model)
+
+        minted = nz.outputs[0].shape[1]
+        self.assertIsInstance(minted, ir.SymbolicDim)
+        # Whatever it minted, it must differ from the authored `_d0`.
+        self.assertNotEqual(minted, ir.SymbolicDim("_d0"))
+        self.assertEqual(x.shape[0], ir.SymbolicDim("_d0"))
+
 
 if __name__ == "__main__":
     unittest.main()
