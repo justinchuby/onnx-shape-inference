@@ -7,6 +7,7 @@ from __future__ import annotations
 import copy
 from dataclasses import dataclass
 
+from onnx_shape_inference._fuzz._binding import materialize_model
 from onnx_shape_inference._fuzz._oracles import Oracle
 from onnx_shape_inference._fuzz._types import FuzzCase, OracleResult, OracleStatus
 
@@ -68,6 +69,8 @@ class DeltaShrinker:
         }
         if not bindings:
             return case
+        candidate.model = materialize_model(candidate, bindings)
+        candidate.symbolic_dims = bindings
         candidate.metadata["shrink_bindings"] = bindings
         return candidate if self._preserves(candidate, signature) else case
 
