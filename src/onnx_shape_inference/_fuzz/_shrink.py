@@ -9,7 +9,7 @@ from dataclasses import dataclass
 
 from onnx_shape_inference._fuzz._binding import materialize_model
 from onnx_shape_inference._fuzz._oracles import Oracle
-from onnx_shape_inference._fuzz._types import FuzzCase, OracleResult, OracleStatus
+from onnx_shape_inference._fuzz._types import FuzzCase, OracleResult
 
 __all__ = ["DeltaShrinker", "FailureSignature", "failure_signature"]
 
@@ -45,7 +45,7 @@ class DeltaShrinker:
     def shrink(self, case: FuzzCase) -> FuzzCase:
         """Return the smallest signature-preserving case found greedily."""
         initial = self.oracle.check(case)
-        if initial.status is not OracleStatus.FAIL:
+        if initial.status != "FAIL":
             return case
         signature = failure_signature(self.oracle, initial)
         current = copy.deepcopy(case)
@@ -55,10 +55,7 @@ class DeltaShrinker:
 
     def _preserves(self, candidate: FuzzCase, signature: FailureSignature) -> bool:
         result = self.oracle.check(candidate)
-        return (
-            result.status is OracleStatus.FAIL
-            and failure_signature(self.oracle, result) == signature
-        )
+        return result.status == "FAIL" and failure_signature(self.oracle, result) == signature
 
     def _try_concretizing_symbols(
         self, case: FuzzCase, signature: FailureSignature

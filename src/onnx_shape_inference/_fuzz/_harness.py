@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from onnx_shape_inference._fuzz._oracles import Oracle
-from onnx_shape_inference._fuzz._types import FuzzCase, OracleResult, OracleStatus
+from onnx_shape_inference._fuzz._types import FuzzCase, OracleResult, Status
 
 __all__ = ["FuzzHarness", "FuzzSummary", "write_coverage_report"]
 
@@ -21,7 +21,7 @@ __all__ = ["FuzzHarness", "FuzzSummary", "write_coverage_report"]
 class FuzzSummary:
     """Aggregate statuses and per-op coverage for a harness invocation."""
 
-    results: Counter[OracleStatus] = field(default_factory=Counter)
+    results: Counter[Status] = field(default_factory=Counter)
     op_coverage: Counter[tuple[str, str]] = field(default_factory=Counter)
     skips: Counter[str] = field(default_factory=Counter)
 
@@ -31,25 +31,29 @@ class FuzzHarness:
 
     def __init__(self, generate: Callable[[int], FuzzCase], oracles: Sequence[Oracle]) -> None:
         self.generate = generate
-        self.oracles = tuple(oracles)
+        order = {"crash": 0, "differential": 1, "simplification": 2, "soundness": 3}
+        self.oracles = tuple(sorted(oracles, key=lambda oracle: order.get(oracle.name, 99)))
 
     def run(self, seeds: Iterable[int]) -> FuzzSummary:
         """Run *seeds*, raising an actionable assertion for the first failure."""
         summary = FuzzSummary()
         for seed in seeds:
             case = self.generate(seed)
+            first_failure: tuple[Oracle, OracleResult] | None = None
             for node in case.model.graph:
                 summary.op_coverage[(node.domain or "", node.op_type)] += 1
             for oracle in self.oracles:
                 if not oracle.applicable(case):
-                    result = OracleResult.skipped("oracle not applicable")
+                    result = OracleResult.skipped(oracle.name, "oracle not applicable")
                 else:
                     result = oracle.check(case)
                 summary.results[result.status] += 1
-                if result.status is OracleStatus.SKIP:
+                if result.status == "SKIP" and result.reason is not None:
                     summary.skips[result.reason] += 1
-                if result.status is OracleStatus.FAIL:
-                    raise AssertionError(self._failure_message(case, oracle, result))
+                if result.status == "FAIL" and first_failure is None:
+                    first_failure = (oracle, result)
+            if first_failure is not None:
+                raise AssertionError(self._failure_message(case, *first_failure))
         return summary
 
     @staticmethod
@@ -58,7 +62,7 @@ class FuzzHarness:
         snippet = (
             "from onnx_shape_inference._fuzz._generator import generate\n"
             f"case = generate({case.seed})\n"
-            f"# Re-run {oracle.name}; ground truth expected={result.expected!r}."
+            f"# Re-run {oracle.name}; ground truth={result.details.get('ground_truth')!r}."
         )
         artifact_dir = os.environ.get("FUZZ_ARTIFACT_DIR")
         if artifact_dir:
@@ -75,8 +79,8 @@ class FuzzHarness:
             )
         return (
             f"fuzz failure: oracle={oracle.name} seed={case.seed} value={result.value_name!r} "
-            f"kind={result.kind!r}: {result.reason}; expected={result.expected!r}, "
-            f"actual={result.actual!r}\nreproduce: {command}\n{snippet}"
+            f"kind={result.kind!r}: {result.reason}; details={result.details!r}\n"
+            f"reproduce: {command}\n{snippet}"
         )
 
 
@@ -92,7 +96,7 @@ def write_coverage_report(summary: FuzzSummary, path: str | Path) -> Path:
         json.dumps(
             {
                 "op_coverage": coverage,
-                "outcomes": {status.value: count for status, count in summary.results.items()},
+                "outcomes": dict(sorted(summary.results.items())),
                 "skips": dict(sorted(summary.skips.items())),
             },
             indent=2,

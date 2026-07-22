@@ -22,6 +22,7 @@ pytestmark = [pytest.mark.fuzz, pytest.mark.fuzz_long]
 
 FUZZ_SEED = int(os.environ.get("FUZZ_SEED", "0"))
 FAST_CASES = int(os.environ.get("FUZZ_CASES", "150"))
+SOUNDNESS_SAMPLE_RATE = int(os.environ.get("FUZZ_SOUNDNESS_SAMPLE_RATE", "16"))
 _CORPUS_PATH = Path(__file__).with_name("fuzz_corpus") / "seeds.json"
 
 
@@ -41,7 +42,7 @@ def test_fast_seeded_fuzzing():
     generate = _generate()
     seeds = _corpus_seeds() + list(range(FUZZ_SEED, FUZZ_SEED + FAST_CASES))
     oracles = [CrashOracle(), DifferentialOracle(), SimplificationOracle()]
-    soundness = SoundnessOracle()
+    soundness = SoundnessOracle(sample_rate=SOUNDNESS_SAMPLE_RATE)
     if soundness.applicable(generate(seeds[0])):
         oracles.append(soundness)
     summary = FuzzHarness(generate, oracles).run(seeds)

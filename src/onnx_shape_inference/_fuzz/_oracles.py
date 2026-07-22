@@ -6,8 +6,13 @@ from __future__ import annotations
 
 import copy
 import faulthandler
+import json
+import os
 import signal
-from contextlib import contextmanager
+import subprocess
+import sys
+from contextlib import contextmanager, suppress
+from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 import numpy as np
@@ -28,6 +33,7 @@ __all__ = [
     "CrashOracle",
     "DifferentialOracle",
     "Oracle",
+    "OracleResult",
     "SimplificationOracle",
     "SoundnessOracle",
 ]
@@ -118,31 +124,49 @@ class CrashOracle:
                 infer_symbolic_shapes(model)
                 second = _snapshot(model)
         except _AlarmExpiredError as error:
-            return OracleResult.failed(str(error), kind="hang")
+            return OracleResult.failed(
+                self.name, str(error), value_name="<graph>", kind="hang"
+            )
         except OpUsageError as error:
             if self.malformed:
-                return OracleResult.passed()
-            return OracleResult.skipped(f"model rejected with OpUsageError: {error}")
+                return OracleResult.passed(self.name)
+            return OracleResult.skipped(
+                self.name, f"model rejected with OpUsageError: {error}"
+            )
         except ShapeInferenceError as error:
             if self.malformed:
                 return OracleResult.failed(
+                    self.name,
                     f"malformed mutation raised ShapeInferenceError, expected OpUsageError: {error}",
+                    value_name="<graph>",
                     kind="exception",
                 )
-            return OracleResult.skipped(f"model rejected with ShapeInferenceError: {error}")
+            return OracleResult.skipped(
+                self.name, f"model rejected with ShapeInferenceError: {error}"
+            )
         except Exception as error:
             return OracleResult.failed(
+                self.name,
                 f"unexpected {type(error).__name__}: {error}",
+                value_name="<graph>",
                 kind="exception",
             )
         if self.malformed:
             return OracleResult.failed(
-                "malformed mutation did not raise OpUsageError", kind="exception"
+                self.name,
+                "malformed mutation did not raise OpUsageError",
+                value_name="<graph>",
+                kind="missing_intended_error",
             )
         if first != second:
-            return OracleResult.failed("inference is not idempotent", kind="idempotence")
+            return OracleResult.failed(
+                self.name,
+                "inference is not idempotent",
+                value_name="<graph>",
+                kind="idempotence",
+            )
         case.our_inference_result = model
-        return OracleResult.passed()
+        return OracleResult.passed(self.name)
 
 
 class DifferentialOracle:
@@ -157,7 +181,7 @@ class DifferentialOracle:
         try:
             import onnx
         except ImportError:
-            return OracleResult.skipped("onnx is unavailable")
+            return OracleResult.skipped(self.name, "onnx is unavailable")
         try:
             ours = _infer_ours(case)
             proto = ir.serde.serialize_model(copy.deepcopy(case.model))
@@ -166,11 +190,12 @@ class DifferentialOracle:
             )
             reference_model = ir.serde.deserialize_model(reference)
         except (OpUsageError, ShapeInferenceError) as error:
-            return OracleResult.skipped(f"our inference is unknown: {error}")
+            return OracleResult.skipped(self.name, f"our inference is unknown: {error}")
         except Exception as error:
             return OracleResult.skipped(
-                f"reference inference unavailable: {type(error).__name__}: {error}"
+                self.name, f"reference inference unavailable: {type(error).__name__}: {error}"
             )
+        case.onnx_ref_result = reference_model
 
         ours_by_name = {value.name: value for value in iter_values(ours.graph) if value.name}
         ref_by_name = {
@@ -183,6 +208,7 @@ class DifferentialOracle:
                 continue
             if ours_value.dtype != ref_value.dtype:
                 return OracleResult.failed(
+                    self.name,
                     "dtype contradiction",
                     value_name=name,
                     kind="dtype",
@@ -193,6 +219,7 @@ class DifferentialOracle:
                 continue
             if ours_value.shape.rank() != ref_value.shape.rank():
                 return OracleResult.failed(
+                    self.name,
                     "rank contradiction",
                     value_name=name,
                     kind="rank",
@@ -209,15 +236,19 @@ class DifferentialOracle:
                     and ours_dim != ref_dim
                 ):
                     return OracleResult.failed(
+                        self.name,
                         "concrete dimension contradiction",
                         value_name=name,
-                        kind=f"dim[{index}]",
+                        kind="concrete_dim",
+                        details={"index": index},
                         expected=ref_dim,
                         actual=ours_dim,
                     )
         if checked == 0:
-            return OracleResult.skipped("no shared values with known dtype and rank")
-        return OracleResult.passed()
+            return OracleResult.skipped(
+                self.name, "no shared values with known dtype and rank"
+            )
+        return OracleResult.passed(self.name)
 
 
 def _np_dtype(dtype: ir.DataType) -> np.dtype | None:
@@ -236,24 +267,71 @@ def _data_dependent(case: FuzzCase, value_name: str, index: int) -> bool:
     return value_name in case.data_dependent_values
 
 
+def _runtime_shapes(
+    proto,
+    feeds: dict[str, np.ndarray],
+    *,
+    seed: int,
+) -> dict[str, dict[str, object]]:
+    """Run ORT in a subprocess so an unsafe kernel becomes a coverage hole."""
+    import onnx
+
+    directory = Path.cwd() / ".fuzz-runtime"
+    directory.mkdir(exist_ok=True)
+    stem = f"{os.getpid()}-{seed}"
+    model_path = directory / f"{stem}.onnx"
+    feeds_path = directory / f"{stem}.npz"
+    result_path = directory / f"{stem}.json"
+    try:
+        onnx.save(proto, model_path)
+        np.savez(feeds_path, **feeds)
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "onnx_shape_inference._fuzz._runtime_worker",
+                str(model_path),
+                str(feeds_path),
+                str(result_path),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if completed.returncode != 0:
+            raise RuntimeError(
+                completed.stderr.strip() or f"runtime exited {completed.returncode}"
+            )
+        return json.loads(result_path.read_text())
+    finally:
+        for path in (model_path, feeds_path, result_path):
+            path.unlink(missing_ok=True)
+        with suppress(OSError):
+            directory.rmdir()
+
+
 class SoundnessOracle:
     """Concretize symbolic models and compare inferred facts against ONNX Runtime."""
 
     name = "soundness"
+
+    def __init__(self, *, sample_rate: int = 16) -> None:
+        self.sample_rate = max(1, sample_rate)
 
     def applicable(self, case: FuzzCase) -> bool:
         try:
             import onnxruntime  # noqa: F401
         except ImportError:
             return False
-        return case.model is not None
+        return case.model is not None and case.seed % self.sample_rate == 0
 
     def check(self, case: FuzzCase) -> OracleResult:
         try:
             import onnx
-            import onnxruntime as ort
+            import onnxruntime  # noqa: F401
         except ImportError:
-            return OracleResult.skipped("onnxruntime is unavailable")
+            return OracleResult.skipped(self.name, "onnxruntime is unavailable")
 
         bindings = bind_symbols(case)
         try:
@@ -274,69 +352,74 @@ class SoundnessOracle:
                 proto.graph.output.append(
                     onnx.helper.make_tensor_value_info(name, int(value.dtype), dims)
                 )
-            session = ort.InferenceSession(
-                proto.SerializeToString(), providers=["CPUExecutionProvider"]
-            )
             rng = np.random.default_rng(case.seed)
             feeds: dict[str, np.ndarray] = {}
+            input_names = {value.name for value in concrete.graph.inputs}
             for value in concrete.graph.inputs:
-                if value.name not in {input_.name for input_ in session.get_inputs()}:
+                if value.name not in input_names:
                     continue
                 if value.shape is None or value.dtype is None:
-                    return OracleResult.skipped(f"input {value.name} is not concrete")
+                    return OracleResult.skipped(
+                        self.name, f"input {value.name} is not concrete"
+                    )
                 dtype = _np_dtype(value.dtype)
                 if dtype is None:
-                    return OracleResult.skipped(f"ORT dtype unavailable for {value.dtype}")
+                    return OracleResult.skipped(
+                        self.name, f"ORT dtype unavailable for {value.dtype}"
+                    )
                 shape = tuple(int(dim) for dim in value.shape)
                 if dtype == np.bool_:
                     feeds[value.name] = rng.integers(0, 2, shape, dtype=np.int8).astype(dtype)
                 elif np.issubdtype(dtype, np.integer):
-                    feeds[value.name] = rng.integers(0, 4, shape, dtype=dtype)
+                    feeds[value.name] = rng.integers(1, 4, shape, dtype=dtype)
                 else:
-                    feeds[value.name] = rng.standard_normal(shape).astype(dtype)
-            outputs = session.run(None, feeds)
-            runtime = {
-                output.name: result for output, result in zip(session.get_outputs(), outputs)
-            }
+                    feeds[value.name] = rng.uniform(0.5, 1.5, shape).astype(dtype)
+            runtime = _runtime_shapes(proto, feeds, seed=case.seed)
             case.onnxruntime_result = runtime
         except Exception as error:
             return OracleResult.skipped(
-                f"onnxruntime cannot run graph: {type(error).__name__}: {error}"
+                self.name, f"onnxruntime cannot run graph: {type(error).__name__}: {error}"
             )
 
         for value in iter_values(symbolic.graph):
             if not value.name or value.name not in runtime or value.shape is None:
                 continue
             actual = runtime[value.name]
-            if value.dtype is not None and _np_dtype(value.dtype) != actual.dtype:
+            actual_dtype = np.dtype(actual["dtype"])
+            actual_shape = actual["shape"]
+            if value.dtype is not None and _np_dtype(value.dtype) != actual_dtype:
                 return OracleResult.failed(
+                    self.name,
                     "runtime dtype contradiction",
                     value_name=value.name,
                     kind="dtype",
-                    expected=actual.dtype,
+                    expected=actual_dtype,
                     actual=value.dtype,
                 )
-            if value.shape.rank() != actual.ndim:
+            if value.shape.rank() != len(actual_shape):
                 return OracleResult.failed(
+                    self.name,
                     "runtime rank contradiction",
                     value_name=value.name,
                     kind="rank",
-                    expected=actual.ndim,
+                    expected=len(actual_shape),
                     actual=value.shape.rank(),
                 )
             for index, dim in enumerate(value.shape):
                 if _data_dependent(case, value.name, index):
                     continue
                 predicted = evaluate_dim(dim, bindings)
-                if predicted is not None and predicted != actual.shape[index]:
+                if predicted is not None and predicted != actual_shape[index]:
                     return OracleResult.failed(
+                        self.name,
                         "runtime dimension contradiction",
                         value_name=value.name,
-                        kind=f"dim[{index}]",
-                        expected=actual.shape[index],
+                        kind="concrete_dim",
+                        details={"index": index, "binding": bindings},
+                        expected=actual_shape[index],
                         actual=predicted,
                     )
-        return OracleResult.passed()
+        return OracleResult.passed(self.name)
 
 
 class SimplificationOracle:
@@ -354,7 +437,7 @@ class SimplificationOracle:
         try:
             inferred = _infer_ours(case)
         except (OpUsageError, ShapeInferenceError) as error:
-            return OracleResult.skipped(f"our inference is unknown: {error}")
+            return OracleResult.skipped(self.name, f"our inference is unknown: {error}")
         values = {value.name: value for value in iter_values(inferred.graph) if value.name}
         rng = np.random.default_rng(case.seed)
         for (name, index), before_text in sorted(case.pre_simplify_dims.items()):
@@ -374,10 +457,12 @@ class SimplificationOracle:
                 substitutions = {symbol: int(rng.integers(1, 12)) for symbol in symbols}
                 if before_expr.subs(substitutions) != after_expr.subs(substitutions):
                     return OracleResult.failed(
+                        self.name,
                         "symbolic simplification contradiction",
                         value_name=name,
-                        kind=f"dim[{index}]",
+                        kind="symbolic_dim",
+                        details={"index": index},
                         expected=str(before_expr),
                         actual=str(after_expr),
                     )
-        return OracleResult.passed()
+        return OracleResult.passed(self.name)

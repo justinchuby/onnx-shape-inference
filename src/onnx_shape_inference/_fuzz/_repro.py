@@ -44,6 +44,6 @@ def render_reproducer(
             f"model = ir.serde.deserialize_model(onnx.load({artifact_name!r}))",
             "# Add this to " + target + ".",
             f"# seed={case.seed}; oracle={signature.oracle}; value={signature.value_name!r};",
-            f"# expected={result.expected!r}; actual={result.actual!r}; kind={signature.kind!r}",
+            f"# details={result.details!r}; kind={signature.kind!r}",
         ]
     )

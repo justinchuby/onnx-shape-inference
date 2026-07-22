@@ -5,8 +5,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import Enum
-from typing import Any
+from typing import Any, Literal
 
 import onnx_ir as ir
 
@@ -14,7 +13,7 @@ __all__ = [
     "DATA_DEPENDENT_OPS",
     "FuzzCase",
     "OracleResult",
-    "OracleStatus",
+    "Status",
     "SymbolConstraint",
 ]
 
@@ -26,53 +25,65 @@ DATA_DEPENDENT_OPS: frozenset[tuple[str, str]] = frozenset(
     {
         ("", "Compress"),
         ("", "NonZero"),
+        ("", "Pad"),
+        ("", "Range"),
+        ("", "StringSplit"),
         ("", "TopK"),
         ("", "Unique"),
     }
 )
 
 
-class OracleStatus(str, Enum):
-    """The outcome of an oracle check."""
-
-    PASS = "pass"
-    FAIL = "fail"
-    SKIP = "skip"
+Status = Literal["PASS", "FAIL", "SKIP"]
+"""The three possible outcomes of an oracle check."""
 
 
 @dataclass(frozen=True)
 class OracleResult:
     """An oracle outcome with failure details suitable for a reproducer."""
 
-    status: OracleStatus
-    reason: str = ""
+    oracle: str
+    status: Status
+    reason: str | None = None
     value_name: str | None = None
     kind: str | None = None
-    expected: object | None = None
-    actual: object | None = None
+    details: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if self.status in ("FAIL", "SKIP") and not self.reason:
+            raise ValueError(f"{self.status} requires a reason")
+        if self.status == "FAIL" and (self.value_name is None or self.kind is None):
+            raise ValueError("FAIL requires value_name and kind")
 
     @classmethod
-    def passed(cls) -> OracleResult:
+    def passed(cls, oracle: str) -> OracleResult:
         """Construct a passing result."""
-        return cls(OracleStatus.PASS)
+        return cls(oracle, "PASS")
 
     @classmethod
     def failed(
         cls,
+        oracle: str,
         reason: str,
         *,
         value_name: str | None = None,
         kind: str | None = None,
         expected: object | None = None,
         actual: object | None = None,
+        details: dict[str, Any] | None = None,
     ) -> OracleResult:
         """Construct a failing result."""
-        return cls(OracleStatus.FAIL, reason, value_name, kind, expected, actual)
+        combined_details = dict(details or {})
+        if expected is not None:
+            combined_details["ground_truth"] = expected
+        if actual is not None:
+            combined_details["our_shape"] = actual
+        return cls(oracle, "FAIL", reason, value_name, kind, combined_details)
 
     @classmethod
-    def skipped(cls, reason: str) -> OracleResult:
+    def skipped(cls, oracle: str, reason: str) -> OracleResult:
         """Construct a skipped result."""
-        return cls(OracleStatus.SKIP, reason)
+        return cls(oracle, "SKIP", reason)
 
 
 @dataclass
@@ -131,3 +142,34 @@ class FuzzCase:
             self.runtime_cache.pop("onnxruntime_result", None)
         else:
             self.runtime_cache["onnxruntime_result"] = result
+
+    @property
+    def our_result(self) -> ir.Model | None:
+        """Alias for the symbolic-inference cache used by oracle integrations."""
+        return self.our_inference_result
+
+    @our_result.setter
+    def our_result(self, result: ir.Model | None) -> None:
+        self.our_inference_result = result
+
+    @property
+    def ort_result(self) -> dict[str, Any] | None:
+        """Alias for the ONNX Runtime cache used by oracle integrations."""
+        return self.onnxruntime_result
+
+    @ort_result.setter
+    def ort_result(self, result: dict[str, Any] | None) -> None:
+        self.onnxruntime_result = result
+
+    @property
+    def onnx_ref_result(self) -> ir.Model | None:
+        """Lazily cached ONNX-reference inference model."""
+        result = self.inference_cache.get("onnx_ref_result")
+        return result if isinstance(result, ir.Model) else None
+
+    @onnx_ref_result.setter
+    def onnx_ref_result(self, result: ir.Model | None) -> None:
+        if result is None:
+            self.inference_cache.pop("onnx_ref_result", None)
+        else:
+            self.inference_cache["onnx_ref_result"] = result

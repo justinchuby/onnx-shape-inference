@@ -19,7 +19,7 @@ from onnx_shape_inference._fuzz._oracles import (
     SimplificationOracle,
     SoundnessOracle,
 )
-from onnx_shape_inference._fuzz._types import FuzzCase, OracleResult, OracleStatus
+from onnx_shape_inference._fuzz._types import FuzzCase, OracleResult
 
 
 def _case(*, symbolic: bool = False) -> FuzzCase:
@@ -36,7 +36,7 @@ def _case(*, symbolic: bool = False) -> FuzzCase:
 
 class CrashOracleTest(unittest.TestCase):
     def test_correct_graph_passes_and_is_idempotent(self):
-        self.assertEqual(CrashOracle().check(_case()).status, OracleStatus.PASS)
+        self.assertEqual(CrashOracle().check(_case()).status, "PASS")
 
     def test_malformed_mode_requires_op_usage_error(self):
         x = ir.Value(name="X", type=ir.TensorType(ir.DataType.FLOAT), shape=ir.Shape([2]))
@@ -46,13 +46,13 @@ class CrashOracleTest(unittest.TestCase):
             ir_version=10,
         )
         case = FuzzCase(model=model, seed=0, opset_imports={"": 21})
-        self.assertEqual(CrashOracle(malformed=True).check(case).status, OracleStatus.PASS)
+        self.assertEqual(CrashOracle(malformed=True).check(case).status, "PASS")
 
 
 class DifferentialOracleTest(unittest.TestCase):
     def test_correct_graph_passes(self):
         result = DifferentialOracle().check(_case())
-        self.assertEqual(result.status, OracleStatus.PASS)
+        self.assertEqual(result.status, "PASS")
 
 
 class BindingTest(unittest.TestCase):
@@ -72,20 +72,20 @@ class SimplificationOracleTest(unittest.TestCase):
     def test_equivalent_expression_passes(self):
         case = _case(symbolic=True)
         case.pre_simplify_dims[("Y", 0)] = "N"
-        self.assertEqual(SimplificationOracle(samples=4).check(case).status, OracleStatus.PASS)
+        self.assertEqual(SimplificationOracle(samples=4).check(case).status, "PASS")
 
     def test_wrong_reference_fails(self):
         case = _case(symbolic=True)
         case.pre_simplify_dims[("Y", 0)] = "N + 1"
         result = SimplificationOracle(samples=4).check(case)
-        self.assertEqual(result.status, OracleStatus.FAIL)
+        self.assertEqual(result.status, "FAIL")
         self.assertEqual(result.value_name, "Y")
 
 
 @unittest.skipUnless(importlib.util.find_spec("onnxruntime"), "onnxruntime is optional")
 class SoundnessOracleTest(unittest.TestCase):
     def test_correct_inference_passes(self):
-        self.assertEqual(SoundnessOracle().check(_case()).status, OracleStatus.PASS)
+        self.assertEqual(SoundnessOracle().check(_case()).status, "PASS")
 
     def test_wrong_inferred_shape_fails_against_runtime(self):
         case = _case()
@@ -97,7 +97,7 @@ class SoundnessOracleTest(unittest.TestCase):
             return_value=wrong,
         ):
             result = SoundnessOracle().check(case)
-        self.assertEqual(result.status, OracleStatus.FAIL)
+        self.assertEqual(result.status, "FAIL")
         self.assertEqual(result.value_name, "Y")
 
 
@@ -110,7 +110,9 @@ class HarnessTest(unittest.TestCase):
                 return True
 
             def check(self, case):
-                return OracleResult.failed("deliberate", value_name="Y", kind="shape")
+                return OracleResult.failed(
+                    "failing", "deliberate", value_name="Y", kind="dtype"
+                )
 
         harness = FuzzHarness(
             lambda seed: FuzzCase(model=_case().model, seed=seed, opset_imports={"": 21}),
