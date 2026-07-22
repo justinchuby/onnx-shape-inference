@@ -14,6 +14,7 @@ import sympy
 
 __all__ = [
     "parse_symbolic_expression",
+    "simplify_expression",
     "ALLOWED_FUNCTIONS",
 ]
 
@@ -312,3 +313,69 @@ def parse_symbolic_expression(value: str) -> sympy.Expr:
 
     parser = _ExpressionParser(value)
     return parser.parse()
+
+
+def _is_integer_polynomial(expr: sympy.Expr) -> bool:
+    """Return whether *expr* is a polynomial with integer coefficients.
+
+    A bare integer constant qualifies.  Rational coefficients (e.g. ``c/2``)
+    and non-polynomial constructs (``Mod``, ``Max``, ``floor`` …) do not.
+    """
+    expr = sympy.expand(expr)
+    free = sorted(expr.free_symbols, key=lambda s: s.name)
+    if not free:
+        return bool(expr.is_integer)
+    try:
+        poly = sympy.Poly(expr, *free)
+    except sympy.PolynomialError:
+        return False
+    return all(coeff.is_Integer for coeff in poly.coeffs())
+
+
+def _cancel_exact_divisions(term: sympy.Expr) -> sympy.Expr:
+    """Cancel ``floor``/``ceiling`` in *term* assuming exact divisibility.
+
+    Replaces every ``floor(x)``/``ceiling(x)`` with ``x`` and keeps the result
+    **only** when it collapses to a clean integer polynomial — i.e. when an
+    outer factor cancels the divisor (``2*floor(c/2) -> c``, ``3*floor(c/3) ->
+    c``).  A standalone ``floor(c/2)`` is left untouched because stripping it
+    would silently drop the rounding.
+    """
+    if not term.has(sympy.floor, sympy.ceiling):
+        return term
+    exact = term.replace(sympy.floor, lambda arg: arg).replace(sympy.ceiling, lambda arg: arg)
+    exact = sympy.expand(exact)
+    if _is_integer_polynomial(exact):
+        return exact
+    return term
+
+
+def simplify_expression(
+    expr: sympy.Expr | str,
+    *,
+    assume_divisible: bool = False,
+) -> sympy.Expr:
+    """Canonicalize a symbolic dimension expression.
+
+    Args:
+        expr: A SymPy expression or a string parsed via
+            :func:`parse_symbolic_expression`.
+        assume_divisible: When ``True``, cancel ``floor``/``ceiling`` whose
+            divisor is removed by an outer factor, assuming exact divisibility
+            (``2*(c//2) -> c``).  This is only sound for operators that
+            guarantee divisibility (e.g. ``Reshape`` inferring a ``-1``
+            dimension); it must **not** be applied to operators whose rounding
+            is genuine (``Resize``/``Tile``/pooling ``H//2``), which is why it
+            is opt-in.
+
+    Returns:
+        The simplified SymPy expression.
+    """
+    if isinstance(expr, str):
+        expr = parse_symbolic_expression(expr)
+    expr = sympy.sympify(expr)
+    if assume_divisible:
+        expr = sympy.expand(expr)
+        terms = sympy.Add.make_args(expr)
+        expr = sympy.Add(*(_cancel_exact_divisions(term) for term in terms))
+    return expr

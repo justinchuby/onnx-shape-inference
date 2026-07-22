@@ -56,5 +56,69 @@ class ShapeMergePolicyTest(unittest.TestCase):
         self.assertIn("conflict", str(cm.exception).lower())
 
 
+class SimplifyDimTest(unittest.TestCase):
+    """Tests for ShapeInferenceContext.simplify_dim."""
+
+    def test_int_returned_unchanged(self):
+        ctx = ShapeInferenceContext()
+        self.assertEqual(ctx.simplify_dim(5), 5)
+
+    def test_unknown_symbolic_dim_unchanged(self):
+        ctx = ShapeInferenceContext()
+        dim = ir.SymbolicDim(None)
+        self.assertIs(ctx.simplify_dim(dim), dim)
+
+    def test_divisible_collapses_to_int_or_symbol(self):
+        ctx = ShapeInferenceContext()
+        result = ctx.simplify_dim(ir.SymbolicDim("2*floor(c/2)"), assume_divisible=True)
+        self.assertEqual(result, ir.SymbolicDim("c"))
+
+    def test_default_keeps_floor(self):
+        ctx = ShapeInferenceContext()
+        dim = ir.SymbolicDim("2*floor(H/2)")
+        result = ctx.simplify_dim(dim)
+        self.assertEqual(result, ir.SymbolicDim("2*floor(H/2)"))
+
+
+class SymbolicEqualityTest(unittest.TestCase):
+    """Tests for add_symbolic_equality / add_upper_bound recording."""
+
+    def test_records_equality(self):
+        ctx = ShapeInferenceContext()
+        ctx.add_symbolic_equality(ir.SymbolicDim("_d0"), ir.SymbolicDim("dnz"))
+        self.assertIn(("_d0", "dnz"), ctx.symbolic_equalities)
+
+    def test_ignores_identical_and_concrete(self):
+        ctx = ShapeInferenceContext()
+        ctx.add_symbolic_equality(ir.SymbolicDim("a"), ir.SymbolicDim("a"))
+        ctx.add_symbolic_equality(3, 3)
+        self.assertEqual(list(ctx.symbolic_equalities), [])
+
+    def test_deduplicates_reversed_pair(self):
+        ctx = ShapeInferenceContext()
+        ctx.add_symbolic_equality("_d0", "dnz")
+        ctx.add_symbolic_equality("dnz", "_d0")
+        self.assertEqual(len(ctx.symbolic_equalities), 1)
+
+    def test_records_upper_bound(self):
+        ctx = ShapeInferenceContext()
+        ctx.add_upper_bound(ir.SymbolicDim("_d0"), ir.SymbolicDim("N"))
+        self.assertIn(("_d0", "N"), ctx.symbolic_upper_bounds)
+
+    def test_refine_records_anchor_equality(self):
+        # Declared anchor (existing) meets a different inferred symbol.
+        value = ir.val("Y", shape=ir.Shape(["N", "TopK_k"]))
+        ctx = ShapeInferenceContext(policy="refine")
+        ctx.set_shape(value, ir.Shape(["N", "_d0"]))
+        self.assertIn(("_d0", "TopK_k"), ctx.symbolic_equalities)
+
+    def test_refine_ignores_anonymous_anchor(self):
+        # Existing side is itself anonymous: no user name to adopt.
+        value = ir.val("Y", shape=ir.Shape(["N", "_d5"]))
+        ctx = ShapeInferenceContext(policy="refine")
+        ctx.set_shape(value, ir.Shape(["N", "_d0"]))
+        self.assertEqual(list(ctx.symbolic_equalities), [])
+
+
 if __name__ == "__main__":
     unittest.main()

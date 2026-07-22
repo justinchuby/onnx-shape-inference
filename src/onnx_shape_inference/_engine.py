@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING
 
 import onnx_ir as ir
 
-from onnx_shape_inference import _context, _functions, _registry
+from onnx_shape_inference import _constraints, _context, _functions, _registry
 
 if TYPE_CHECKING:
     from onnx_shape_inference._functions import _FuncOutputCache
@@ -33,6 +33,7 @@ def infer_symbolic_shapes(
     *,
     policy: _context.ShapeMergePolicy = "refine",
     warn_on_missing: bool = True,
+    adopt_declared_symbols: bool = True,
 ) -> ir.Model:
     """Perform symbolic shape inference on the model.
 
@@ -45,6 +46,13 @@ def infer_symbolic_shapes(
         policy: How to merge inferred shapes with existing shapes.
         warn_on_missing: If ``True``, log warnings for ops without
             registered shape inference.
+        adopt_declared_symbols: If ``True`` (default), run the anchor/constraint
+            pass after inference: symbolic dimension names declared on graph
+            outputs / ``value_info`` are treated as authoritative, and the
+            engine's anonymous ``_dN`` symbols are renamed to those declared
+            names wherever an equality was discovered (see
+            :mod:`onnx_shape_inference._constraints`).  Set to ``False`` to keep
+            the raw engine-generated symbols.
 
     Returns:
         The same *model* object, with shapes updated in place.
@@ -57,7 +65,12 @@ def infer_symbolic_shapes(
         model = ir.load("model.onnx")
         model = infer_symbolic_shapes(model)
     """
-    _infer_symbolic_shapes(model, policy=policy, warn_on_missing=warn_on_missing)
+    _infer_symbolic_shapes(
+        model,
+        policy=policy,
+        warn_on_missing=warn_on_missing,
+        adopt_declared_symbols=adopt_declared_symbols,
+    )
     return model
 
 
@@ -66,6 +79,7 @@ def _infer_symbolic_shapes(
     *,
     policy: _context.ShapeMergePolicy = "refine",
     warn_on_missing: bool = True,
+    adopt_declared_symbols: bool = True,
 ) -> bool:
     """Core implementation that returns whether the model was modified."""
     _registry.registry.collect()
@@ -80,7 +94,7 @@ def _infer_symbolic_shapes(
     # (domain, op_type, opset, input-type signature).
     op_function_cache: dict = {}
 
-    return _process_graph(
+    modified = _process_graph(
         ctx,
         model.graph,
         warn_on_missing=warn_on_missing,
@@ -88,6 +102,15 @@ def _infer_symbolic_shapes(
         inference_cache=inference_cache,
         op_function_cache=op_function_cache,
     )
+
+    # Anchor/constraint pass: adopt user-declared symbolic names for the
+    # engine's anonymous dims and propagate them across the whole model.
+    if adopt_declared_symbols and _constraints.propagate_symbolic_constraints(
+        ctx, model.graph
+    ):
+        modified = True
+
+    return modified
 
 
 def _refine_body_input(

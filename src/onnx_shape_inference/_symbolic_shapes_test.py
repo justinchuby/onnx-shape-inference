@@ -10,7 +10,10 @@ import unittest
 import onnx_ir as ir
 import sympy
 
-from onnx_shape_inference._symbolic_shapes import parse_symbolic_expression
+from onnx_shape_inference._symbolic_shapes import (
+    parse_symbolic_expression,
+    simplify_expression,
+)
 
 
 class SymbolicDimTest(unittest.TestCase):
@@ -612,6 +615,37 @@ class ParseSymbolicExpressionSecurityTest(unittest.TestCase):
         """Test that string literals are rejected."""
         with self.assertRaises(ValueError):
             parse_symbolic_expression('"hello"')
+
+
+class SimplifyExpressionTest(unittest.TestCase):
+    """Tests for simplify_expression (Bucket B canonicalization)."""
+
+    def _s(self, expr, *, assume_divisible=False):
+        return str(simplify_expression(expr, assume_divisible=assume_divisible))
+
+    def test_divisible_cancels_scaled_floor(self):
+        self.assertEqual(self._s("2*floor(c/2)", assume_divisible=True), "c")
+        self.assertEqual(self._s("3*floor(c/3)", assume_divisible=True), "c")
+
+    def test_divisible_keeps_scaled_floor_remainder(self):
+        # 16*floor(V/8) -> 2*V (outer factor 16, divisor 8).
+        self.assertEqual(self._s("16*floor(V/8)", assume_divisible=True), "2*V")
+
+    def test_divisible_preserves_standalone_floor(self):
+        # A bare floor must NOT be stripped: the rounding is real.
+        self.assertEqual(self._s("floor(c/2)", assume_divisible=True), "floor(c/2)")
+
+    def test_default_mode_preserves_floor(self):
+        # Without the divisibility assumption, nothing is cancelled.
+        self.assertEqual(self._s("2*floor(c/2)"), "2*floor(c/2)")
+        self.assertEqual(self._s("2*floor(H/2)"), "2*floor(H/2)")
+
+    def test_accepts_string_and_expr(self):
+        expr = parse_symbolic_expression("2*floor(c/2)")
+        self.assertEqual(str(simplify_expression(expr, assume_divisible=True)), "c")
+
+    def test_concrete_integer_expression(self):
+        self.assertEqual(self._s("(2*H)//H", assume_divisible=True), "2")
 
 
 if __name__ == "__main__":

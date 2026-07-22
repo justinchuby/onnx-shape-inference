@@ -14,14 +14,41 @@ __all__ = [
 
 import json
 import logging
+import re
 from collections.abc import Mapping, Sequence
 from typing import Literal
 
 import onnx_ir as ir
 
+from onnx_shape_inference import _symbolic_shapes
+
 logger = logging.getLogger(__name__)
 
 SYM_DATA_KEY = "pkg.onnx_shape_inference.sym_data"
+
+# Engine-generated anonymous dimension names (see
+# :meth:`ShapeInferenceContext.new_symbolic_dim`).  These are placeholders for
+# genuinely data-dependent dims and are the only symbols the anchor/constraint
+# pass is allowed to rename.
+_ANON_DIM_RE = re.compile(r"^_d\d+$")
+
+
+def _is_anonymous_symbol_name(name: str) -> bool:
+    """Return whether *name* is an engine-generated anonymous dim name."""
+    return bool(_ANON_DIM_RE.match(name))
+
+
+def _dim_expr_string(dim: int | ir.SymbolicDim | str | None) -> str | None:
+    """Return the canonical expression string for a dimension, or ``None``.
+
+    Concrete ints and unknown/anonymous ``SymbolicDim(None)`` return ``None``
+    because they carry no symbol to relate.
+    """
+    if isinstance(dim, str):
+        return dim or None
+    if isinstance(dim, ir.SymbolicDim):
+        return dim.value
+    return None
 
 
 class ShapeInferenceError(ValueError):
@@ -210,6 +237,15 @@ class ShapeInferenceContext:
         self._dim_counter: int = 0
         # Partial data propagation: symbolic element values keyed by ir.Value
         self._symbolic_values: dict[ir.Value, list[int | ir.SymbolicDim]] = {}
+        # Symbolic-dimension equality constraints discovered during inference,
+        # stored as canonical ``(a_str, b_str)`` string pairs.  These relate an
+        # engine-inferred expression to a user-declared (anchor) expression and
+        # are resolved into a renaming by the engine's anchor/constraint pass.
+        self._symbolic_equalities: list[tuple[str, str]] = []
+        # Upper-bound constraints ``lhs <= rhs`` for data-dependent dims (e.g.
+        # ``NonZero`` count <= number of elements).  Kept for consumers that
+        # want provable bounds; not used for renaming.
+        self._symbolic_upper_bounds: list[tuple[str, str]] = []
 
     @property
     def opset(self) -> int:
@@ -237,6 +273,91 @@ class ShapeInferenceContext:
         name = f"_d{self._dim_counter}"
         self._dim_counter += 1
         return ir.SymbolicDim(name)
+
+    def simplify_dim(
+        self,
+        dim: int | ir.SymbolicDim,
+        *,
+        assume_divisible: bool = False,
+    ) -> int | ir.SymbolicDim:
+        """Canonicalize a (possibly symbolic) dimension.
+
+        Concrete ints and anonymous/unknown dims are returned unchanged.  A
+        named symbolic dim is simplified via
+        :func:`_symbolic_shapes.simplify_expression`.
+
+        Args:
+            dim: The dimension to simplify.
+            assume_divisible: Passed through to
+                :func:`_symbolic_shapes.simplify_expression`.  Ops that
+                guarantee exact division (e.g. ``Reshape`` resolving a ``-1``
+                dimension) may pass ``True`` to collapse ``2*(c//2) -> c``.
+                Ops with genuine rounding (``Resize``/``Tile``/pooling) must
+                leave it ``False``.
+
+        Returns:
+            The simplified dimension, as an ``int`` when it reduces to a
+            concrete value, otherwise a :class:`ir.SymbolicDim`.
+        """
+        if isinstance(dim, int):
+            return dim
+        if not isinstance(dim, ir.SymbolicDim) or dim.value is None:
+            return dim
+        simplified = _symbolic_shapes.simplify_expression(
+            dim.value, assume_divisible=assume_divisible
+        )
+        if simplified.is_Integer:
+            return int(simplified)
+        return ir.SymbolicDim(str(simplified))
+
+    def add_symbolic_equality(
+        self,
+        a: int | ir.SymbolicDim | str,
+        b: int | ir.SymbolicDim | str,
+    ) -> None:
+        """Record that two symbolic dimension expressions are equal.
+
+        The pair is stored as strings and later resolved by the engine's
+        anchor/constraint pass, which renames engine-anonymous ``_dN`` symbols
+        to the user-visible names on the other side of the equality.  Ops may
+        call this directly (e.g. a broadcast of two differing symbolic dims, or
+        an ``If`` merging two branch dims) to relate the symbols they produce.
+
+        Concrete-int operands and trivial ``a == a`` pairs are ignored.
+        """
+        a_str = _dim_expr_string(a)
+        b_str = _dim_expr_string(b)
+        if a_str is None or b_str is None or a_str == b_str:
+            return
+        pair = (a_str, b_str)
+        if pair not in self._symbolic_equalities and (b_str, a_str) not in (
+            self._symbolic_equalities
+        ):
+            self._symbolic_equalities.append(pair)
+
+    def add_upper_bound(
+        self,
+        lhs: int | ir.SymbolicDim | str,
+        rhs: int | ir.SymbolicDim | str,
+    ) -> None:
+        """Record an upper-bound constraint ``lhs <= rhs`` for a symbolic dim."""
+        lhs_str = _dim_expr_string(lhs)
+        rhs_str = _dim_expr_string(rhs)
+        if lhs_str is None or rhs_str is None or lhs_str == rhs_str:
+            return
+        pair = (lhs_str, rhs_str)
+        if pair not in self._symbolic_upper_bounds:
+            self._symbolic_upper_bounds.append(pair)
+
+    @property
+    def symbolic_equalities(self) -> Sequence[tuple[str, str]]:
+        """All recorded symbolic-dimension equality constraints."""
+        return self._symbolic_equalities
+
+    @property
+    def symbolic_upper_bounds(self) -> Sequence[tuple[str, str]]:
+        """All recorded symbolic-dimension upper-bound constraints."""
+        return self._symbolic_upper_bounds
 
     def name_anonymous_dims(self, value: ir.Value) -> bool:
         """Replace anonymous (``None``) symbolic dims on *value* with unique names.
@@ -367,6 +488,11 @@ class ShapeInferenceContext:
         new_dims: list[int | ir.SymbolicDim] = []
 
         for e_dim, i_dim in zip(existing.dims, inferred.dims):
+            # The existing dim may be a user-declared *anchor* (e.g. a graph
+            # output or value_info name).  When inference produced a different
+            # symbolic expression, record an equality so the anchor/constraint
+            # pass can adopt the declared name everywhere.
+            self._maybe_record_anchor_equality(e_dim, i_dim)
             if _is_more_specific(i_dim, e_dim):
                 new_dims.append(i_dim)
                 modified = True
@@ -377,6 +503,32 @@ class ShapeInferenceContext:
             value.shape = ir.Shape(new_dims)
 
         return modified
+
+    def _maybe_record_anchor_equality(
+        self,
+        existing_dim: int | ir.SymbolicDim,
+        inferred_dim: int | ir.SymbolicDim,
+    ) -> None:
+        """Record an equality when a declared anchor dim meets a different symbol.
+
+        Only fires when the *existing* dim carries a user-visible name (i.e. it
+        is not concrete, not unknown, and not itself an engine-anonymous ``_dN``
+        placeholder) and the inferred dim is a different symbolic expression.
+        This is the hook that turns declared output / value_info names into
+        rename constraints for the engine's anchor pass.
+        """
+        if not isinstance(existing_dim, ir.SymbolicDim) or existing_dim.value is None:
+            return
+        if not isinstance(inferred_dim, ir.SymbolicDim) or inferred_dim.value is None:
+            return
+        if existing_dim.value == inferred_dim.value:
+            return
+        # The anchor side must contain at least one user-provided symbol;
+        # otherwise this is internal-vs-internal noise not worth relating.
+        anchor_expr = _symbolic_shapes.parse_symbolic_expression(existing_dim.value)
+        if all(_is_anonymous_symbol_name(s.name) for s in anchor_expr.free_symbols):
+            return
+        self.add_symbolic_equality(inferred_dim.value, existing_dim.value)
 
     def set_dtype(self, value: ir.Value, dtype: ir.DataType) -> bool:
         """Set the dtype of a value according to the merge policy.

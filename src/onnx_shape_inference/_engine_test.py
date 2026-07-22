@@ -433,5 +433,33 @@ class ScanBodyPropagationGuardTest(unittest.TestCase):
         _engine._propagate_types_to_scan_body(ctx, node)
 
 
+class AnchorConstraintPropagationTest(unittest.TestCase):
+    """End-to-end tests for the adopt_declared_symbols anchor pass."""
+
+    def _nonzero_model(self) -> tuple[ir.Model, ir.Node]:
+        x = ir.Value(name="X", type=ir.TensorType(ir.DataType.FLOAT), shape=ir.Shape([2, 5]))
+        nz = ir.Node("", "NonZero", inputs=[x], num_outputs=1)
+        nz.outputs[0].name = "Z"
+        ident = ir.Node("", "Identity", inputs=[nz.outputs[0]], num_outputs=1)
+        y = ident.outputs[0]
+        y.name = "Y"
+        y.type = ir.TensorType(ir.DataType.INT64)
+        y.shape = ir.Shape([2, "dnz"])
+        graph = ir.Graph([x], [y], nodes=[nz, ident], opset_imports={"": 21})
+        return ir.Model(graph, ir_version=10), nz
+
+    def test_adopts_declared_symbol_by_default(self):
+        model, nz = self._nonzero_model()
+        _engine.infer_symbolic_shapes(model)
+        # The engine-anonymous dim on Z is renamed to the declared anchor "dnz".
+        self.assertEqual(nz.outputs[0].shape[1], ir.SymbolicDim("dnz"))
+
+    def test_opt_out_keeps_anonymous_symbol(self):
+        model, nz = self._nonzero_model()
+        _engine.infer_symbolic_shapes(model, adopt_declared_symbols=False)
+        # Without the pass the anonymous symbol is preserved (not "dnz").
+        self.assertNotEqual(nz.outputs[0].shape[1], ir.SymbolicDim("dnz"))
+
+
 if __name__ == "__main__":
     unittest.main()
