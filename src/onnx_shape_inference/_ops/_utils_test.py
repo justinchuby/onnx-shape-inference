@@ -150,6 +150,28 @@ class GeneratedDimTest(unittest.TestCase):
         self.assertEqual(_utils.is_generated_dim(dim), expected)
 
 
+class MinMaxDimTest(unittest.TestCase):
+    @parameterized.parameterized.expand(
+        [
+            ("concrete", _utils.max_dim, (0, -1), 0),
+            ("symbolic_max", _utils.max_dim, (0, ir.SymbolicDim("N - 1")), "N - 1"),
+            ("symbolic_min", _utils.min_dim, (10, ir.SymbolicDim("N")), "Min(10, N)"),
+            (
+                "ordered_symbolic_min",
+                _utils.min_dim,
+                (ir.SymbolicDim("c"), ir.SymbolicDim("c - 1")),
+                "c - 1",
+            ),
+        ]
+    )
+    def test_min_max(self, _name, function, dims, expected):
+        self.assertEqual(str(function(*dims)), str(expected))
+
+    def test_unknown_dim_returns_none(self):
+        self.assertIsNone(_utils.max_dim(0, ir.SymbolicDim(None)))
+        self.assertIsNone(_utils.min_dim(10, ir.SymbolicDim(None)))
+
+
 class NormalizeAxisTest(unittest.TestCase):
     def test_positive(self):
         self.assertEqual(_utils.normalize_axis(1, 3), 1)

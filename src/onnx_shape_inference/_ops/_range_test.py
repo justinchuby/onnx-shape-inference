@@ -107,6 +107,21 @@ class RangeTest(unittest.TestCase):
         )
         self.assertEqual(actual, [ts(INT64, ["sequence_length"])])
 
+    def test_symbolic_empty_range_is_zero_length(self):
+        start = ir.Value(name="start", type=ir.TensorType(INT64), shape=ir.Shape([]))
+        limit = ir.Value(name="limit", type=ir.TensorType(INT64), shape=ir.Shape([]))
+        delta = const_value([1], name="delta")
+        delta.shape = ir.Shape([])
+        n = ir.SymbolicDim("N")
+        actual = run_shape_inference_with_values(
+            "",
+            "Range",
+            [start, limit, delta],
+            opset_version=21,
+            symbolic_values={0: [n], 1: [n - 1]},
+        )
+        self.assertEqual(actual, [ts(INT64, [0])])
+
 
 if __name__ == "__main__":
     unittest.main()

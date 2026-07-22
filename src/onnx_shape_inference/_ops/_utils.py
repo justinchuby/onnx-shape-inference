@@ -11,6 +11,8 @@ __all__ = [
     "get_known_dim_values",
     "get_known_scalar",
     "is_generated_dim",
+    "max_dim",
+    "min_dim",
     "normalize_axis",
     "scale_dim",
 ]
@@ -18,8 +20,9 @@ __all__ = [
 from fractions import Fraction
 
 import onnx_ir as ir
+import sympy
 
-from onnx_shape_inference import _context
+from onnx_shape_inference import _context, _symbolic_shapes
 
 
 def get_known_dim_values(
@@ -59,6 +62,28 @@ def is_generated_dim(dim: int | ir.SymbolicDim) -> bool:
         return False
     name = dim.value
     return name.startswith("_d") and name[2:].isdigit()
+
+
+def max_dim(*dims: int | ir.SymbolicDim) -> int | ir.SymbolicDim | None:
+    """Return the symbolic maximum, or ``None`` if any dimension is unknown."""
+    try:
+        expressions = [_symbolic_shapes.dim_to_expr(dim) for dim in dims]
+        if any(expr is None for expr in expressions):
+            return None
+        return _symbolic_shapes.expr_to_dim(sympy.Max(*expressions))
+    except (TypeError, ValueError):
+        return None
+
+
+def min_dim(*dims: int | ir.SymbolicDim) -> int | ir.SymbolicDim | None:
+    """Return the symbolic minimum, or ``None`` if any dimension is unknown."""
+    try:
+        expressions = [_symbolic_shapes.dim_to_expr(dim) for dim in dims]
+        if any(expr is None for expr in expressions):
+            return None
+        return _symbolic_shapes.expr_to_dim(sympy.Min(*expressions))
+    except (TypeError, ValueError):
+        return None
 
 
 def dim_product(dims: list[int | ir.SymbolicDim]) -> int | ir.SymbolicDim:

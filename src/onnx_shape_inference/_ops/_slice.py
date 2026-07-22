@@ -79,13 +79,12 @@ def infer_slice(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
             ctx.record_error(node, f"Step cannot be 0 for axis {axis}")
             return
 
-        if not isinstance(end, int):
-            if step > 0 and start >= 0:
-                sliced_extent = end - start
-                output_dims[axis] = _utils.ceil_div_dim(sliced_extent, step)
-            else:
-                output_dims[axis] = ctx.new_symbolic_dim()
-        elif isinstance(dim, int):
+        sentinels = {2**63 - 1, -(2**63), 2**31 - 1, -(2**31)}
+        if start == 0 and step == 1 and isinstance(end, int) and end in sentinels:
+            output_dims[axis] = dim
+        elif step == -1 and start in sentinels and end in sentinels:
+            output_dims[axis] = dim
+        elif isinstance(dim, int) and isinstance(end, int):
             # Clamp start/end to [0, dim] for positive step, [-1, dim-1] for negative
             if step > 0:
                 clamped_start = max(0, min(start if start >= 0 else start + dim, dim))
@@ -98,37 +97,21 @@ def infer_slice(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
                 0, (clamped_end - clamped_start + (step - (1 if step > 0 else -1))) // step
             )
             output_dims[axis] = slice_len
-        else:
-            # Symbolic dim with concrete start/end/step.
-            #
-            # Sentinel values (INT64_MAX, INT64_MIN, INT32_MAX, INT32_MIN) are
-            # used by ONNX Slice to mean "up to the end" or "from the beginning"
-            # depending on the sign of *step*.  When such sentinels appear with
-            # a zero start (forward) or as both start and end (reverse), the
-            # slice covers the entire axis and the output dim equals the input
-            # dim — even when that dim is symbolic.
-            #
-            # For non-sentinel, non-negative start/end we can compute the slice
-            # length directly as ``ceil((end - start) / step)`` because the
-            # result does not depend on the actual (unknown) dimension size.
-            # This assumes the tensor has at least ``end`` elements along the
-            # axis, which is a practical assumption for well-formed models.
-            sentinels = {2**63 - 1, -(2**63), 2**31 - 1, -(2**31)}
-
-            # Full forward slice: start=0, step=1, end=sentinel → same dim
-            if start == 0 and step == 1 and end in sentinels:
-                output_dims[axis] = dim
-            # Full reverse slice: start=sentinel, step=-1, end=negative sentinel
-            elif step == -1 and start in sentinels and end in sentinels:
-                output_dims[axis] = dim
-            elif start >= 0 and end >= 0 and start not in sentinels and end not in sentinels:
-                slice_len = max(0, -(-max(0, end - start) // abs(step)))
-                output_dims[axis] = slice_len
-            elif step > 0 and start >= 0 and end < 0 and end not in sentinels:
-                sliced_extent = dim + end - start
-                output_dims[axis] = _utils.ceil_div_dim(sliced_extent, step)
-            else:
+        elif step > 0 and start >= 0:
+            effective_end = dim + end if isinstance(end, int) and end < 0 else end
+            clamped_end = _utils.min_dim(dim, effective_end)
+            if clamped_end is None:
                 output_dims[axis] = ctx.new_symbolic_dim()
+                continue
+            sliced_extent = _utils.ceil_div_dim(clamped_end - start, step)
+            nonnegative_extent = _utils.max_dim(0, sliced_extent)
+            output_dims[axis] = (
+                nonnegative_extent
+                if nonnegative_extent is not None
+                else ctx.new_symbolic_dim()
+            )
+        else:
+            output_dims[axis] = ctx.new_symbolic_dim()
 
     output_shape = ir.Shape(output_dims)
     if len(node.outputs) > 0:

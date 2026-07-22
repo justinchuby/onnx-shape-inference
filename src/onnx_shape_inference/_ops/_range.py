@@ -36,7 +36,8 @@ def infer_range(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
         if isinstance(start_value, (int, float)) and isinstance(limit_value, (int, float)):
             output_len = max(0, math.ceil((limit_value - start_value) / delta_value))
         elif isinstance(delta_value, int) and delta_value > 0:
-            output_len = _utils.ceil_div_dim(limit_value - start_value, delta_value)
+            candidate_len = _utils.ceil_div_dim(limit_value - start_value, delta_value)
+            output_len = _utils.max_dim(0, candidate_len)
 
     if output_len is None:
         output_len = ctx.new_symbolic_dim()

@@ -71,14 +71,14 @@ class SliceTest(unittest.TestCase):
         self.assertEqual(actual, [ts(FLOAT, [1, 2])])
 
     def test_symbolic_dim_const_start_end(self):
-        """Slicing on a symbolic dim with non-negative const start/end computes size."""
+        """A concrete end is clamped by the unknown input dimension."""
         actual = self._run(ts(FLOAT, ["N", 10]), [1], [5], [0], [1])
-        self.assertEqual(actual, [ts(FLOAT, [4, 10])])
+        self.assertEqual(actual, [ts(FLOAT, ["Min(5, N) - 1", 10])])
 
     def test_symbolic_dim_const_start_end_step_2(self):
-        """Slicing on a symbolic dim with step=2."""
+        """Clamping is preserved when deriving a stepped slice extent."""
         actual = self._run(ts(FLOAT, ["N", 10]), [0], [6], [0], [2])
-        self.assertEqual(actual, [ts(FLOAT, [3, 10])])
+        self.assertEqual(actual, [ts(FLOAT, ["-floor(-Min(6, N)/2)", 10])])
 
     def test_symbolic_dim_negative_start_becomes_unknown(self):
         """Negative start depends on actual dim size, so result is unknown."""
@@ -88,6 +88,10 @@ class SliceTest(unittest.TestCase):
     def test_symbolic_dim_negative_end_derives_extent(self):
         actual = self._run(ts(FLOAT, ["a", "b", "c"]), [0], [-1], [2], [1])
         self.assertEqual(actual, [ts(FLOAT, ["a", "b", "c - 1"])])
+
+    def test_symbolic_dim_large_negative_end_is_clamped_nonnegative(self):
+        actual = self._run(ts(FLOAT, ["N"]), [0], [-100], [0], [1])
+        self.assertEqual(actual, [ts(FLOAT, ["Max(0, N - 100)"])])
 
     def test_symbolic_dim_preserved_on_non_sliced_axis(self):
         """Symbolic dim on non-sliced axis is preserved; sliced axis is concrete."""
@@ -217,7 +221,7 @@ class SliceTest(unittest.TestCase):
                 [ir.SymbolicDim("other"), 100],
                 [0, 1],
                 [1, 1],
-                ["other", 100],
+                ["Min(batch, other)", 100],
             ),
             (
                 "input_symbol_minus_one",
@@ -252,7 +256,7 @@ class SliceTest(unittest.TestCase):
             axes=[2, 1],
             steps=[1, 1],
         )
-        self.assertEqual(actual, [ts(FLOAT, ["a", 100, "c - 1"])])
+        self.assertEqual(actual, [ts(FLOAT, ["a", "Min(100, b)", "c - 1"])])
 
     def test_symbolic_end_with_step_derives_extent(self):
         batch = ir.SymbolicDim("batch")
