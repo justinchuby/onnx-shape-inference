@@ -27,7 +27,7 @@ jobs:
           seed="$(od -An -N8 -tu8 /dev/urandom | tr -d ' ')"
           echo "seed=$seed" >> "$GITHUB_OUTPUT"
           echo "FUZZ_SEED=$seed"
-          FUZZ_SEED="$seed" FUZZ_CASES=10000 timeout 20m \
+          FUZZ_SEED="$seed" FUZZ_CASES=10000 FUZZ_COVERAGE_PATH=fuzz-artifacts/coverage.json timeout 20m \
             python3 -m pytest -q -m fuzz_long | tee fuzz-nightly.log
       - name: Upload minimized corpus and coverage
         if: always()

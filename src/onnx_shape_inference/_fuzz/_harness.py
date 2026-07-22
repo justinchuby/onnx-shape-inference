@@ -4,14 +4,16 @@
 
 from __future__ import annotations
 
+import json
 from collections import Counter
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from onnx_shape_inference._fuzz._oracles import Oracle
 from onnx_shape_inference._fuzz._types import FuzzCase, OracleResult, OracleStatus
 
-__all__ = ["FuzzHarness", "FuzzSummary"]
+__all__ = ["FuzzHarness", "FuzzSummary", "write_coverage_report"]
 
 
 @dataclass
@@ -57,3 +59,26 @@ class FuzzHarness:
             f"kind={result.kind!r}: {result.reason}; expected={result.expected!r}, "
             f"actual={result.actual!r}\nreproduce: {command}"
         )
+
+
+def write_coverage_report(summary: FuzzSummary, path: str | Path) -> Path:
+    """Write the deterministic per-op coverage data consumed by nightly artifacts."""
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    coverage = {
+        f"{domain or 'ai.onnx'}::{op_type}": count
+        for (domain, op_type), count in sorted(summary.op_coverage.items())
+    }
+    destination.write_text(
+        json.dumps(
+            {
+                "op_coverage": coverage,
+                "outcomes": {status.value: count for status, count in summary.results.items()},
+                "skips": dict(sorted(summary.skips.items())),
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n"
+    )
+    return destination

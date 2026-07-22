@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from onnx_shape_inference._fuzz._harness import FuzzHarness
+from onnx_shape_inference._fuzz._harness import FuzzHarness, write_coverage_report
 from onnx_shape_inference._fuzz._oracles import (
     CrashOracle,
     DifferentialOracle,
@@ -45,4 +45,6 @@ def test_fast_seeded_fuzzing():
     if soundness.applicable(generate(seeds[0])):
         oracles.append(soundness)
     summary = FuzzHarness(generate, oracles).run(seeds)
+    if coverage_path := os.environ.get("FUZZ_COVERAGE_PATH"):
+        write_coverage_report(summary, coverage_path)
     assert summary.results
