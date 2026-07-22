@@ -18,7 +18,11 @@ import onnx
 import onnx_ir as ir
 
 from onnx_shape_inference import _registry
-from onnx_shape_inference._fuzz._types import DATA_DEPENDENT_OPS, FuzzCase
+from onnx_shape_inference._fuzz._types import (
+    DATA_DEPENDENT_OPS,
+    FuzzCase,
+    SymbolConstraint,
+)
 
 _OpKey: TypeAlias = tuple[str, str]
 _Dim: TypeAlias = int | str | None
@@ -375,6 +379,34 @@ def _plan_resize(
     return _InputPlan(inputs, output_shapes=(tuple(output_shape),))
 
 
+def _plan_depth_to_space(
+    generator: _Generator,
+    schema: onnx.defs.OpSchema,
+    bindings: dict[str, ir.DataType],
+) -> _InputPlan:
+    dtype = generator._dtype_for_type("T", schema, bindings)
+    channels = generator._new_symbol()
+    generator._require_divisible(channels, 4)
+    data = generator._graph_input(dtype, (1, channels, 2, 3))
+    attributes = {"blocksize": ir.Attr("blocksize", ir.AttributeType.INT, 2)}
+    return _InputPlan([data], attributes)
+
+
+def _plan_space_to_depth(
+    generator: _Generator,
+    schema: onnx.defs.OpSchema,
+    bindings: dict[str, ir.DataType],
+) -> _InputPlan:
+    dtype = generator._dtype_for_type("T", schema, bindings)
+    height = generator._new_symbol()
+    width = generator._new_symbol()
+    generator._require_divisible(height, 2)
+    generator._require_divisible(width, 2)
+    data = generator._graph_input(dtype, (1, 3, height, width))
+    attributes = {"blocksize": ir.Attr("blocksize", ir.AttributeType.INT, 2)}
+    return _InputPlan([data], attributes)
+
+
 _op_planners: dict[_OpKey, InputPlanner] = {
     ("", "ConstantOfShape"): _plan_constant_of_shape,
     ("", "Expand"): _plan_expand,
@@ -386,6 +418,10 @@ _op_planners: dict[_OpKey, InputPlanner] = {
     ("", "Slice"): _plan_slice,
     ("", "Tile"): _plan_tile,
     ("", "TopK"): _plan_topk,
+}
+_semantic_planners: dict[_OpKey, InputPlanner] = {
+    ("", "DepthToSpace"): _plan_depth_to_space,
+    ("", "SpaceToDepth"): _plan_space_to_depth,
 }
 
 
@@ -400,6 +436,7 @@ class _Generator:
         self.initializers: list[ir.Value] = []
         self.ports: list[_Port] = []
         self.symbolic_dims: dict[str, int | None] = {}
+        self.symbol_constraints: dict[str, SymbolConstraint] = {}
         self.data_dependent_ports: set[str] = set()
         self.selected_ops: list[tuple[str, str, int]] = []
         self.op_counts: dict[_OpKey, int] = {}
@@ -440,6 +477,7 @@ class _Generator:
             seed=self.seed,
             opset_imports={"": self.opset},
             symbolic_dims=tuple(self.symbolic_dims),
+            symbol_constraints=dict(self.symbol_constraints),
             data_dependent_values=frozenset(self.data_dependent_ports),
             selected_ops=tuple(self.selected_ops),
             metadata={
@@ -491,7 +529,12 @@ class _Generator:
         name = f"s{self.symbol_index}"
         self.symbol_index += 1
         self.symbolic_dims[name] = None
+        self.symbol_constraints[name] = SymbolConstraint()
         return name
+
+    def _require_divisible(self, symbol: str, divisor: int) -> None:
+        constraint = self.symbol_constraints[symbol]
+        constraint.divisible_by = math.lcm(constraint.divisible_by, divisor)
 
     def _random_shape(
         self,
@@ -765,7 +808,7 @@ class _Generator:
             )
         schema = self._schema(op_key)
         bindings: dict[str, ir.DataType] = {}
-        planner = _op_planners.get(op_key)
+        planner = _op_planners.get(op_key) or _semantic_planners.get(op_key)
         plan = (
             planner(self, schema, bindings)
             if planner is not None

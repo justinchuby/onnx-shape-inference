@@ -175,6 +175,25 @@ class GeneratorTest(unittest.TestCase):
         ]
         self.assertLess(len(set(first_dims)), len(first_dims))
         self.assertEqual(tuple(case.symbolic_dims), tuple(sorted(case.symbolic_dims)))
+        self.assertEqual(set(case.symbolic_dims), set(case.symbol_constraints))
+
+    @parameterized.parameterized.expand(
+        [
+            ("DepthToSpace", (4,)),
+            ("SpaceToDepth", (2, 2)),
+        ]
+    )
+    def test_semantic_planners_record_divisibility_constraints(self, op_type, divisors):
+        generator = _generator._Generator(0)
+        generator._seed_port_pool()
+        generator._add_operator(("", op_type))
+
+        recorded = sorted(
+            constraint.divisible_by
+            for constraint in generator.symbol_constraints.values()
+            if constraint.divisible_by > 1
+        )
+        self.assertEqual(recorded, sorted(divisors))
 
     @parameterized.parameterized.expand([(4, "Range"), (9, "TopK")])
     def test_data_dependent_planner_outputs_are_marked(self, seed, op_type):
