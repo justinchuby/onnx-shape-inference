@@ -146,6 +146,34 @@ class ReshapeTest(unittest.TestCase):
     @parameterized.parameterized.expand(
         [
             (
+                "cancel_half_width",
+                ["a", "b", 2, "floor(c/2)"],
+                ["a", "b", "c"],
+            ),
+            (
+                "cancel_grouped_width",
+                ["a", "b", 16, "floor(V/8)"],
+                ["a", "b", "2*V"],
+            ),
+        ]
+    )
+    def test_inferred_dim_uses_exact_element_count(self, _name, input_shape, expected_shape):
+        data = ir.Value(
+            name="data",
+            shape=ir.Shape(input_shape),
+            type=ir.TensorType(FLOAT),
+        )
+        actual = run_shape_inference_with_values(
+            "",
+            "Reshape",
+            [data, const_value([0, 0, -1])],
+            opset_version=21,
+        )
+        self.assertEqual(actual, [ts(FLOAT, expected_shape)])
+
+    @parameterized.parameterized.expand(
+        [
+            (
                 "infer_collapsed_dimension",
                 ["batch", 8, 2, "sequence", 128],
                 [0, 16, -1, 128],
