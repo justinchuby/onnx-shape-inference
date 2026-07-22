@@ -130,6 +130,72 @@ class OpShapeInferenceRegistryTest(unittest.TestCase):
         func20 = self.registry.get("", "TestOp", version=20)
         self.assertEqual(func20(None, None), "v14")
 
+    def test_version_boundaries_returns_sorted_since_versions(self):
+        @self.registry.register("", "TestOp", since_version=14)
+        def infer_v14(ctx, node):
+            pass
+
+        @self.registry.register("", "TestOp", since_version=7)
+        def infer_v7(ctx, node):
+            pass
+
+        self.assertEqual(self.registry.version_boundaries("", "TestOp"), (7, 14))
+
+    def test_version_boundaries_normalizes_domain(self):
+        @self.registry.register("", "TestOp", since_version=7)
+        def infer_test(ctx, node):
+            pass
+
+        # "ai.onnx" must normalize to "" like get()/register() do.
+        self.assertEqual(self.registry.version_boundaries("ai.onnx", "TestOp"), (7,))
+
+    def test_version_boundaries_unregistered_is_empty(self):
+        self.assertEqual(self.registry.version_boundaries("", "Missing"), ())
+
+    def test_iter_supported_is_deterministic_and_sorted(self):
+        @self.registry.register("com.microsoft", "ZOp", since_version=1)
+        def infer_z(ctx, node):
+            pass
+
+        @self.registry.register("", "BOp", since_version=13)
+        def infer_b13(ctx, node):
+            pass
+
+        @self.registry.register("", "BOp", since_version=1)
+        def infer_b1(ctx, node):
+            pass
+
+        @self.registry.register("", "AOp", since_version=1)
+        def infer_a(ctx, node):
+            pass
+
+        supported = list(self.registry.iter_supported())
+        self.assertEqual(
+            supported,
+            [
+                ("", "AOp", (1,)),
+                ("", "BOp", (1, 13)),
+                ("com.microsoft", "ZOp", (1,)),
+            ],
+        )
+        # Deterministic across calls (seed reproducibility contract).
+        self.assertEqual(supported, list(self.registry.iter_supported()))
+
+    def test_iter_supported_empty_registry(self):
+        self.assertEqual(list(self.registry.iter_supported()), [])
+
+    def test_iter_supported_matches_version_boundaries(self):
+        @self.registry.register("", "TestOp", since_version=7)
+        def infer_v7(ctx, node):
+            pass
+
+        @self.registry.register("", "TestOp", since_version=14)
+        def infer_v14(ctx, node):
+            pass
+
+        for domain, op_type, versions in self.registry.iter_supported():
+            self.assertEqual(versions, self.registry.version_boundaries(domain, op_type))
+
 
 if __name__ == "__main__":
     unittest.main()
