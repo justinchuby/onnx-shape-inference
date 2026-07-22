@@ -7,6 +7,7 @@ from __future__ import annotations
 import unittest
 
 import onnx_ir as ir
+import parameterized
 
 from onnx_shape_inference import _context, _engine
 
@@ -436,7 +437,15 @@ class ScanBodyPropagationGuardTest(unittest.TestCase):
 class AnchorConstraintPropagationTest(unittest.TestCase):
     """End-to-end tests for the adopt_declared_symbols anchor pass."""
 
-    def _nonzero_model(self) -> tuple[ir.Model, ir.Node]:
+    def _nonzero_model(
+        self, anchor_last_dim: str | int | None = "dnz"
+    ) -> tuple[ir.Model, ir.Node]:
+        """NonZero -> Identity graph.
+
+        The graph output ``Y`` declares ``[2, anchor_last_dim]`` as its anchor
+        (unless *anchor_last_dim* is ``None``, in which case ``Y`` is left
+        unshaped so there is nothing to adopt).
+        """
         x = ir.Value(name="X", type=ir.TensorType(ir.DataType.FLOAT), shape=ir.Shape([2, 5]))
         nz = ir.Node("", "NonZero", inputs=[x], num_outputs=1)
         nz.outputs[0].name = "Z"
@@ -444,21 +453,49 @@ class AnchorConstraintPropagationTest(unittest.TestCase):
         y = ident.outputs[0]
         y.name = "Y"
         y.type = ir.TensorType(ir.DataType.INT64)
-        y.shape = ir.Shape([2, "dnz"])
+        if anchor_last_dim is not None:
+            y.shape = ir.Shape([2, anchor_last_dim])
         graph = ir.Graph([x], [y], nodes=[nz, ident], opset_imports={"": 21})
         return ir.Model(graph, ir_version=10), nz
 
-    def test_adopts_declared_symbol_by_default(self):
+    @parameterized.parameterized.expand(
+        [
+            ("default", {}),
+            ("explicit_true", {"adopt_declared_symbols": True}),
+        ]
+    )
+    def test_adopts_declared_symbol(self, _name, kwargs):
         model, nz = self._nonzero_model()
-        _engine.infer_symbolic_shapes(model)
-        # The engine-anonymous dim on Z is renamed to the declared anchor "dnz".
+        _engine.infer_symbolic_shapes(model, **kwargs)
+        # The engine-anonymous dim on the intermediate Z is renamed to "dnz".
         self.assertEqual(nz.outputs[0].shape[1], ir.SymbolicDim("dnz"))
+        # The declared anchor dim is preserved on the output.
+        self.assertEqual(list(model.graph.outputs)[0].shape[1], ir.SymbolicDim("dnz"))
 
     def test_opt_out_keeps_anonymous_symbol(self):
         model, nz = self._nonzero_model()
         _engine.infer_symbolic_shapes(model, adopt_declared_symbols=False)
-        # Without the pass the anonymous symbol is preserved (not "dnz").
-        self.assertNotEqual(nz.outputs[0].shape[1], ir.SymbolicDim("dnz"))
+        # Without the pass the engine-anonymous symbol (_dN) is preserved.
+        last = nz.outputs[0].shape[1]
+        self.assertIsInstance(last, ir.SymbolicDim)
+        self.assertRegex(str(last), r"^_d\d+$")
+
+    def test_no_anchor_keeps_anonymous_symbol(self):
+        # With no declared anchor there is nothing to adopt; the data-dependent
+        # symbol is left as the engine generated it (no spurious rename).
+        model, nz = self._nonzero_model(anchor_last_dim=None)
+        _engine.infer_symbolic_shapes(model)
+        last = nz.outputs[0].shape[1]
+        self.assertIsInstance(last, ir.SymbolicDim)
+        self.assertRegex(str(last), r"^_d\d+$")
+
+    def test_concrete_anchor_leaves_symbol_unrelated(self):
+        # A concrete anchor dim relates to nothing; the anon symbol stays anon.
+        model, nz = self._nonzero_model(anchor_last_dim=7)
+        _engine.infer_symbolic_shapes(model)
+        last = nz.outputs[0].shape[1]
+        self.assertIsInstance(last, ir.SymbolicDim)
+        self.assertRegex(str(last), r"^_d\d+$")
 
 
 if __name__ == "__main__":

@@ -148,9 +148,9 @@ def _rewrite_dim(
     compound: list[tuple[sympy.Expr, sympy.Symbol]],
 ) -> int | ir.SymbolicDim | None:
     """Return the rewritten dim, or ``None`` when unchanged."""
-    if not isinstance(dim, ir.SymbolicDim) or dim.value is None:
+    expr = _symbolic_shapes.dim_to_expr(dim)
+    if expr is None or not expr.free_symbols:
         return None
-    expr = _symbolic_shapes.parse_symbolic_expression(dim.value)
     new_expr = expr.subs(symbol_map)
     for source, target in compound:
         new_expr = new_expr.subs(source, target)
@@ -158,28 +158,56 @@ def _rewrite_dim(
         return None
     # Safe canonicalization only (no divisibility assumptions).
     new_expr = _symbolic_shapes.simplify_expression(new_expr)
-    if new_expr.is_Integer:
-        return int(new_expr)
-    return ir.SymbolicDim(str(new_expr))
+    return _symbolic_shapes.expr_to_dim(new_expr)
+
+
+def _iter_subgraphs(node: ir.Node) -> list[ir.Graph]:
+    """Return the subgraphs referenced by a node's GRAPH/GRAPHS attributes."""
+    subgraphs: list[ir.Graph] = []
+    for attr in node.attributes.values():
+        if not isinstance(attr, ir.Attr):
+            continue
+        if attr.type == ir.AttributeType.GRAPH:
+            sub = attr.as_graph()
+            if sub is not None:
+                subgraphs.append(sub)
+        elif attr.type == ir.AttributeType.GRAPHS:
+            for sub in attr.as_graphs() or ():
+                if sub is not None:
+                    subgraphs.append(sub)
+    return subgraphs
 
 
 def _collect_values(graph: ir.Graph) -> list[ir.Value]:
-    """Collect every value whose shape may need rewriting (deduplicated)."""
+    """Collect every value whose shape may need rewriting (deduplicated).
+
+    Walks the root graph and every nested subgraph (``If``/``Loop``/``Scan``
+    bodies), gathering graph inputs, outputs, initializers, and each node's
+    inputs and outputs.  Subgraph inputs/outputs are included even when a body
+    has no nodes, so declared names propagate everywhere.
+    """
     seen: dict[int, ir.Value] = {}
 
     def _add(value: ir.Value | None) -> None:
         if value is not None and id(value) not in seen:
             seen[id(value)] = value
 
-    for value in graph.inputs:
-        _add(value)
-    for value in graph.outputs:
-        _add(value)
-    for node in graph.all_nodes():
-        for value in node.inputs:
+    def _visit(g: ir.Graph) -> None:
+        for value in g.inputs:
             _add(value)
-        for value in node.outputs:
+        for value in g.outputs:
             _add(value)
+        for value in g.initializers.values():
+            _add(value)
+        for node in g:
+            for value in node.inputs:
+                _add(value)
+            for value in node.outputs:
+                _add(value)
+            for subgraph in _iter_subgraphs(node):
+                _visit(subgraph)
+
+    _visit(graph)
     return list(seen.values())
 
 

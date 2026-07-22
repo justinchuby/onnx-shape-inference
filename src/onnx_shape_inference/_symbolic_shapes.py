@@ -10,11 +10,14 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+import onnx_ir as ir
 import sympy
 
 __all__ = [
     "parse_symbolic_expression",
     "simplify_expression",
+    "dim_to_expr",
+    "expr_to_dim",
     "ALLOWED_FUNCTIONS",
 ]
 
@@ -379,3 +382,44 @@ def simplify_expression(
         terms = sympy.Add.make_args(expr)
         expr = sympy.Add(*(_cancel_exact_divisions(term) for term in terms))
     return expr
+
+
+def dim_to_expr(dim: int | ir.SymbolicDim) -> sympy.Expr | None:
+    """Return the SymPy expression for a dimension, or ``None`` if unknown.
+
+    This is the canonical bridge from an :class:`ir` dimension to SymPy used
+    across the engine.  Concrete ints become :class:`sympy.Integer`; a named
+    symbolic dim is parsed via :func:`parse_symbolic_expression`; an unknown
+    ``ir.SymbolicDim(None)`` carries no expression and returns ``None``.
+
+    Args:
+        dim: A concrete ``int`` dimension or an :class:`ir.SymbolicDim`.
+
+    Returns:
+        The SymPy expression, or ``None`` when the dim is an unknown symbolic
+        placeholder with no value.
+    """
+    if isinstance(dim, int):
+        return sympy.Integer(dim)
+    if isinstance(dim, ir.SymbolicDim) and dim.value is not None:
+        return parse_symbolic_expression(dim.value)
+    return None
+
+
+def expr_to_dim(expr: sympy.Expr) -> int | ir.SymbolicDim:
+    """Convert a SymPy expression back to a dimension.
+
+    The inverse of :func:`dim_to_expr`.  An integral expression collapses to a
+    plain ``int``; anything else becomes an :class:`ir.SymbolicDim` carrying the
+    expression's canonical string form.
+
+    Args:
+        expr: A SymPy expression (or anything :func:`sympy.sympify` accepts).
+
+    Returns:
+        An ``int`` when *expr* is integral, otherwise an :class:`ir.SymbolicDim`.
+    """
+    expr = sympy.sympify(expr)
+    if expr.is_Integer:
+        return int(expr)
+    return ir.SymbolicDim(str(expr))

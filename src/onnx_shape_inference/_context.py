@@ -29,8 +29,10 @@ SYM_DATA_KEY = "pkg.onnx_shape_inference.sym_data"
 # Engine-generated anonymous dimension names (see
 # :meth:`ShapeInferenceContext.new_symbolic_dim`).  These are placeholders for
 # genuinely data-dependent dims and are the only symbols the anchor/constraint
-# pass is allowed to rename.
-_ANON_DIM_RE = re.compile(r"^_d\d+$")
+# pass is allowed to rename.  The prefix is the single source of truth for both
+# generation (``new_symbolic_dim``) and detection (``_is_anonymous_symbol_name``).
+_ANON_DIM_PREFIX = "_d"
+_ANON_DIM_RE = re.compile(rf"^{re.escape(_ANON_DIM_PREFIX)}\d+$")
 
 
 def _is_anonymous_symbol_name(name: str) -> bool:
@@ -270,7 +272,7 @@ class ShapeInferenceContext:
         Returns:
             A :class:`ir.SymbolicDim` with a unique name like ``_d0``, ``_d1``, …
         """
-        name = f"_d{self._dim_counter}"
+        name = f"{_ANON_DIM_PREFIX}{self._dim_counter}"
         self._dim_counter += 1
         return ir.SymbolicDim(name)
 
@@ -306,9 +308,7 @@ class ShapeInferenceContext:
         simplified = _symbolic_shapes.simplify_expression(
             dim.value, assume_divisible=assume_divisible
         )
-        if simplified.is_Integer:
-            return int(simplified)
-        return ir.SymbolicDim(str(simplified))
+        return _symbolic_shapes.expr_to_dim(simplified)
 
     def add_symbolic_equality(
         self,
@@ -525,8 +525,10 @@ class ShapeInferenceContext:
             return
         # The anchor side must contain at least one user-provided symbol;
         # otherwise this is internal-vs-internal noise not worth relating.
-        anchor_expr = _symbolic_shapes.parse_symbolic_expression(existing_dim.value)
-        if all(_is_anonymous_symbol_name(s.name) for s in anchor_expr.free_symbols):
+        anchor_expr = _symbolic_shapes.dim_to_expr(existing_dim)
+        if anchor_expr is None or all(
+            _is_anonymous_symbol_name(s.name) for s in anchor_expr.free_symbols
+        ):
             return
         self.add_symbolic_equality(inferred_dim.value, existing_dim.value)
 
