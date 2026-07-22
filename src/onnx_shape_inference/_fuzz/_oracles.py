@@ -288,8 +288,7 @@ def _runtime_shapes(
         completed = subprocess.run(
             [
                 sys.executable,
-                "-m",
-                "onnx_shape_inference._fuzz._runtime_worker",
+                str(Path(__file__).with_name("_runtime_worker.py")),
                 str(model_path),
                 str(feeds_path),
                 str(result_path),
