@@ -92,28 +92,20 @@ class RangeTest(unittest.TestCase):
         self.assertEqual(actual, [ts(FLOAT, ["_d0"])])
 
     def test_symbolic_limit_minus_start(self):
-        from onnx_shape_inference import _context, _registry
-
         start = ir.Value(name="start", type=ir.TensorType(INT64), shape=ir.Shape([]))
         limit = ir.Value(name="limit", type=ir.TensorType(INT64), shape=ir.Shape([]))
         delta = const_value([1], name="delta")
         delta.shape = ir.Shape([])
-        output = ir.Value(name="output")
-        node = ir.Node(
-            "", "Range", inputs=[start, limit, delta], outputs=[output], attributes={}
-        )
-        ctx = _context.ShapeInferenceContext({"": 21})
         past = ir.SymbolicDim("past_sequence_length")
         sequence = ir.SymbolicDim("sequence_length")
-        ctx.set_symbolic_value(start, [past])
-        ctx.set_symbolic_value(limit, [past + sequence])
-
-        func = _registry.registry.get("", "Range", version=21)
-        func(ctx, node)
-
-        self.assertEqual(
-            ir.TypeAndShape(output.type, output.shape), ts(INT64, ["sequence_length"])
+        actual = run_shape_inference_with_values(
+            "",
+            "Range",
+            [start, limit, delta],
+            opset_version=21,
+            symbolic_values={0: [past], 1: [past + sequence]},
         )
+        self.assertEqual(actual, [ts(INT64, ["sequence_length"])])
 
 
 if __name__ == "__main__":

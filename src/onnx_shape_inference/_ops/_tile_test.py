@@ -70,7 +70,7 @@ class TileTest(unittest.TestCase):
         )
         self.assertEqual(actual, [ts(FLOAT, ["2*N", "3*M"])])
 
-    def test_resize_tile_expression(self):
+    def test_repeats_multiply_existing_symbolic_expression(self):
         data = ir.Value(
             name="data",
             type=ir.TensorType(FLOAT),
@@ -84,6 +84,26 @@ class TileTest(unittest.TestCase):
             opset_version=13,
         )
         self.assertEqual(actual, [ts(FLOAT, ["2*floor(H/2)", "2*h"])])
+
+    def test_symbolic_repeats_data(self):
+        data = ir.Value(
+            name="data",
+            type=ir.TensorType(FLOAT),
+            shape=ir.Shape(["N", 3]),
+        )
+        repeats = ir.Value(
+            name="repeats",
+            type=ir.TensorType(ir.DataType.INT64),
+            shape=ir.Shape([2]),
+        )
+        actual = run_shape_inference_with_values(
+            "",
+            "Tile",
+            [data, repeats],
+            opset_version=13,
+            symbolic_values={1: [ir.SymbolicDim("R"), 2]},
+        )
+        self.assertEqual(actual, [ts(FLOAT, ["N*R", 6])])
 
 
 if __name__ == "__main__":

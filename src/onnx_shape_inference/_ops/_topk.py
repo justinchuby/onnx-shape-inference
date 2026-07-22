@@ -11,6 +11,7 @@ __all__ = [
 import onnx_ir as ir
 
 from onnx_shape_inference import _context, _registry
+from onnx_shape_inference._ops import _utils
 
 
 @_registry.registry.register("", "TopK", since_version=11)
@@ -31,15 +32,9 @@ def infer_topk(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
             return
 
         new_dims: list[int | ir.SymbolicDim] = []
-        k_val: int | ir.SymbolicDim | None = None
-        if len(node.inputs) >= 2 and node.inputs[1] is not None:
-            k_const = ir.convenience.get_const_tensor(node.inputs[1])
-            if k_const is not None:
-                k_val = int(k_const.numpy().item())
-            else:
-                k_symbolic = ctx.get_symbolic_value(k)
-                if k_symbolic is not None and len(k_symbolic) == 1:
-                    k_val = k_symbolic[0]
+        k_val = _utils.get_known_scalar(ctx, k)
+        if not isinstance(k_val, (int, ir.SymbolicDim)):
+            k_val = None
         if k_val is None:
             k_val = ctx.new_symbolic_dim()
         for i in range(rank):

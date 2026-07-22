@@ -13,14 +13,7 @@ __all__ = [
 import onnx_ir as ir
 
 from onnx_shape_inference import _broadcast, _context, _registry
-
-
-def _is_generated_dim(dim: int | ir.SymbolicDim) -> bool:
-    """Return whether a dimension is a fresh context-generated symbol."""
-    if not isinstance(dim, ir.SymbolicDim) or dim.value is None:
-        return False
-    name = dim.value
-    return name.startswith("_d") and name[2:].isdigit()
+from onnx_shape_inference._ops import _utils
 
 
 def _prefer_named_batch_dims(
@@ -31,7 +24,11 @@ def _prefer_named_batch_dims(
     dims_b = [1] * (batch_shape.rank() - batch_b.rank()) + list(batch_b.dims)
     output_dims = list(batch_shape.dims)
     for i, (dim_a, dim_b) in enumerate(zip(dims_a, dims_b)):
-        if _is_generated_dim(dim_a) and not _is_generated_dim(dim_b) and dim_b != 1:
+        if (
+            _utils.is_generated_dim(dim_a)
+            and not _utils.is_generated_dim(dim_b)
+            and dim_b != 1
+        ):
             output_dims[i] = dim_b
     return ir.Shape(output_dims)
 

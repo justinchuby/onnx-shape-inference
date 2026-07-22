@@ -8,10 +8,57 @@ __all__ = [
     "ceil_div_dim",
     "dim_product",
     "floor_div_dim",
+    "get_known_dim_values",
+    "get_known_scalar",
+    "is_generated_dim",
     "normalize_axis",
+    "scale_dim",
 ]
 
+from fractions import Fraction
+
 import onnx_ir as ir
+
+from onnx_shape_inference import _context
+
+
+def get_known_dim_values(
+    ctx: _context.ShapeInferenceContext, value: ir.Value | None
+) -> list[int | ir.SymbolicDim] | None:
+    """Read integer dimension values from a constant tensor or symbolic data."""
+    if value is None:
+        return None
+    const = ir.convenience.get_const_tensor(value)
+    if const is not None:
+        return [int(item) for item in const.numpy().flatten()]
+    symbolic_value = ctx.get_symbolic_value(value)
+    return list(symbolic_value) if symbolic_value is not None else None
+
+
+def get_known_scalar(
+    ctx: _context.ShapeInferenceContext, value: ir.Value | None
+) -> int | float | ir.SymbolicDim | None:
+    """Read a numeric scalar from a constant tensor or symbolic data."""
+    if value is None:
+        return None
+    const = ir.convenience.get_const_tensor(value)
+    if const is not None:
+        array = const.numpy()
+        if array.size == 1:
+            return array.item()
+        return None
+    symbolic_value = ctx.get_symbolic_value(value)
+    if symbolic_value is not None and len(symbolic_value) == 1:
+        return symbolic_value[0]
+    return None
+
+
+def is_generated_dim(dim: int | ir.SymbolicDim) -> bool:
+    """Return whether a dimension is a fresh context-generated symbol."""
+    if not isinstance(dim, ir.SymbolicDim) or dim.value is None:
+        return False
+    name = dim.value
+    return name.startswith("_d") and name[2:].isdigit()
 
 
 def dim_product(dims: list[int | ir.SymbolicDim]) -> int | ir.SymbolicDim:
@@ -59,6 +106,12 @@ def ceil_div_dim(
     if isinstance(numerator, int):
         return -((-numerator) // denominator)
     return -((-numerator) // denominator)
+
+
+def scale_dim(dim: int | ir.SymbolicDim, scale: float) -> int | ir.SymbolicDim:
+    """Scale a dimension with exact rational arithmetic before flooring."""
+    ratio = Fraction(str(scale))
+    return floor_div_dim(dim * ratio.numerator, ratio.denominator)
 
 
 def normalize_axis(axis: int, rank: int) -> int:

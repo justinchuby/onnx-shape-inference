@@ -16,31 +16,15 @@ from onnx_shape_inference import _context, _registry
 from onnx_shape_inference._ops import _utils
 
 
-def _scalar_value(
-    ctx: _context.ShapeInferenceContext, value: ir.Value
-) -> int | float | ir.SymbolicDim | None:
-    """Read a known scalar from a constant or symbolic data."""
-    const = ir.convenience.get_const_tensor(value)
-    if const is not None:
-        array = const.numpy()
-        if array.size == 1:
-            return array.item()
-        return None
-    symbolic_value = ctx.get_symbolic_value(value)
-    if symbolic_value is not None and len(symbolic_value) == 1:
-        return symbolic_value[0]
-    return None
-
-
 @_registry.registry.register("", "Range", since_version=11)
 def infer_range(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
     """Infer shape and dtype for Range operator."""
     (start, limit, delta) = _context.check_inputs(node, "start", "limit", "delta")
 
     output_len: int | ir.SymbolicDim | None = None
-    start_value = _scalar_value(ctx, start)
-    limit_value = _scalar_value(ctx, limit)
-    delta_value = _scalar_value(ctx, delta)
+    start_value = _utils.get_known_scalar(ctx, start)
+    limit_value = _utils.get_known_scalar(ctx, limit)
+    delta_value = _utils.get_known_scalar(ctx, delta)
     if (
         start_value is not None
         and limit_value is not None

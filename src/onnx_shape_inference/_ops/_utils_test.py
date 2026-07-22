@@ -6,9 +6,61 @@ from __future__ import annotations
 
 import unittest
 
+import numpy as np
 import onnx_ir as ir
+import parameterized
 
+from onnx_shape_inference import _context
 from onnx_shape_inference._ops import _utils
+
+
+class KnownValueTest(unittest.TestCase):
+    def setUp(self):
+        self.ctx = _context.ShapeInferenceContext({"": 21})
+
+    def test_dim_values_from_constant(self):
+        value = ir.Value(
+            name="shape",
+            const_value=ir.Tensor(np.array([2, 3], dtype=np.int64)),
+            type=ir.TensorType(ir.DataType.INT64),
+            shape=ir.Shape([2]),
+        )
+        self.assertEqual(_utils.get_known_dim_values(self.ctx, value), [2, 3])
+
+    def test_dim_values_from_symbolic_data(self):
+        value = ir.Value(
+            name="shape",
+            type=ir.TensorType(ir.DataType.INT64),
+            shape=ir.Shape([2]),
+        )
+        self.ctx.set_symbolic_value(value, [ir.SymbolicDim("N"), 3])
+        self.assertEqual(
+            _utils.get_known_dim_values(self.ctx, value),
+            [ir.SymbolicDim("N"), 3],
+        )
+
+    def test_dim_values_unknown(self):
+        value = ir.Value(name="shape", type=ir.TensorType(ir.DataType.INT64))
+        self.assertIsNone(_utils.get_known_dim_values(self.ctx, value))
+        self.assertIsNone(_utils.get_known_dim_values(self.ctx, None))
+
+    @parameterized.parameterized.expand(
+        [
+            ("int", np.array(3, dtype=np.int64), 3),
+            ("float", np.array(0.5, dtype=np.float32), 0.5),
+        ]
+    )
+    def test_scalar_from_constant(self, _name, array, expected):
+        value = ir.Value(name="value", const_value=ir.Tensor(array), shape=ir.Shape([]))
+        self.assertEqual(_utils.get_known_scalar(self.ctx, value), expected)
+
+    def test_scalar_rejects_non_scalar_constant(self):
+        value = ir.Value(
+            name="value",
+            const_value=ir.Tensor(np.array([1, 2], dtype=np.int64)),
+            shape=ir.Shape([2]),
+        )
+        self.assertIsNone(_utils.get_known_scalar(self.ctx, value))
 
 
 class DimProductTest(unittest.TestCase):
@@ -68,6 +120,34 @@ class CeilDivDimTest(unittest.TestCase):
         # ceil((2*b + 2*c) / 2) == b + c exactly
         result = _utils.ceil_div_dim(2 * b + 2 * c, 2)
         self.assertEqual(str(result), "b + c")
+
+
+class ScaleDimTest(unittest.TestCase):
+    @parameterized.parameterized.expand(
+        [
+            ("concrete_down", 5, 0.5, 2),
+            ("concrete_up", 5, 2.0, 10),
+            ("symbolic_down", ir.SymbolicDim("H"), 0.5, "floor(H/2)"),
+            ("symbolic_simplifies", ir.SymbolicDim("2*h"), 0.5, "h"),
+            ("identity", ir.SymbolicDim("N"), 1.0, "N"),
+        ]
+    )
+    def test_scale(self, _name, dim, scale, expected):
+        result = _utils.scale_dim(dim, scale)
+        self.assertEqual(str(result), str(expected))
+
+
+class GeneratedDimTest(unittest.TestCase):
+    @parameterized.parameterized.expand(
+        [
+            ("generated", ir.SymbolicDim("_d12"), True),
+            ("user_named", ir.SymbolicDim("batch"), False),
+            ("generated_expression", ir.SymbolicDim("2*_d0"), False),
+            ("concrete", 3, False),
+        ]
+    )
+    def test_is_generated_dim(self, _name, dim, expected):
+        self.assertEqual(_utils.is_generated_dim(dim), expected)
 
 
 class NormalizeAxisTest(unittest.TestCase):

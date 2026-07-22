@@ -51,20 +51,18 @@ class TopKTest(unittest.TestCase):
         self.assertEqual(actual[1], ts(INT64, [3, 4, 3]))
 
     def test_symbolic_k_value(self):
-        from onnx_shape_inference import _context, _registry
-
         x = ir.Value(name="x", type=ir.TensorType(FLOAT), shape=ir.Shape(["N", "D"]))
         k = ir.Value(name="k", type=ir.TensorType(INT64), shape=ir.Shape([1]))
-        outputs = [ir.Value(name="values"), ir.Value(name="indices")]
-        node = ir.Node("", "TopK", inputs=[x, k], outputs=outputs, attributes={})
-        ctx = _context.ShapeInferenceContext({"": 21})
-        ctx.set_symbolic_value(k, [ir.SymbolicDim("TopK_k")])
-
-        func = _registry.registry.get("", "TopK", version=21)
-        func(ctx, node)
-
+        actual = run_shape_inference_with_values(
+            "",
+            "TopK",
+            [x, k],
+            opset_version=21,
+            num_outputs=2,
+            symbolic_values={1: [ir.SymbolicDim("TopK_k")]},
+        )
         self.assertEqual(
-            [ir.TypeAndShape(output.type, output.shape) for output in outputs],
+            actual,
             [ts(FLOAT, ["N", "TopK_k"]), ts(INT64, ["N", "TopK_k"])],
         )
 
@@ -84,6 +82,16 @@ class TopKTest(unittest.TestCase):
         with self.assertRaises(OpUsageError):
             run_shape_inference_with_values(
                 "", "TopK", [None, v], opset_version=21, num_outputs=2
+            )
+
+    def test_opset_before_input_k_is_not_registered(self):
+        with self.assertRaises(ValueError):
+            run_shape_inference(
+                "",
+                "TopK",
+                [ts(FLOAT, [3, 4]), ts(INT64, [1])],
+                opset_version=10,
+                num_outputs=2,
             )
 
 

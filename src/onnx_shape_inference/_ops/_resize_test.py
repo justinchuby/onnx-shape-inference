@@ -97,6 +97,24 @@ class ResizeTest(unittest.TestCase):
         )
         self.assertEqual(actual, [ts(FLOAT, ["floor(H/2)", "h"])])
 
+    def test_symbolic_sizes_data(self):
+        x = ir.Value(name="X", shape=ir.Shape(["N", "C"]), type=ir.TensorType(FLOAT))
+        roi = ir.Value(name="roi", type=ir.TensorType(FLOAT))
+        scales = ir.Value(name="scales", type=ir.TensorType(FLOAT))
+        sizes = ir.Value(
+            name="sizes",
+            type=ir.TensorType(ir.DataType.INT64),
+            shape=ir.Shape([2]),
+        )
+        actual = run_shape_inference_with_values(
+            "",
+            "Resize",
+            [x, roi, scales, sizes],
+            opset_version=19,
+            symbolic_values={3: [ir.SymbolicDim("height"), 32]},
+        )
+        self.assertEqual(actual, [ts(FLOAT, ["height", 32])])
+
     def test_no_inputs(self):
         with self.assertRaises(OpUsageError):
             run_shape_inference("", "Resize", [], opset_version=19)

@@ -173,8 +173,6 @@ class SliceTest(unittest.TestCase):
 
     def _run_with_symbolic_ends(self, input_ts, starts, ends_sym, axes=None, steps=None):
         """Run Slice inference with a symbolic (non-constant) ends input."""
-        from onnx_shape_inference import _context, _registry
-
         data = ir.Value(name="data", shape=input_ts.shape, type=input_ts.type)
         ends_val = ir.Value(
             name="ends", type=ir.TensorType(ir.DataType.INT64), shape=ir.Shape([len(ends_sym)])
@@ -190,17 +188,13 @@ class SliceTest(unittest.TestCase):
             if axes is None:
                 inputs.append(ir.Value(name="axes_empty"))
             inputs.append(const_value(steps, "steps"))
-
-        output_values = [ir.Value(name="output_0")]
-        node = ir.Node("", "Slice", inputs=inputs, outputs=output_values, attributes={})
-        ctx = _context.ShapeInferenceContext({"": 17})
-        ctx.name_anonymous_dims(data)
-        # Set symbolic value for ends
-        ctx.set_symbolic_value(ends_val, ends_sym)
-
-        func = _registry.registry.get("", "Slice", version=17)
-        func(ctx, node)
-        return [ir.TypeAndShape(v.type, v.shape) for v in output_values]
+        return run_shape_inference_with_values(
+            "",
+            "Slice",
+            inputs,
+            opset_version=17,
+            symbolic_values={2: ends_sym},
+        )
 
     def test_symbolic_ends_match_input_shape(self):
         """Slice with symbolic ends matching input dims is a no-op per axis."""

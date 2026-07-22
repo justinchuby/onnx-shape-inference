@@ -18,14 +18,9 @@ def _read_ints(
     ctx: _context.ShapeInferenceContext, value: ir.Value | None
 ) -> list[int] | None:
     """Read known integer tensor values from a constant or symbolic data."""
-    if value is None:
-        return None
-    const = ir.convenience.get_const_tensor(value)
-    if const is not None:
-        return [int(x) for x in const.numpy().flatten()]
-    symbolic_value = ctx.get_symbolic_value(value)
-    if symbolic_value is not None and all(isinstance(x, int) for x in symbolic_value):
-        return list(symbolic_value)
+    values = _utils.get_known_dim_values(ctx, value)
+    if values is not None and all(isinstance(item, int) for item in values):
+        return list(values)
     return None
 
 
@@ -47,14 +42,9 @@ def infer_slice(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
 
     rank = input_shape.rank()
     starts = _read_ints(ctx, node.inputs[1])
-    ends = _read_ints(ctx, node.inputs[2])
+    ends_values = _utils.get_known_dim_values(ctx, node.inputs[2])
 
-    # Try symbolic value for ends when not constant
-    ends_sym: list[int | ir.SymbolicDim] | None = None
-    if ends is None:
-        ends_sym = ctx.get_symbolic_value(node.inputs[2])
-
-    if starts is None or (ends is None and ends_sym is None):
+    if starts is None or ends_values is None:
         # Dynamic starts/ends — same rank, sliced dims are symbolic
         if len(node.outputs) > 0:
             symbolic_dims: list[int | ir.SymbolicDim] = [
@@ -75,14 +65,6 @@ def infer_slice(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
         axes = list(range(len(starts)))
     if steps is None:
         steps = [1] * len(starts)
-
-    # Use concrete ends or symbolic ends
-    ends_values: list[int] | list[int | ir.SymbolicDim]
-    if ends is not None:
-        ends_values = ends
-    else:
-        assert ends_sym is not None
-        ends_values = ends_sym
 
     output_dims: list[int | ir.SymbolicDim] = list(input_shape.dims)
     for i, (start, axis, step) in enumerate(zip(starts, axes, steps)):
@@ -154,6 +136,7 @@ def infer_slice(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
 
         # Propagate symbolic_value for 1-D tensors sliced on axis 0
         sym_val = ctx.get_symbolic_value(data)
+        ends = _read_ints(ctx, node.inputs[2])
         if (
             sym_val is not None
             and ends is not None
