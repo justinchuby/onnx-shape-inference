@@ -233,8 +233,7 @@ def _np_dtype(dtype: ir.DataType) -> np.dtype | None:
 
 
 def _data_dependent(case: FuzzCase, value_name: str, index: int) -> bool:
-    flags = case.data_dependent_ports
-    return value_name in flags or (value_name, index) in flags or (value_name, None) in flags
+    return value_name in case.data_dependent_values
 
 
 class SoundnessOracle:

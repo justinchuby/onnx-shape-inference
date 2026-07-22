@@ -10,7 +10,7 @@ from collections.abc import Iterator
 
 import onnx_ir as ir
 
-from onnx_shape_inference._fuzz._types import FuzzCase
+from onnx_shape_inference._fuzz._types import FuzzCase, SymbolConstraint
 from onnx_shape_inference._symbolic_shapes import parse_symbolic_expression
 
 __all__ = [
@@ -69,20 +69,21 @@ def bind_symbols(case: FuzzCase, *, include_edge_dims: bool = False) -> dict[str
             for dim in value.shape:
                 names.update(_symbols_from_dim(dim))
 
-    bindings = {name: value for name, value in case.symbolic_dims.items() if value is not None}
+    bindings = dict(case.symbol_bindings)
     rng = random.Random(case.seed)
     remaining = sorted(names - set(bindings))
     for index, name in enumerate(remaining):
-        if include_edge_dims and rng.randrange(8) == 0:
+        constraint = case.symbol_constraints.get(name, SymbolConstraint())
+        if include_edge_dims and constraint.minimum == 0 and rng.randrange(8) == 0:
             bindings[name] = rng.choice((0, 1))
         else:
-            bindings[name] = _PRIMES[index % len(_PRIMES)]
-
-    for constraint in case.constraints:
-        if isinstance(constraint, tuple) and len(constraint) == 2:
-            left, right = constraint
-            if isinstance(left, str) and isinstance(right, str) and left in bindings:
-                bindings[right] = bindings[left]
+            candidate = _PRIMES[index % len(_PRIMES)]
+            divisor = max(1, constraint.divisible_by)
+            if candidate % divisor:
+                candidate = max(constraint.minimum, divisor)
+            bindings[name] = candidate
+        if constraint.maximum is not None and bindings[name] > constraint.maximum:
+            bindings[name] = constraint.maximum
     return bindings
 
 

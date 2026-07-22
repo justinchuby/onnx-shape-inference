@@ -64,23 +64,21 @@ class DeltaShrinker:
         self, case: FuzzCase, signature: FailureSignature
     ) -> FuzzCase:
         candidate = copy.deepcopy(case)
-        bindings = {
-            name: value for name, value in candidate.symbolic_dims.items() if value is not None
-        }
+        bindings = dict(candidate.symbol_bindings)
         if not bindings:
             return case
         candidate.model = materialize_model(candidate, bindings)
-        candidate.symbolic_dims = bindings
+        candidate.symbol_bindings = bindings
         candidate.metadata["shrink_bindings"] = bindings
         return candidate if self._preserves(candidate, signature) else case
 
     def _try_smaller_bindings(self, case: FuzzCase, signature: FailureSignature) -> FuzzCase:
         current = case
-        for name, value in sorted(case.symbolic_dims.items()):
-            if value is None or value <= 1:
+        for name, value in sorted(case.symbol_bindings.items()):
+            if value <= 1:
                 continue
             candidate = copy.deepcopy(current)
-            candidate.symbolic_dims[name] = 1
+            candidate.symbol_bindings[name] = 1
             if self._preserves(candidate, signature):
                 current = candidate
         return current

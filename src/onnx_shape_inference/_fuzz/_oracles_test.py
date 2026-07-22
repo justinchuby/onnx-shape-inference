@@ -31,7 +31,7 @@ def _case(*, symbolic: bool = False) -> FuzzCase:
         ir.Graph([x], list(relu.outputs), nodes=[relu], opset_imports={"": 21}),
         ir_version=10,
     )
-    return FuzzCase(model=model, seed=7, opsets={"": 21})
+    return FuzzCase(model=model, seed=7, opset_imports={"": 21})
 
 
 class CrashOracleTest(unittest.TestCase):
@@ -45,7 +45,7 @@ class CrashOracleTest(unittest.TestCase):
             ir.Graph([x], list(malformed.outputs), nodes=[malformed], opset_imports={"": 21}),
             ir_version=10,
         )
-        case = FuzzCase(model=model, seed=0, opsets={"": 21})
+        case = FuzzCase(model=model, seed=0, opset_imports={"": 21})
         self.assertEqual(CrashOracle(malformed=True).check(case).status, OracleStatus.PASS)
 
 
@@ -113,7 +113,7 @@ class HarnessTest(unittest.TestCase):
                 return OracleResult.failed("deliberate", value_name="Y", kind="shape")
 
         harness = FuzzHarness(
-            lambda seed: FuzzCase(model=_case().model, seed=seed, opsets={"": 21}),
+            lambda seed: FuzzCase(model=_case().model, seed=seed, opset_imports={"": 21}),
             [FailingOracle()],
         )
         with self.assertRaisesRegex(AssertionError, r"oracle=failing seed=11"):
