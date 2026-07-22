@@ -1,0 +1,55 @@
+name: Fuzz nightly
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: |
+          python3 -m pip install -r requirements/ci/requirements.txt
+          python3 -m pip install -e .
+      - name: Run isolated long fuzzing
+        id: fuzz
+        run: |
+          seed="$(od -An -N8 -tu8 /dev/urandom | tr -d ' ')"
+          echo "seed=$seed" >> "$GITHUB_OUTPUT"
+          echo "FUZZ_SEED=$seed"
+          FUZZ_SEED="$seed" FUZZ_CASES=10000 timeout 20m \
+            python3 -m pytest -q -m fuzz_long | tee fuzz-nightly.log
+      - name: Upload minimized corpus and coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-${{ steps.fuzz.outputs.seed }}
+          path: |
+            fuzz-nightly.log
+            tests/fuzz_corpus/
+            fuzz-artifacts/
+          if-no-files-found: warn
+      - name: Open or update tracking issue
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SEED: ${{ steps.fuzz.outputs.seed }}
+        run: |
+          title="Nightly fuzz failure"
+          body="Fuzzing failed for seed ${SEED}. Download the fuzz artifact for the minimized ONNX reproducer."
+          issue="$(gh issue list --state open --search "$title in:title" --json number --jq '.[0].number')"
+          if [ -n "$issue" ]; then
+            gh issue comment "$issue" --body "$body"
+          else
+            gh issue create --title "$title" --body "$body"
+          fi
