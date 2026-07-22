@@ -208,16 +208,39 @@ class SliceTest(unittest.TestCase):
         )
         self.assertEqual(actual, [ts(FLOAT, ["batch", 100])])
 
-    def test_symbolic_end_expression_derives_extent(self):
-        other = ir.SymbolicDim("other")
+    @parameterized.parameterized.expand(
+        [
+            (
+                "arbitrary_symbol",
+                ["batch", 100],
+                [0, 0],
+                [ir.SymbolicDim("other"), 100],
+                [0, 1],
+                [1, 1],
+                ["other", 100],
+            ),
+            (
+                "input_symbol_minus_one",
+                ["a", "b", "c"],
+                [0],
+                [ir.SymbolicDim("c") - 1],
+                [2],
+                [1],
+                ["a", "b", "c - 1"],
+            ),
+        ]
+    )
+    def test_symbolic_end_expression_derives_extent(
+        self, _name, input_shape, starts, ends_sym, axes, steps, expected_shape
+    ):
         actual = self._run_with_symbolic_ends(
-            ts(FLOAT, ["batch", 100]),
-            starts=[0, 0],
-            ends_sym=[other, 100],
-            axes=[0, 1],
-            steps=[1, 1],
+            ts(FLOAT, input_shape),
+            starts=starts,
+            ends_sym=ends_sym,
+            axes=axes,
+            steps=steps,
         )
-        self.assertEqual(actual, [ts(FLOAT, ["other", 100])])
+        self.assertEqual(actual, [ts(FLOAT, expected_shape)])
 
     def test_symbolic_end_derives_extent(self):
         """A symbolic end equal to the input dim preserves its arithmetic relation."""

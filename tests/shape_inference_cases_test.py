@@ -260,6 +260,7 @@ class ShapeInferenceCasesTest(unittest.TestCase):
         n3 = _node("Reshape", [n2.outputs[0], m1], ["flat_nz"])
         n4 = _node("Neg", [n3.outputs[0]], ["Y_pre_abs"])
         n5 = _node("Abs", [n4.outputs[0]], ["Y"])
+        n5.outputs[0].shape = ir.Shape(["2*dnz"])
         model = _build_model([n1, n2, n3, n4, n5], [x], [n5.outputs[0]], inits=[m1])
         self._assert_infer(
             model,
@@ -393,10 +394,14 @@ class ShapeInferenceCasesTest(unittest.TestCase):
                 "else_branch": ir.Attr("else_branch", ir.AttributeType.GRAPH, else_g),
             },
         )
+        y1 = _val("Y1", FLOAT, ["B1", 4])
+        y2 = _val("Y2", INT64, ["B2"])
+        abs_node = _node("Abs", [if_node.outputs[0]], [y1])
+        neg_node = _node("Neg", [if_node.outputs[1]], [y2])
         graph = ir.Graph(
             inputs=[cond, a_then, a_else, c_else, b_then, b_else],
-            outputs=list(if_node.outputs),
-            nodes=[if_node],
+            outputs=[y1, y2],
+            nodes=[if_node, abs_node, neg_node],
             opset_imports={"": 13},
             name="g",
         )
@@ -404,10 +409,10 @@ class ShapeInferenceCasesTest(unittest.TestCase):
         self._assert_infer(
             model,
             {
-                # leading axis differs between branches -> fresh symbolic dim,
-                # trailing concrete 4 preserved.
-                "out_a": (FLOAT, ["If_out_a_d0", 4]),
-                "out_b": (INT64, ["If_out_b_d0"]),
+                "out_a": (FLOAT, ["B1", 4]),
+                "out_b": (INT64, ["B2"]),
+                "Y1": (FLOAT, ["B1", 4]),
+                "Y2": (INT64, ["B2"]),
             },
         )
 
@@ -550,6 +555,52 @@ class ShapeInferenceCasesTest(unittest.TestCase):
                 # Exact symbolic simplification collapses 2*(c//2) to c.
                 "xrr": (FLOAT, ["a", "b", "c"]),
                 "Y": (FLOAT, ["a", "b", "c"]),
+            },
+        )
+
+    def test_qwen_named_dim_forward_propagation(self):
+        hidden = _val("hidden", FLOAT, ["batch_size", "sequence_length", 16])
+        shape = _init("qkv_shape", np.array([0, 0, 4, 4], dtype=np.int64))
+        weight = _val("weight", FLOAT, [4, 4, 8])
+        axes = _init("axes", np.array([2], dtype=np.int64))
+        reshape = _node("Reshape", [hidden, shape], ["reshaped"])
+        transpose = _node(
+            "Transpose",
+            [reshape.outputs[0]],
+            ["transposed"],
+            {"perm": _attr("perm", [0, 2, 1, 3], ir.AttributeType.INTS)},
+        )
+        projected = _node("MatMul", [transpose.outputs[0], weight], ["projected"])
+        unsqueeze = _node("Unsqueeze", [projected.outputs[0], axes], ["output"])
+        model = _build_model(
+            [reshape, transpose, projected, unsqueeze],
+            [hidden, weight],
+            [unsqueeze.outputs[0]],
+            inits=[shape, axes],
+            opset=21,
+        )
+        self._assert_infer(
+            model,
+            {
+                "reshaped": (FLOAT, ["batch_size", "sequence_length", 4, 4]),
+                "transposed": (FLOAT, ["batch_size", 4, "sequence_length", 4]),
+                "projected": (FLOAT, ["batch_size", 4, "sequence_length", 8]),
+                "output": (FLOAT, ["batch_size", 4, 1, "sequence_length", 8]),
+            },
+        )
+
+    def test_tiny_llm_concat_adopts_declared_total_seq(self):
+        past = _val("past_key", FLOAT, ["batch", 4, "past_seq", 4])
+        current = _val("current_key", FLOAT, ["batch", 4, "seq", 4])
+        concat = _node("Concat", [past, current], ["concat"], {"axis": _attr("axis", 2)})
+        present = _val("present_key", FLOAT, ["batch", 4, "total_seq", 4])
+        output = _node("Identity", [concat.outputs[0]], [present])
+        model = _build_model([concat, output], [past, current], [present], opset=21)
+        self._assert_infer(
+            model,
+            {
+                "concat": (FLOAT, ["batch", 4, "total_seq", 4]),
+                "present_key": (FLOAT, ["batch", 4, "total_seq", 4]),
             },
         )
 

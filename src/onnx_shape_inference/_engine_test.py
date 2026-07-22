@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import unittest
 
+import numpy as np
 import onnx_ir as ir
 import parameterized
 
@@ -470,7 +471,7 @@ class AnchorConstraintPropagationTest(unittest.TestCase):
         # The engine-anonymous dim on the intermediate Z is renamed to "dnz".
         self.assertEqual(nz.outputs[0].shape[1], ir.SymbolicDim("dnz"))
         # The declared anchor dim is preserved on the output.
-        self.assertEqual(list(model.graph.outputs)[0].shape[1], ir.SymbolicDim("dnz"))
+        self.assertEqual(next(iter(model.graph.outputs)).shape[1], ir.SymbolicDim("dnz"))
 
     def test_opt_out_keeps_anonymous_symbol(self):
         model, nz = self._nonzero_model()
@@ -496,6 +497,63 @@ class AnchorConstraintPropagationTest(unittest.TestCase):
         last = nz.outputs[0].shape[1]
         self.assertIsInstance(last, ir.SymbolicDim)
         self.assertRegex(str(last), r"^_d\d+$")
+
+    def test_adopts_topk_k_name_on_both_outputs(self):
+        x = ir.Value(
+            name="X", type=ir.TensorType(ir.DataType.FLOAT), shape=ir.Shape(["N", "N"])
+        )
+        k = ir.Value(name="K", type=ir.TensorType(ir.DataType.INT64), shape=ir.Shape([1]))
+        topk = ir.Node("", "TopK", [x, k], num_outputs=2)
+        y = ir.Value(
+            name="Y",
+            type=ir.TensorType(ir.DataType.FLOAT),
+            shape=ir.Shape(["N", "TopK_k"]),
+        )
+        identity = ir.Node("", "Identity", [topk.outputs[0]], outputs=[y])
+        model = ir.Model(
+            ir.Graph([x, k], [y], nodes=[topk, identity], opset_imports={"": 21}),
+            ir_version=10,
+        )
+
+        _engine.infer_symbolic_shapes(model)
+
+        self.assertEqual(topk.outputs[0].shape, ir.Shape(["N", "TopK_k"]))
+        self.assertEqual(topk.outputs[1].shape, ir.Shape(["N", "TopK_k"]))
+
+    def test_adopts_nonzero_name_through_reshape_expression(self):
+        x = ir.Value(
+            name="X",
+            type=ir.TensorType(ir.DataType.FLOAT),
+            shape=ir.Shape(["batch", "seq"]),
+        )
+        nonzero = ir.Node("", "NonZero", [x], num_outputs=1)
+        shape = ir.Value(
+            name="shape",
+            const_value=ir.Tensor(np.array([-1], dtype=np.int64), name="shape"),
+            type=ir.TensorType(ir.DataType.INT64),
+            shape=ir.Shape([1]),
+        )
+        flattened = ir.Node(
+            "",
+            "Reshape",
+            [nonzero.outputs[0], shape],
+            num_outputs=1,
+        )
+        y = ir.Value(
+            name="Y",
+            type=ir.TensorType(ir.DataType.INT64),
+            shape=ir.Shape(["2*dnz"]),
+        )
+        identity = ir.Node("", "Identity", [flattened.outputs[0]], outputs=[y])
+        model = ir.Model(
+            ir.Graph([x], [y], nodes=[nonzero, flattened, identity], opset_imports={"": 21}),
+            ir_version=10,
+        )
+
+        _engine.infer_symbolic_shapes(model)
+
+        self.assertEqual(nonzero.outputs[0].shape, ir.Shape([2, "dnz"]))
+        self.assertEqual(flattened.outputs[0].shape, ir.Shape(["2*dnz"]))
 
 
 if __name__ == "__main__":
