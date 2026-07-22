@@ -15,6 +15,27 @@ import onnx_ir as ir
 from onnx_shape_inference import _broadcast, _context, _registry
 
 
+def _is_generated_dim(dim: int | ir.SymbolicDim) -> bool:
+    """Return whether a dimension is a fresh context-generated symbol."""
+    if not isinstance(dim, ir.SymbolicDim) or dim.value is None:
+        return False
+    name = dim.value
+    return name.startswith("_d") and name[2:].isdigit()
+
+
+def _prefer_named_batch_dims(
+    batch_shape: ir.Shape, batch_a: ir.Shape, batch_b: ir.Shape
+) -> ir.Shape:
+    """Prefer a propagated named dim over an equivalent generated batch dim."""
+    dims_a = [1] * (batch_shape.rank() - batch_a.rank()) + list(batch_a.dims)
+    dims_b = [1] * (batch_shape.rank() - batch_b.rank()) + list(batch_b.dims)
+    output_dims = list(batch_shape.dims)
+    for i, (dim_a, dim_b) in enumerate(zip(dims_a, dims_b)):
+        if _is_generated_dim(dim_a) and not _is_generated_dim(dim_b) and dim_b != 1:
+            output_dims[i] = dim_b
+    return ir.Shape(output_dims)
+
+
 def _matmul_shape(
     ctx: _context.ShapeInferenceContext,
     node: ir.Node,
@@ -49,6 +70,8 @@ def _matmul_shape(
         batch_a = ir.Shape(list(shape_a.dims[:-2])) if rank_a > 2 else ir.Shape([])
         batch_b = ir.Shape(list(shape_b.dims[:-2])) if rank_b > 2 else ir.Shape([])
         batch_shape = _broadcast.broadcast_shapes(batch_a, batch_b)
+        if batch_shape is not None:
+            batch_shape = _prefer_named_batch_dims(batch_shape, batch_a, batch_b)
 
         m_dim = shape_a.dims[-2]
         n_dim = shape_b.dims[-1]

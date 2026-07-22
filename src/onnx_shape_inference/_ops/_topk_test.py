@@ -50,6 +50,24 @@ class TopKTest(unittest.TestCase):
         self.assertEqual(actual[0], ts(FLOAT, [3, 4, 3]))
         self.assertEqual(actual[1], ts(INT64, [3, 4, 3]))
 
+    def test_symbolic_k_value(self):
+        from onnx_shape_inference import _context, _registry
+
+        x = ir.Value(name="x", type=ir.TensorType(FLOAT), shape=ir.Shape(["N", "D"]))
+        k = ir.Value(name="k", type=ir.TensorType(INT64), shape=ir.Shape([1]))
+        outputs = [ir.Value(name="values"), ir.Value(name="indices")]
+        node = ir.Node("", "TopK", inputs=[x, k], outputs=outputs, attributes={})
+        ctx = _context.ShapeInferenceContext({"": 21})
+        ctx.set_symbolic_value(k, [ir.SymbolicDim("TopK_k")])
+
+        func = _registry.registry.get("", "TopK", version=21)
+        func(ctx, node)
+
+        self.assertEqual(
+            [ir.TypeAndShape(output.type, output.shape) for output in outputs],
+            [ts(FLOAT, ["N", "TopK_k"]), ts(INT64, ["N", "TopK_k"])],
+        )
+
     def test_missing_shape(self):
         actual = run_shape_inference(
             "",

@@ -161,6 +161,20 @@ class AttentionSymbolicDimsTest(unittest.TestCase):
         )
         self.assertEqual(actual, [ts(FLOAT, ["B", "S", 64])])
 
+    def test_symbolic_value_hidden_derives_gqa_output_hidden(self):
+        actual = run_shape_inference(
+            "",
+            "Attention",
+            [
+                ts(FLOAT, ["B", "S", "Q"]),
+                ts(FLOAT, ["B", "S", "K"]),
+                ts(FLOAT, ["B", "S", "V"]),
+            ],
+            attributes=_attrs(q_num_heads=16, kv_num_heads=8),
+            opset_version=23,
+        )
+        self.assertEqual(actual, [ts(FLOAT, ["B", "S", "16*floor(V/8)"])])
+
     def test_4d_concrete(self):
         """4D inputs: [batch, num_heads, seq_len, head_size]."""
         actual = run_shape_inference(

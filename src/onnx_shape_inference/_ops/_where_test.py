@@ -72,6 +72,27 @@ class WhereTest(unittest.TestCase):
         )
         self.assertEqual(actual, [ts(FLOAT, ["N", "M"])])
 
+    def test_data_symbols_preferred_over_generated_condition_symbols(self):
+        actual = run_shape_inference(
+            "",
+            "Where",
+            [
+                ts(BOOL, ["_d0", 16, "_d1", "_d2"]),
+                ts(FLOAT, ["batch_size", 16, "sequence_length", "total_sequence_length"]),
+                ts(FLOAT, []),
+            ],
+            opset_version=17,
+        )
+        self.assertEqual(
+            actual,
+            [
+                ts(
+                    FLOAT,
+                    ["batch_size", 16, "sequence_length", "total_sequence_length"],
+                )
+            ],
+        )
+
     def test_missing_shape(self):
         actual = run_shape_inference(
             "",

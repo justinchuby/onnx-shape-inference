@@ -11,16 +11,22 @@ __all__ = [
 import onnx_ir as ir
 
 from onnx_shape_inference import _context, _registry
+from onnx_shape_inference._ops import _utils
 
 
-def _read_const_ints(value: ir.Value | None) -> list[int] | None:
-    """Read a 1-D constant integer tensor, or return None."""
+def _read_ints(
+    ctx: _context.ShapeInferenceContext, value: ir.Value | None
+) -> list[int] | None:
+    """Read known integer tensor values from a constant or symbolic data."""
     if value is None:
         return None
     const = ir.convenience.get_const_tensor(value)
-    if const is None:
-        return None
-    return [int(x) for x in const.numpy().flatten()]
+    if const is not None:
+        return [int(x) for x in const.numpy().flatten()]
+    symbolic_value = ctx.get_symbolic_value(value)
+    if symbolic_value is not None and all(isinstance(x, int) for x in symbolic_value):
+        return list(symbolic_value)
+    return None
 
 
 @_registry.registry.register("", "Slice", since_version=10)
@@ -40,8 +46,8 @@ def infer_slice(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
         return
 
     rank = input_shape.rank()
-    starts = _read_const_ints(node.inputs[1])
-    ends = _read_const_ints(node.inputs[2])
+    starts = _read_ints(ctx, node.inputs[1])
+    ends = _read_ints(ctx, node.inputs[2])
 
     # Try symbolic value for ends when not constant
     ends_sym: list[int | ir.SymbolicDim] | None = None
@@ -59,11 +65,11 @@ def infer_slice(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
 
     axes: list[int] | None = None
     if len(node.inputs) >= 4:
-        axes = _read_const_ints(node.inputs[3])
+        axes = _read_ints(ctx, node.inputs[3])
 
     steps: list[int] | None = None
     if len(node.inputs) >= 5:
-        steps = _read_const_ints(node.inputs[4])
+        steps = _read_ints(ctx, node.inputs[4])
 
     if axes is None:
         axes = list(range(len(starts)))
@@ -92,10 +98,9 @@ def infer_slice(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
             return
 
         if not isinstance(end, int):
-            # Symbolic end: if start=0 and step=1 and end matches input dim,
-            # the slice is a no-op for this axis
-            if start == 0 and step == 1 and end == dim:
-                output_dims[axis] = dim
+            if step > 0 and start >= 0:
+                sliced_extent = end - start
+                output_dims[axis] = _utils.ceil_div_dim(sliced_extent, step)
             else:
                 output_dims[axis] = ctx.new_symbolic_dim()
         elif isinstance(dim, int):
@@ -137,6 +142,9 @@ def infer_slice(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
             elif start >= 0 and end >= 0 and start not in sentinels and end not in sentinels:
                 slice_len = max(0, -(-max(0, end - start) // abs(step)))
                 output_dims[axis] = slice_len
+            elif step > 0 and start >= 0 and end < 0 and end not in sentinels:
+                sliced_extent = dim + end - start
+                output_dims[axis] = _utils.ceil_div_dim(sliced_extent, step)
             else:
                 output_dims[axis] = ctx.new_symbolic_dim()
 

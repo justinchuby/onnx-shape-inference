@@ -20,8 +20,14 @@ def infer_tile(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
 
     output_shape: ir.Shape | None = None
     repeats_const = ir.convenience.get_const_tensor(repeats)
-    if input_val.shape is not None and repeats_const is not None:
+    repeats_vals: list[int | ir.SymbolicDim] | None = None
+    if repeats_const is not None:
         repeats_vals = [int(x) for x in repeats_const.numpy().flatten()]
+    else:
+        repeats_sym = ctx.get_symbolic_value(repeats)
+        if repeats_sym is not None:
+            repeats_vals = list(repeats_sym)
+    if input_val.shape is not None and repeats_vals is not None:
         new_dims: list[int | ir.SymbolicDim] = []
         for i, dim in enumerate(input_val.shape.dims):
             if i < len(repeats_vals):

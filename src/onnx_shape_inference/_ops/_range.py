@@ -13,30 +13,49 @@ import math
 import onnx_ir as ir
 
 from onnx_shape_inference import _context, _registry
+from onnx_shape_inference._ops import _utils
+
+
+def _scalar_value(
+    ctx: _context.ShapeInferenceContext, value: ir.Value
+) -> int | float | ir.SymbolicDim | None:
+    """Read a known scalar from a constant or symbolic data."""
+    const = ir.convenience.get_const_tensor(value)
+    if const is not None:
+        array = const.numpy()
+        if array.size == 1:
+            return array.item()
+        return None
+    symbolic_value = ctx.get_symbolic_value(value)
+    if symbolic_value is not None and len(symbolic_value) == 1:
+        return symbolic_value[0]
+    return None
 
 
 @_registry.registry.register("", "Range", since_version=11)
 def infer_range(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
     """Infer shape and dtype for Range operator."""
-    (start, _limit, _delta) = _context.check_inputs(node, "start", "limit", "delta")
+    (start, limit, delta) = _context.check_inputs(node, "start", "limit", "delta")
 
-    output_len: int | ir.SymbolicDim = ctx.new_symbolic_dim()
+    output_len: int | ir.SymbolicDim | None = None
+    start_value = _scalar_value(ctx, start)
+    limit_value = _scalar_value(ctx, limit)
+    delta_value = _scalar_value(ctx, delta)
+    if (
+        start_value is not None
+        and limit_value is not None
+        and isinstance(delta_value, (int, float))
+    ):
+        if delta_value == 0:
+            ctx.record_error(node, "Range: delta must not be zero")
+            return
+        if isinstance(start_value, (int, float)) and isinstance(limit_value, (int, float)):
+            output_len = max(0, math.ceil((limit_value - start_value) / delta_value))
+        elif isinstance(delta_value, int) and delta_value > 0:
+            output_len = _utils.ceil_div_dim(limit_value - start_value, delta_value)
 
-    start_const = ir.convenience.get_const_tensor(node.inputs[0])  # type: ignore[arg-type]
-    limit_const = ir.convenience.get_const_tensor(node.inputs[1])  # type: ignore[arg-type]
-    delta_const = ir.convenience.get_const_tensor(node.inputs[2])  # type: ignore[arg-type]
-    if start_const is not None and limit_const is not None and delta_const is not None:
-        start_array = start_const.numpy()
-        limit_array = limit_const.numpy()
-        delta_array = delta_const.numpy()
-        if start_array.size == 1 and limit_array.size == 1 and delta_array.size == 1:
-            s = float(start_array.item())
-            lim = float(limit_array.item())
-            d = float(delta_array.item())
-            if d == 0.0:  # noqa: RUF069
-                ctx.record_error(node, "Range: delta must not be zero")
-                return
-            output_len = max(0, math.ceil((lim - s) / d))
+    if output_len is None:
+        output_len = ctx.new_symbolic_dim()
 
     output_shape = ir.Shape([output_len])
 

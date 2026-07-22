@@ -85,6 +85,10 @@ class SliceTest(unittest.TestCase):
         actual = self._run(ts(FLOAT, ["N", 10]), [-2], [5], [0], [1])
         self.assertEqual(actual, [ts(FLOAT, ["_d0", 10])])
 
+    def test_symbolic_dim_negative_end_derives_extent(self):
+        actual = self._run(ts(FLOAT, ["a", "b", "c"]), [0], [-1], [2], [1])
+        self.assertEqual(actual, [ts(FLOAT, ["a", "b", "c - 1"])])
+
     def test_symbolic_dim_preserved_on_non_sliced_axis(self):
         """Symbolic dim on non-sliced axis is preserved; sliced axis is concrete."""
         actual = self._run(ts(FLOAT, ["a", 2]), [0], [1], [1], [1])
@@ -210,8 +214,7 @@ class SliceTest(unittest.TestCase):
         )
         self.assertEqual(actual, [ts(FLOAT, ["batch", 100])])
 
-    def test_symbolic_ends_no_match_gives_new_dim(self):
-        """Slice with symbolic end that doesn't match input dim gives a new symbolic dim."""
+    def test_symbolic_end_expression_derives_extent(self):
         other = ir.SymbolicDim("other")
         actual = self._run_with_symbolic_ends(
             ts(FLOAT, ["batch", 100]),
@@ -220,28 +223,21 @@ class SliceTest(unittest.TestCase):
             axes=[0, 1],
             steps=[1, 1],
         )
-        # axis 0: end=other != batch → new symbolic dim; axis 1: end=100 concrete → 100
-        self.assertIsNotNone(actual[0].shape)
-        self.assertNotEqual(actual[0].shape[0], ir.SymbolicDim("batch"))
-        self.assertEqual(actual[0].shape[1], 100)
+        self.assertEqual(actual, [ts(FLOAT, ["other", 100])])
 
-    def test_symbolic_ends_start_nonzero_gives_new_dim(self):
-        """Slice with symbolic end and start!=0 gives a new symbolic dim."""
-        batch = ir.SymbolicDim("batch")
+    def test_symbolic_end_derives_extent(self):
+        """A symbolic end equal to the input dim preserves its arithmetic relation."""
+        c = ir.SymbolicDim("c")
         actual = self._run_with_symbolic_ends(
-            ts(FLOAT, ["batch", 100]),
+            ts(FLOAT, ["a", "b", "c"]),
             starts=[1, 0],
-            ends_sym=[batch, 100],
-            axes=[0, 1],
+            ends_sym=[c, 100],
+            axes=[2, 1],
             steps=[1, 1],
         )
-        self.assertIsNotNone(actual[0].shape)
-        # axis 0: start=1, so even though end=batch=input_dim, it's not identity
-        self.assertIsInstance(actual[0].shape[0], ir.SymbolicDim)
-        self.assertEqual(actual[0].shape[1], 100)
+        self.assertEqual(actual, [ts(FLOAT, ["a", 100, "c - 1"])])
 
-    def test_symbolic_ends_step_not_one_gives_new_dim(self):
-        """Slice with symbolic end and step!=1 gives a new symbolic dim."""
+    def test_symbolic_end_with_step_derives_extent(self):
         batch = ir.SymbolicDim("batch")
         actual = self._run_with_symbolic_ends(
             ts(FLOAT, ["batch", 100]),
@@ -250,10 +246,7 @@ class SliceTest(unittest.TestCase):
             axes=[0, 1],
             steps=[2, 1],
         )
-        self.assertIsNotNone(actual[0].shape)
-        # axis 0: step=2, so even though start=0 and end=batch, result is not batch
-        self.assertIsInstance(actual[0].shape[0], ir.SymbolicDim)
-        self.assertEqual(actual[0].shape[1], 100)
+        self.assertEqual(actual, [ts(FLOAT, ["-floor(-batch/2)", 100])])
 
     def test_symbolic_ends_partial_axes(self):
         """Slice with symbolic ends on a subset of axes preserves non-sliced dims."""

@@ -8,8 +8,9 @@ import unittest
 
 import onnx_ir as ir
 
-from onnx_shape_inference import OpUsageError
+from onnx_shape_inference import OpUsageError, infer_symbolic_shapes
 from onnx_shape_inference._ops._testing import (
+    const_value,
     run_shape_inference,
     run_shape_inference_with_values,
     ts,
@@ -31,6 +32,36 @@ class NonZeroTest(unittest.TestCase):
     def test_unknown_rank(self):
         actual = run_shape_inference("", "NonZero", [ts(FLOAT)], opset_version=17)
         self.assertEqual(actual, [ts(INT64, ["_d0", "_d1"])])
+
+    def test_num_nonzero_symbol_flows_through_reshape(self):
+        x = ir.Value(name="x", type=ir.TensorType(FLOAT), shape=ir.Shape(["batch", "seq"]))
+        nonzero = ir.Node("", "NonZero", [x], num_outputs=1)
+        flattened = ir.Node(
+            "",
+            "Reshape",
+            [nonzero.outputs[0], const_value([-1], "shape")],
+            num_outputs=1,
+        )
+        model = ir.Model(
+            ir.Graph(
+                [x],
+                list(flattened.outputs),
+                nodes=[nonzero, flattened],
+                opset_imports={"": 21},
+            ),
+            ir_version=10,
+        )
+
+        infer_symbolic_shapes(model)
+
+        self.assertEqual(
+            ir.TypeAndShape(nonzero.outputs[0].type, nonzero.outputs[0].shape),
+            ts(INT64, [2, "_d0"]),
+        )
+        self.assertEqual(
+            ir.TypeAndShape(flattened.outputs[0].type, flattened.outputs[0].shape),
+            ts(INT64, ["2*_d0"]),
+        )
 
 
 class CompressTest(unittest.TestCase):

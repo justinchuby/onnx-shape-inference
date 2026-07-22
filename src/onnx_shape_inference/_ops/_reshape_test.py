@@ -143,6 +143,37 @@ class ReshapeTest(unittest.TestCase):
         )
         self.assertEqual(actual, [ts(FLOAT, ["N", 12])])
 
+    def test_qwen_gqa_reshape_preserves_batch_and_sequence(self):
+        data = ir.Value(
+            name="data",
+            shape=ir.Shape(["batch_size", 8, 2, "total_sequence_length", 128]),
+            type=ir.TensorType(FLOAT),
+        )
+        actual = run_shape_inference_with_values(
+            "",
+            "Reshape",
+            [data, const_value([0, 16, -1, 128])],
+            opset_version=21,
+        )
+        self.assertEqual(
+            actual,
+            [ts(FLOAT, ["batch_size", 16, "total_sequence_length", 128])],
+        )
+
+    def test_qwen_attention_flatten_preserves_batch_and_sequence(self):
+        data = ir.Value(
+            name="data",
+            shape=ir.Shape(["batch_size", "sequence_length", 16, 128]),
+            type=ir.TensorType(FLOAT),
+        )
+        actual = run_shape_inference_with_values(
+            "",
+            "Reshape",
+            [data, const_value([0, 0, 2048])],
+            opset_version=21,
+        )
+        self.assertEqual(actual, [ts(FLOAT, ["batch_size", "sequence_length", 2048])])
+
     def test_zero_dim_no_input_shape(self):
         """0-dim in target with no input shape → symbolic dim."""
         data = ir.Value(name="data", type=ir.TensorType(FLOAT))

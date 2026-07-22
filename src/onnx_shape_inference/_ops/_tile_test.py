@@ -70,6 +70,21 @@ class TileTest(unittest.TestCase):
         )
         self.assertEqual(actual, [ts(FLOAT, ["2*N", "3*M"])])
 
+    def test_resize_tile_expression(self):
+        data = ir.Value(
+            name="data",
+            type=ir.TensorType(FLOAT),
+            shape=ir.Shape(["floor(H/2)", "h"]),
+        )
+        repeats = const_value([2, 2], name="repeats")
+        actual = run_shape_inference_with_values(
+            "",
+            "Tile",
+            [data, repeats],
+            opset_version=13,
+        )
+        self.assertEqual(actual, [ts(FLOAT, ["2*floor(H/2)", "2*h"])])
+
 
 if __name__ == "__main__":
     unittest.main()

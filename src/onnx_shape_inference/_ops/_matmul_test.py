@@ -50,6 +50,21 @@ class MatMulTest(unittest.TestCase):
         )
         self.assertIsNone(actual[0].shape)
 
+    def test_named_batch_dim_preferred_over_generated_dim(self):
+        actual = run_shape_inference(
+            "",
+            "MatMul",
+            [
+                ts(FLOAT, ["_d0", 16, "sequence_length", "total_sequence_length"]),
+                ts(FLOAT, ["batch_size", 16, "total_sequence_length", 128]),
+            ],
+            opset_version=17,
+        )
+        self.assertEqual(
+            actual,
+            [ts(FLOAT, ["batch_size", 16, "sequence_length", 128])],
+        )
+
     def test_matmul_no_inputs(self):
         with self.assertRaises(OpUsageError):
             run_shape_inference("", "MatMul", [], opset_version=17)
