@@ -343,15 +343,10 @@ class SoundnessOracle:
                 value.name: value for value in iter_values(concrete.graph) if value.name
             }
             existing_outputs = {output.name for output in proto.graph.output}
-            for name, value in concrete_values.items():
-                if name in existing_outputs or value.dtype is None or value.shape is None:
+            for name in concrete_values:
+                if name in existing_outputs:
                     continue
-                dims = [int(dim) for dim in value.shape if isinstance(dim, int)]
-                if len(dims) != value.shape.rank():
-                    continue
-                proto.graph.output.append(
-                    onnx.helper.make_tensor_value_info(name, int(value.dtype), dims)
-                )
+                proto.graph.output.append(onnx.helper.make_empty_tensor_value_info(name))
             rng = np.random.default_rng(case.seed)
             feeds: dict[str, np.ndarray] = {}
             input_names = {value.name for value in concrete.graph.inputs}
@@ -387,7 +382,8 @@ class SoundnessOracle:
             actual = runtime[value.name]
             actual_dtype = np.dtype(actual["dtype"])
             actual_shape = actual["shape"]
-            if value.dtype is not None and _np_dtype(value.dtype) != actual_dtype:
+            expected_dtype = _np_dtype(value.dtype) if value.dtype is not None else None
+            if expected_dtype is not None and expected_dtype != actual_dtype:
                 return OracleResult.failed(
                     self.name,
                     "runtime dtype contradiction",

@@ -25,6 +25,7 @@ DATA_DEPENDENT_OPS: frozenset[tuple[str, str]] = frozenset(
     {
         ("", "Compress"),
         ("", "NonZero"),
+        ("", "NonMaxSuppression"),
         ("", "Pad"),
         ("", "Range"),
         ("", "StringSplit"),

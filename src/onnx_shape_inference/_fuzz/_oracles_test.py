@@ -87,6 +87,23 @@ class SoundnessOracleTest(unittest.TestCase):
     def test_correct_inference_passes(self):
         self.assertEqual(SoundnessOracle().check(_case()).status, "PASS")
 
+    def test_unmapped_intermediate_dtype_does_not_false_fail(self):
+        x = ir.Value(name="X", type=ir.TensorType(ir.DataType.FLOAT), shape=ir.Shape([2]))
+        cast = ir.Node(
+            "",
+            "Cast",
+            [x],
+            num_outputs=1,
+            attributes={"to": ir.Attr("to", ir.AttributeType.INT, int(ir.DataType.FLOAT16))},
+        )
+        cast.outputs[0].name = "Y"
+        model = ir.Model(
+            ir.Graph([x], list(cast.outputs), nodes=[cast], opset_imports={"": 21}),
+            ir_version=10,
+        )
+        case = FuzzCase(model=model, seed=0, opset_imports={"": 21})
+        self.assertEqual(SoundnessOracle().check(case).status, "PASS")
+
     def test_wrong_inferred_shape_fails_against_runtime(self):
         case = _case()
         wrong = copy.deepcopy(case.model)
