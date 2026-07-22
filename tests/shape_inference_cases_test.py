@@ -547,10 +547,9 @@ class ShapeInferenceCasesTest(unittest.TestCase):
             model,
             {
                 "xr": (FLOAT, ["a", "b", 2, "c//2"]),
-                # The second reshape collapses [2, c//2] -> 2*(c//2); this equals
-                # c exactly when c is even (as in the executable reference data).
-                "xrr": (FLOAT, ["a", "b", "2*(c//2)"]),
-                "Y": (FLOAT, ["a", "b", "2*(c//2)"]),
+                # Exact symbolic simplification collapses 2*(c//2) to c.
+                "xrr": (FLOAT, ["a", "b", "c"]),
+                "Y": (FLOAT, ["a", "b", "c"]),
             },
         )
 
