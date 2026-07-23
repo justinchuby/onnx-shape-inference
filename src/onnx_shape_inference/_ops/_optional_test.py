@@ -20,6 +20,20 @@ class OptionalTest(unittest.TestCase):
         self.assertEqual(len(actual), 1)
         self.assertIsInstance(actual[0].type, ir.OptionalType)
 
+    def test_empty_optional_uses_type_attribute(self):
+        actual = run_shape_inference(
+            "",
+            "Optional",
+            [],
+            {
+                "type": ir.AttrTypeProto(
+                    "type", ir.TypeAndShape(ir.TensorType(FLOAT), ir.Shape([3, 4]))
+                )
+            },
+            opset_version=15,
+        )
+        self.assertEqual(actual[0].type, ir.OptionalType(ir.TensorType(FLOAT)))
+
     def test_optional_get_element_passthrough(self):
         actual = run_shape_inference(
             "", "OptionalGetElement", [ts(FLOAT, [3, 4])], opset_version=18
@@ -30,6 +44,16 @@ class OptionalTest(unittest.TestCase):
         actual = run_shape_inference(
             "", "OptionalHasElement", [ts(FLOAT, [3, 4])], opset_version=18
         )
+        self.assertEqual(actual, [ts(BOOL, [])])
+
+    def test_optional_get_element_opset_15(self):
+        optional = ir.TypeAndShape(ir.OptionalType(ir.TensorType(FLOAT)), None)
+        actual = run_shape_inference("", "OptionalGetElement", [optional], opset_version=15)
+        self.assertEqual(actual[0].type, ir.TensorType(FLOAT))
+
+    def test_optional_has_element_opset_15(self):
+        optional = ir.TypeAndShape(ir.OptionalType(ir.TensorType(FLOAT)), None)
+        actual = run_shape_inference("", "OptionalHasElement", [optional], opset_version=15)
         self.assertEqual(actual, [ts(BOOL, [])])
 
 

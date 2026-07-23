@@ -13,7 +13,7 @@ __all__: list[str] = []
 import onnx_ir as ir
 
 from onnx_shape_inference import _context, _registry
-from onnx_shape_inference._ops import _matmul
+from onnx_shape_inference._ops import _conv, _matmul
 
 _MSFT = "com.microsoft"
 _reg = _registry.registry.register
@@ -269,6 +269,12 @@ def infer_ms_attention(ctx: _context.ShapeInferenceContext, node: ir.Node) -> No
             )
             if past is not None and past.shape is not None and past.shape.rank() == 5:
                 present_dims: list[int | ir.SymbolicDim] = list(past.shape.dims)
+                share_buffer_attr = node.attributes.get("past_present_share_buffer")
+                share_buffer = (
+                    share_buffer_attr.as_int() if share_buffer_attr is not None else 0
+                )
+                if not share_buffer:
+                    present_dims[3] = present_dims[3] + x.shape[1]
                 ctx.set_shape_and_dtype(node.outputs[1], ir.Shape(present_dims), x.dtype)
             else:
                 head_size = (
@@ -1021,19 +1027,36 @@ def _infer_qlinear_binary(ctx: _context.ShapeInferenceContext, node: ir.Node) ->
 @_reg(_MSFT, "QLinearConv", since_version=1)
 def infer_qlinear_conv(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
     """Quantized Conv. x(0), x_scale(1), x_zp(2), w(3), w_scale(4), w_zp(5), ..."""
-    if len(node.inputs) < 4 or node.inputs[0] is None or node.inputs[3] is None:
-        raise _context.OpUsageError(node, "Expected inputs x and w")
+    if len(node.inputs) < 8:
+        raise _context.OpUsageError(
+            node, f"Expected at least 8 inputs, got {len(node.inputs)}"
+        )
+    if node.inputs[0] is None or node.inputs[3] is None or node.inputs[7] is None:
+        raise _context.OpUsageError(node, "Expected inputs x, w, and y_zero_point")
     x = node.inputs[0]
     w = node.inputs[3]
+    y_zero_point = node.inputs[7]
 
-    output_dtype = x.dtype
-    if output_dtype is None:
-        x_zp = node.inputs[2] if len(node.inputs) > 2 and node.inputs[2] is not None else None
-        output_dtype = x_zp.dtype if x_zp is not None else None
+    output_dtype = y_zero_point.dtype
 
-    from onnx_shape_inference._ops import _conv
-
-    output_shape = _conv._compute_conv_shape(ctx, node, x, w)
+    channels_last_attr = node.attributes.get("channels_last")
+    channels_last = channels_last_attr.as_int() if channels_last_attr is not None else 0
+    if channels_last and x.shape is not None and x.shape.rank() >= 3:
+        channels_first_shape = ir.Shape([x.shape[0], x.shape[-1], *x.shape.dims[1:-1]])
+        channels_first_x = ir.Value(name=x.name, shape=channels_first_shape, type=x.type)
+        channels_first_output = _conv._compute_conv_shape(ctx, node, channels_first_x, w)
+        if channels_first_output is None:
+            output_shape = None
+        else:
+            output_shape = ir.Shape(
+                [
+                    channels_first_output[0],
+                    *channels_first_output.dims[2:],
+                    channels_first_output[1],
+                ]
+            )
+    else:
+        output_shape = _conv._compute_conv_shape(ctx, node, x, w)
     if len(node.outputs) > 0:
         ctx.set_shape_and_dtype(node.outputs[0], output_shape, output_dtype)
 

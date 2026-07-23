@@ -29,9 +29,15 @@ def infer_optional_op(ctx: _context.ShapeInferenceContext, node: ir.Node) -> Non
                 ctx.set_type(node.outputs[0], ir.OptionalType(input_type))
             else:
                 ctx.set_shape_and_dtype(node.outputs[0], input_val.shape, input_val.dtype)
+    elif len(node.outputs) > 0:
+        type_attr = _context.require_attr(node, "type")
+        type_and_shape = type_attr.value
+        if not isinstance(type_and_shape, ir.TypeAndShape) or type_and_shape.type is None:
+            raise _context.OpUsageError(node, "Attribute 'type' must contain an ONNX type")
+        ctx.set_type(node.outputs[0], ir.OptionalType(type_and_shape.type))
 
 
-@_registry.registry.register("", "OptionalGetElement", since_version=18)
+@_registry.registry.register("", "OptionalGetElement", since_version=15)
 def infer_optional_get_element(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
     """Infer shape and dtype for OptionalGetElement operator.
 
@@ -53,7 +59,7 @@ def infer_optional_get_element(ctx: _context.ShapeInferenceContext, node: ir.Nod
                 ctx.set_shape_and_dtype(node.outputs[0], input_val.shape, input_val.dtype)
 
 
-@_registry.registry.register("", "OptionalHasElement", since_version=18)
+@_registry.registry.register("", "OptionalHasElement", since_version=15)
 def infer_optional_has_element(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
     """Infer shape and dtype for OptionalHasElement operator.
 
