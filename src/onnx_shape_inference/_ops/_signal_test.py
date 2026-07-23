@@ -100,6 +100,28 @@ class DFTTest(unittest.TestCase):
         )
         self.assertEqual(actual, [ts(FLOAT, [2, 8, 16, 2])])
 
+    def test_opset_20_dynamic_axis_makes_signal_dims_unknown(self):
+        actual = run_shape_inference_with_values(
+            "",
+            "DFT",
+            [
+                ir.Value(
+                    name="input",
+                    type=ir.TensorType(FLOAT),
+                    shape=ir.Shape([2, 3, 5, 1]),
+                ),
+                None,
+                ir.Value(
+                    name="axis",
+                    type=ir.TensorType(ir.DataType.INT64),
+                    shape=ir.Shape([]),
+                ),
+            ],
+            attributes={"onesided": ir.Attr("onesided", ir.AttributeType.INT, 1)},
+            opset_version=20,
+        )
+        self.assertEqual(actual, [ts(FLOAT, ["_d0", "_d1", "_d2", 2])])
+
     def test_inverse_onesided_dft_length_is_output_length(self):
         actual = run_shape_inference_with_values(
             "",

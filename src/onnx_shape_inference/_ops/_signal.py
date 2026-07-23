@@ -41,21 +41,25 @@ def infer_dft(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
 
     # Determine DFT axis: attribute in v17, input[2] in v20+
     if ctx.opset >= 20:
-        axis = -2
         if len(node.inputs) > 2 and node.inputs[2] is not None:
             axis_const = ir.convenience.get_const_tensor(node.inputs[2])
             if axis_const is not None:
                 axis = int(axis_const.numpy().item())
+            else:
+                axis = None
+        else:
+            axis = -2
     else:
         axis_attr = node.attributes.get("axis")
         axis = axis_attr.as_int() if axis_attr is not None else 1
 
     rank = input_val.shape.rank()
-    if axis < 0:
-        axis += rank
-    if axis < 0 or axis >= rank - 1:
-        ctx.record_error(node, f"DFT axis {axis} is out of range for input rank {rank}")
-        return
+    if axis is not None:
+        if axis < 0:
+            axis += rank
+        if axis < 0 or axis >= rank - 1:
+            ctx.record_error(node, f"DFT axis {axis} is out of range for input rank {rank}")
+            return
 
     # Read optional dft_length (input[1])
     dft_length: int | None = None
@@ -64,13 +68,16 @@ def infer_dft(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
         if length_const is not None:
             dft_length = int(length_const.numpy().item())
 
-    axis_dim = dft_length if dft_length is not None else output_dims[axis]
-    if onesided and not inverse:
-        output_dims[axis] = axis_dim // 2 + 1
-    elif onesided and inverse and dft_length is None:
-        output_dims[axis] = (axis_dim - 1) * 2
+    if axis is None:
+        output_dims[:-1] = [ctx.new_symbolic_dim() for _ in output_dims[:-1]]
     else:
-        output_dims[axis] = axis_dim
+        axis_dim = dft_length if dft_length is not None else output_dims[axis]
+        if onesided and not inverse:
+            output_dims[axis] = axis_dim // 2 + 1
+        elif onesided and inverse and dft_length is None:
+            output_dims[axis] = (axis_dim - 1) * 2
+        else:
+            output_dims[axis] = axis_dim
 
     # Last dim: real input (1) -> complex output (2), complex (2) stays 2
     # inverse + onesided: complex input -> real output (1)
