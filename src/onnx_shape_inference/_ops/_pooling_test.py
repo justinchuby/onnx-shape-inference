@@ -9,7 +9,7 @@ import unittest
 import onnx_ir as ir
 import parameterized
 
-from onnx_shape_inference import OpUsageError, ShapeInferenceError
+from onnx_shape_inference import OpUsageError, ShapeInferenceError, _context, _registry
 from onnx_shape_inference._ops._testing import (
     run_shape_inference,
     run_shape_inference_with_values,
@@ -118,6 +118,29 @@ class AveragePoolTest(unittest.TestCase):
             "", op_type, [ts(FLOAT, [1, 1])], attrs, opset_version=21, policy="skip"
         )
         self.assertIsNone(actual[0].shape)
+
+    @parameterized.parameterized.expand(
+        [
+            ("average_pool", "AveragePool", 1, [FLOAT]),
+            ("max_pool", "MaxPool", 2, [FLOAT, ir.DataType.INT64]),
+            ("lp_pool", "LpPool", 1, [FLOAT]),
+        ]
+    )
+    def test_rank_two_input_records_error_and_preserves_output_dtypes(
+        self, _name, op_type, num_outputs, expected_dtypes
+    ):
+        input_value = ir.Value(name="input", type=ir.TensorType(FLOAT), shape=ir.Shape([1, 1]))
+        outputs = [ir.Value(name=f"output_{index}") for index in range(num_outputs)]
+        node = ir.Node("", op_type, inputs=[input_value], outputs=outputs)
+        ctx = _context.ShapeInferenceContext({"": 21}, policy="skip")
+        func = _registry.registry.get("", op_type, version=21)
+        self.assertIsNotNone(func)
+        func(ctx, node)
+
+        self.assertEqual(len(ctx.errors), 1)
+        for output, expected_dtype in zip(outputs, expected_dtypes, strict=True):
+            self.assertEqual(output.type, ir.TensorType(expected_dtype))
+            self.assertIsNone(output.shape)
 
 
 class MaxPoolTest(unittest.TestCase):

@@ -129,6 +129,20 @@ def _validate_pool_attrs(
     return True
 
 
+def _set_unknown_pool_outputs(
+    ctx: _context.ShapeInferenceContext,
+    node: ir.Node,
+    output_dtype: ir.DataType | None,
+    *,
+    has_indices: bool = False,
+) -> None:
+    """Set known output dtypes when pooling output shapes cannot be inferred."""
+    if len(node.outputs) > 0:
+        ctx.set_shape_and_dtype(node.outputs[0], None, output_dtype)
+    if has_indices and len(node.outputs) > 1:
+        ctx.set_shape_and_dtype(node.outputs[1], None, ir.DataType.INT64)
+
+
 @_reg("", "AveragePool", since_version=1)
 def infer_average_pool(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
     """Infer shape and dtype for AveragePool operator."""
@@ -138,7 +152,7 @@ def infer_average_pool(ctx: _context.ShapeInferenceContext, node: ir.Node) -> No
     x_shape = x.shape
 
     if x_shape is None:
-        ctx.set_shape_and_dtype(node.outputs[0], None, output_dtype)
+        _set_unknown_pool_outputs(ctx, node, output_dtype)
         return
 
     n_spatial = x_shape.rank() - 2
@@ -146,11 +160,12 @@ def infer_average_pool(ctx: _context.ShapeInferenceContext, node: ir.Node) -> No
         ctx.record_error(
             node, f"AveragePool input must be at least rank 3, got {x_shape.rank()}"
         )
+        _set_unknown_pool_outputs(ctx, node, output_dtype)
         return
     kernel_shape = list(_context.require_attr(node, "kernel_shape").as_ints())
     auto_pad, strides, pads, ceil_mode, dilations = _read_pool_attrs(node, n_spatial)
     if not _validate_pool_attrs(ctx, node, n_spatial, kernel_shape, strides, pads, dilations):
-        ctx.set_shape_and_dtype(node.outputs[0], None, output_dtype)
+        _set_unknown_pool_outputs(ctx, node, output_dtype)
         return
 
     spatial_dims = _compute_pool_output_shape(
@@ -170,21 +185,18 @@ def infer_max_pool(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
     x_shape = x.shape
 
     if x_shape is None:
-        ctx.set_shape_and_dtype(node.outputs[0], None, output_dtype)
-        if len(node.outputs) > 1:
-            ctx.set_shape_and_dtype(node.outputs[1], None, ir.DataType.INT64)
+        _set_unknown_pool_outputs(ctx, node, output_dtype, has_indices=True)
         return
 
     n_spatial = x_shape.rank() - 2
     if n_spatial < 1:
         ctx.record_error(node, f"MaxPool input must be at least rank 3, got {x_shape.rank()}")
+        _set_unknown_pool_outputs(ctx, node, output_dtype, has_indices=True)
         return
     kernel_shape = list(_context.require_attr(node, "kernel_shape").as_ints())
     auto_pad, strides, pads, ceil_mode, dilations = _read_pool_attrs(node, n_spatial)
     if not _validate_pool_attrs(ctx, node, n_spatial, kernel_shape, strides, pads, dilations):
-        ctx.set_shape_and_dtype(node.outputs[0], None, output_dtype)
-        if len(node.outputs) > 1:
-            ctx.set_shape_and_dtype(node.outputs[1], None, ir.DataType.INT64)
+        _set_unknown_pool_outputs(ctx, node, output_dtype, has_indices=True)
         return
 
     spatial_dims = _compute_pool_output_shape(
@@ -207,17 +219,18 @@ def infer_lp_pool(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
     x_shape = x.shape
 
     if x_shape is None:
-        ctx.set_shape_and_dtype(node.outputs[0], None, output_dtype)
+        _set_unknown_pool_outputs(ctx, node, output_dtype)
         return
 
     n_spatial = x_shape.rank() - 2
     if n_spatial < 1:
         ctx.record_error(node, f"LpPool input must be at least rank 3, got {x_shape.rank()}")
+        _set_unknown_pool_outputs(ctx, node, output_dtype)
         return
     kernel_shape = list(_context.require_attr(node, "kernel_shape").as_ints())
     auto_pad, strides, pads, ceil_mode, dilations = _read_pool_attrs(node, n_spatial)
     if not _validate_pool_attrs(ctx, node, n_spatial, kernel_shape, strides, pads, dilations):
-        ctx.set_shape_and_dtype(node.outputs[0], None, output_dtype)
+        _set_unknown_pool_outputs(ctx, node, output_dtype)
         return
 
     spatial_dims = _compute_pool_output_shape(
