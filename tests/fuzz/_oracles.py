@@ -23,7 +23,6 @@ from onnx_shape_inference import OpUsageError, ShapeInferenceError, infer_symbol
 from onnx_shape_inference._symbolic_shapes import parse_symbolic_expression
 from tests.fuzz._binding import (
     bind_symbols,
-    evaluate_dim,
     iter_values,
     materialize_model,
 )
@@ -267,6 +266,67 @@ def _data_dependent(case: FuzzCase, value_name: str, index: int) -> bool:
     return value_name in case.data_dependent_values
 
 
+def _runtime_feed(value: ir.Value, rng: np.random.Generator) -> np.ndarray | None:
+    """Create a deterministic concrete feed for one materialized value."""
+    if value.shape is None or value.dtype is None:
+        return None
+    dtype = _np_dtype(value.dtype)
+    if dtype is None:
+        return None
+    shape = tuple(int(dim) for dim in value.shape)
+    if dtype == np.bool_:
+        return rng.integers(0, 2, shape, dtype=np.int8).astype(dtype)
+    if np.issubdtype(dtype, np.integer):
+        return rng.integers(1, 4, shape, dtype=dtype)
+    return rng.uniform(0.5, 1.5, shape).astype(dtype)
+
+
+def _single_node_model(
+    node: ir.Node, *, opset_imports: dict[str, int], name: str
+) -> tuple[ir.Model, list[ir.Value]]:
+    """Build a concrete single-node model, retaining constant node inputs."""
+    inputs: list[ir.Value] = []
+    initializers: list[ir.Value] = []
+    copied: dict[str, ir.Value] = {}
+    node_inputs: list[ir.Value] = []
+    for value in node.inputs:
+        if value is None or value.name in copied:
+            if value is None:
+                raise ValueError("optional inputs are not supported by the node isolator")
+            node_inputs.append(copied[value.name])
+            continue
+        clone = ir.Value(
+            name=value.name,
+            type=copy.deepcopy(value.type),
+            shape=copy.deepcopy(value.shape),
+            const_value=copy.deepcopy(value.const_value),
+        )
+        copied[value.name] = clone
+        node_inputs.append(clone)
+        if ir.convenience.get_const_tensor(clone) is None:
+            inputs.append(clone)
+        else:
+            initializers.append(clone)
+    isolated = ir.Node(
+        node.domain,
+        node.op_type,
+        node_inputs,
+        num_outputs=len(node.outputs),
+        attributes=copy.deepcopy(node.attributes),
+    )
+    for output, source in zip(isolated.outputs, node.outputs):
+        output.name = source.name
+    graph = ir.Graph(
+        inputs,
+        list(isolated.outputs),
+        nodes=[isolated],
+        initializers=initializers,
+        opset_imports=opset_imports,
+        name=name,
+    )
+    return ir.Model(graph, ir_version=10), inputs
+
+
 def _runtime_shapes(
     proto,
     feeds: dict[str, np.ndarray],
@@ -327,94 +387,104 @@ class SoundnessOracle:
 
     def check(self, case: FuzzCase) -> OracleResult:
         try:
-            import onnx
             import onnxruntime  # ruff:ignore[unused-import]
         except ImportError:
             return OracleResult.skipped(self.name, "onnxruntime is unavailable")
 
         bindings = bind_symbols(case)
         try:
-            symbolic = _infer_ours(case)
             concrete = materialize_model(case, bindings)
             infer_symbolic_shapes(concrete)
-            proto = ir.serde.serialize_model(concrete)
-            concrete_values = {
-                value.name: value for value in iter_values(concrete.graph) if value.name
-            }
-            existing_outputs = {output.name for output in proto.graph.output}
-            for name in concrete_values:
-                if name in existing_outputs:
-                    continue
-                proto.graph.output.append(onnx.helper.make_empty_tensor_value_info(name))
-            rng = np.random.default_rng(case.seed)
-            feeds: dict[str, np.ndarray] = {}
-            input_names = {value.name for value in concrete.graph.inputs}
-            for value in concrete.graph.inputs:
-                if value.name not in input_names:
-                    continue
-                if value.shape is None or value.dtype is None:
-                    return OracleResult.skipped(
-                        self.name, f"input {value.name} is not concrete"
-                    )
-                dtype = _np_dtype(value.dtype)
-                if dtype is None:
-                    return OracleResult.skipped(
-                        self.name, f"ORT dtype unavailable for {value.dtype}"
-                    )
-                shape = tuple(int(dim) for dim in value.shape)
-                if dtype == np.bool_:
-                    feeds[value.name] = rng.integers(0, 2, shape, dtype=np.int8).astype(dtype)
-                elif np.issubdtype(dtype, np.integer):
-                    feeds[value.name] = rng.integers(1, 4, shape, dtype=dtype)
-                else:
-                    feeds[value.name] = rng.uniform(0.5, 1.5, shape).astype(dtype)
-            runtime = _runtime_shapes(proto, feeds, seed=case.seed)
-            case.onnxruntime_result = runtime
         except Exception as error:
             return OracleResult.skipped(
-                self.name, f"onnxruntime cannot run graph: {type(error).__name__}: {error}"
+                self.name, f"cannot materialize graph: {type(error).__name__}: {error}"
             )
-
-        for value in iter_values(symbolic.graph):
-            if not value.name or value.name not in runtime or value.shape is None:
-                continue
-            actual = runtime[value.name]
-            actual_dtype = np.dtype(actual["dtype"])
-            actual_shape = actual["shape"]
-            expected_dtype = _np_dtype(value.dtype) if value.dtype is not None else None
-            if expected_dtype is not None and expected_dtype != actual_dtype:
-                return OracleResult.failed(
-                    self.name,
-                    "runtime dtype contradiction",
-                    value_name=value.name,
-                    kind="dtype",
-                    expected=actual_dtype,
-                    actual=value.dtype,
+        node_counts = {"pass": 0, "skip": 0}
+        node_results: dict[str, dict[str, object]] = {}
+        rng = np.random.default_rng(case.seed)
+        for index, node in enumerate(concrete.graph):
+            name = node.name or f"{node.op_type}_{index}"
+            try:
+                model, inputs = _single_node_model(
+                    node,
+                    opset_imports=case.opset_imports,
+                    name=f"soundness_{case.seed}_{index}",
                 )
-            if value.shape.rank() != len(actual_shape):
-                return OracleResult.failed(
-                    self.name,
-                    "runtime rank contradiction",
-                    value_name=value.name,
-                    kind="rank",
-                    expected=len(actual_shape),
-                    actual=value.shape.rank(),
-                )
-            for index, dim in enumerate(value.shape):
-                if _data_dependent(case, value.name, index):
+                ours = copy.deepcopy(model)
+                infer_symbolic_shapes(ours)
+                expected_values = {
+                    output.name: output for output in ours.graph.outputs if output.name
+                }
+                feeds = {value.name: _runtime_feed(value, rng) for value in inputs}
+                if any(value is None for value in feeds.values()):
+                    node_counts["skip"] += 1
+                    node_results[name] = {"status": "SKIP", "reason": "input is not concrete"}
                     continue
-                predicted = evaluate_dim(dim, bindings)
-                if predicted is not None and predicted != actual_shape[index]:
+                runtime = _runtime_shapes(
+                    ir.serde.serialize_model(model), feeds, seed=case.seed * 100 + index
+                )
+            except Exception as error:
+                node_counts["skip"] += 1
+                node_results[name] = {"status": "SKIP", "reason": type(error).__name__}
+                continue
+            for output in node.outputs:
+                expected = expected_values.get(output.name)
+                actual = runtime.get(output.name)
+                if expected is None or expected.shape is None or actual is None:
+                    continue
+                expected_dtype = (
+                    _np_dtype(expected.dtype) if expected.dtype is not None else None
+                )
+                actual_dtype = np.dtype(actual["dtype"])
+                if expected_dtype is not None and expected_dtype != actual_dtype:
                     return OracleResult.failed(
                         self.name,
-                        "runtime dimension contradiction",
-                        value_name=value.name,
-                        kind="concrete_dim",
-                        details={"index": index, "binding": bindings},
-                        expected=actual_shape[index],
-                        actual=predicted,
+                        "runtime dtype contradiction",
+                        value_name=output.name,
+                        kind="dtype",
+                        expected=actual_dtype,
+                        actual=expected.dtype,
+                        details={"nodes": node_counts, "node": name},
                     )
-        return OracleResult.passed(self.name)
+                actual_shape = actual["shape"]
+                if expected.shape.rank() != len(actual_shape):
+                    return OracleResult.failed(
+                        self.name,
+                        "runtime rank contradiction",
+                        value_name=output.name,
+                        kind="rank",
+                        expected=len(actual_shape),
+                        actual=expected.shape.rank(),
+                        details={"nodes": node_counts, "node": name},
+                    )
+                for dim_index, dim in enumerate(expected.shape):
+                    if _data_dependent(case, output.name, dim_index):
+                        continue
+                    if not isinstance(dim, int):
+                        continue
+                    if dim != actual_shape[dim_index]:
+                        return OracleResult.failed(
+                            self.name,
+                            "runtime dimension contradiction",
+                            value_name=output.name,
+                            kind="concrete_dim",
+                            expected=actual_shape[dim_index],
+                            actual=dim,
+                            details={
+                                "index": dim_index,
+                                "binding": bindings,
+                                "nodes": node_counts,
+                                "node": name,
+                            },
+                        )
+            node_counts["pass"] += 1
+            node_results[name] = {"status": "PASS"}
+        case.onnxruntime_result = node_results
+        if node_counts["pass"] == 0:
+            return OracleResult.skipped(
+                self.name, "onnxruntime could not run any isolated node"
+            )
+        return OracleResult(self.name, "PASS", details={"nodes": node_counts})
 
 
 class SimplificationOracle:

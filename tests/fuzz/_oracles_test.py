@@ -4,13 +4,13 @@
 
 from __future__ import annotations
 
-import copy
 import importlib.util
 import unittest
 from unittest import mock
 
 import onnx_ir as ir
 
+from onnx_shape_inference import infer_symbolic_shapes
 from tests.fuzz._binding import bind_symbols, materialize_model
 from tests.fuzz._harness import FuzzHarness
 from tests.fuzz._oracles import (
@@ -114,18 +114,79 @@ class SoundnessOracleTest(unittest.TestCase):
         case = FuzzCase(model=model, seed=0, opset_imports={"": 21})
         self.assertEqual(SoundnessOracle().check(case).status, "PASS")
 
+    def test_declared_output_dtype_does_not_override_isolated_inference(self):
+        x = ir.Value(name="X", type=ir.TensorType(ir.DataType.FLOAT), shape=ir.Shape([2]))
+        cast = ir.Node(
+            "",
+            "Cast",
+            [x],
+            num_outputs=1,
+            attributes={"to": ir.Attr("to", ir.AttributeType.INT, int(ir.DataType.FLOAT))},
+        )
+        cast.outputs[0].name = "Y"
+        cast.outputs[0].type = ir.TensorType(ir.DataType.INT64)
+        cast.outputs[0].shape = ir.Shape([2])
+        model = ir.Model(
+            ir.Graph([x], list(cast.outputs), nodes=[cast], opset_imports={"": 21}),
+            ir_version=10,
+        )
+        case = FuzzCase(model=model, seed=0, opset_imports={"": 21})
+        self.assertEqual(SoundnessOracle().check(case).status, "PASS")
+
     def test_wrong_inferred_shape_fails_against_runtime(self):
         case = _case()
-        wrong = copy.deepcopy(case.model)
-        wrong_output = next(iter(wrong.graph.outputs))
-        wrong_output.shape = ir.Shape([99, 3])
+
+        def infer_wrong_shape(model):
+            infer_symbolic_shapes(model)
+            if (model.graph.name or "").startswith("soundness_"):
+                next(iter(model.graph.outputs)).shape = ir.Shape([99, 3])
+
         with mock.patch(
-            "tests.fuzz._oracles._infer_ours",
-            return_value=wrong,
+            "tests.fuzz._oracles.infer_symbolic_shapes",
+            side_effect=infer_wrong_shape,
         ):
             result = SoundnessOracle().check(case)
         self.assertEqual(result.status, "FAIL")
         self.assertEqual(result.value_name, "Y")
+
+    def test_wrong_inferred_dtype_fails_against_runtime(self):
+        case = _case()
+        with mock.patch(
+            "tests.fuzz._oracles._runtime_shapes",
+            return_value={"Y": {"dtype": "int64", "shape": [2, 3]}},
+        ):
+            result = SoundnessOracle().check(case)
+        self.assertEqual(result.status, "FAIL")
+        self.assertEqual(result.kind, "dtype")
+
+    def test_isolates_unsupported_node_failures(self):
+        x = ir.Value(name="X", type=ir.TensorType(ir.DataType.FLOAT), shape=ir.Shape([2]))
+        relu = ir.Node("", "Relu", [x], num_outputs=1)
+        relu.outputs[0].name = "relu"
+        add = ir.Node("", "Add", [relu.outputs[0], x], num_outputs=1)
+        add.outputs[0].name = "add"
+        empty_shape = ir.Value(
+            name="empty_shape",
+            type=ir.TensorType(ir.DataType.INT64),
+            shape=ir.Shape([0]),
+            const_value=ir.tensor([], dtype=ir.DataType.INT64),
+        )
+        invalid = ir.Node("", "CenterCropPad", [x, empty_shape], num_outputs=1)
+        invalid.outputs[0].name = "invalid"
+        model = ir.Model(
+            ir.Graph(
+                [x],
+                [add.outputs[0], invalid.outputs[0]],
+                nodes=[relu, add, invalid],
+                initializers=[empty_shape],
+                opset_imports={"": 18},
+                name="mixed_node_soundness",
+            ),
+            ir_version=10,
+        )
+        result = SoundnessOracle().check(FuzzCase(model=model, seed=0, opset_imports={"": 18}))
+        self.assertEqual(result.status, "PASS")
+        self.assertEqual(result.details["nodes"], {"pass": 2, "skip": 1})
 
 
 class HarnessTest(unittest.TestCase):
