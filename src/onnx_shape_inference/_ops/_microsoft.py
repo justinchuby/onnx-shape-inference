@@ -247,11 +247,13 @@ def infer_ms_attention(ctx: _context.ShapeInferenceContext, node: ir.Node) -> No
         tripled_hidden = weights.shape[1]
 
     qkv_attr = node.attributes.get("qkv_hidden_sizes")
+    value_hidden_size: int | None = None
     out_dims: list[int | ir.SymbolicDim] = list(x.shape.dims)
     if qkv_attr is not None:
         sizes = qkv_attr.as_ints()
         if sizes is not None and len(sizes) == 3:
-            out_dims[2] = int(sizes[2])
+            value_hidden_size = int(sizes[2])
+            out_dims[2] = value_hidden_size
     elif isinstance(tripled_hidden, int):
         out_dims[2] = tripled_hidden // 3
 
@@ -277,9 +279,12 @@ def infer_ms_attention(ctx: _context.ShapeInferenceContext, node: ir.Node) -> No
                     present_dims[3] = present_dims[3] + x.shape[1]
                 ctx.set_shape_and_dtype(node.outputs[1], ir.Shape(present_dims), x.dtype)
             else:
+                present_hidden_size = (
+                    value_hidden_size if value_hidden_size is not None else x.shape[2]
+                )
                 head_size = (
-                    x.shape[2] // num_heads
-                    if isinstance(x.shape[2], int)
+                    present_hidden_size // num_heads
+                    if isinstance(present_hidden_size, int)
                     else ctx.new_symbolic_dim()
                 )
                 present_shape = ir.Shape([2, x.shape[0], num_heads, x.shape[1], head_size])

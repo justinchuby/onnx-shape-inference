@@ -63,13 +63,18 @@ def infer_dft(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
 
     # Read optional dft_length (input[1])
     dft_length: int | None = None
+    dynamic_dft_length = False
     if len(node.inputs) > 1 and node.inputs[1] is not None:
         length_const = ir.convenience.get_const_tensor(node.inputs[1])
         if length_const is not None:
             dft_length = int(length_const.numpy().item())
+        else:
+            dynamic_dft_length = True
 
     if axis is None:
         output_dims[:-1] = [ctx.new_symbolic_dim() for _ in output_dims[:-1]]
+    elif dynamic_dft_length:
+        output_dims[axis] = ctx.new_symbolic_dim()
     else:
         axis_dim = dft_length if dft_length is not None else output_dims[axis]
         if onesided and not inverse:

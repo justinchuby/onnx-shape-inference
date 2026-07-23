@@ -361,6 +361,26 @@ class MsAttentionTest(unittest.TestCase):
         )
         self.assertEqual(actual[1], ts(FLOAT, [2, 2, 4, 128, 48]))
 
+    def test_present_head_size_uses_projected_value_hidden_size(self):
+        actual = run_shape_inference(
+            MSFT,
+            "Attention",
+            [
+                ts(FLOAT, [2, 8, 512]),
+                ts(FLOAT, [512, 2304]),
+                ts(FLOAT, [2304]),
+            ],
+            attributes={
+                "num_heads": ir.Attr("num_heads", ir.AttributeType.INT, 12),
+                "qkv_hidden_sizes": ir.Attr(
+                    "qkv_hidden_sizes", ir.AttributeType.INTS, [768, 768, 768]
+                ),
+            },
+            opset_version=1,
+            num_outputs=2,
+        )
+        self.assertEqual(actual[1], ts(FLOAT, [2, 2, 12, 8, 64]))
+
 
 class MsMultiHeadAttentionTest(unittest.TestCase):
     def test_3d_query(self):
