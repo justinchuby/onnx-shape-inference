@@ -78,7 +78,7 @@ class PadTest(unittest.TestCase):
             )
 
     def test_legacy_pads_attribute(self):
-        """Opset < 11: pads from attribute works."""
+        """Opset 2-10: pads comes from the pads attribute."""
         actual = run_shape_inference(
             "",
             "Pad",
@@ -87,6 +87,37 @@ class PadTest(unittest.TestCase):
             opset_version=2,
         )
         self.assertEqual(actual, [ts(FLOAT, [5, 4])])
+
+    def test_version_1_paddings_attribute(self):
+        actual = run_shape_inference(
+            "",
+            "Pad",
+            [ts(FLOAT, [3, 4])],
+            attributes={"paddings": ir.AttrInt64s("paddings", [1, 0, 1, 0])},
+            opset_version=1,
+        )
+
+        self.assertEqual(actual, [ts(FLOAT, [5, 4])])
+
+    def test_version_1_rejects_version_2_attribute_name(self):
+        with self.assertRaisesRegex(OpUsageError, "paddings"):
+            run_shape_inference(
+                "",
+                "Pad",
+                [ts(FLOAT, [3, 4])],
+                attributes={"pads": ir.AttrInt64s("pads", [1, 0, 1, 0])},
+                opset_version=1,
+            )
+
+    def test_version_2_rejects_version_1_attribute_name(self):
+        with self.assertRaisesRegex(OpUsageError, "pads"):
+            run_shape_inference(
+                "",
+                "Pad",
+                [ts(FLOAT, [3, 4])],
+                attributes={"paddings": ir.AttrInt64s("paddings", [1, 0, 1, 0])},
+                opset_version=2,
+            )
 
 
 if __name__ == "__main__":

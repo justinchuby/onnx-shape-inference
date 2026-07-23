@@ -24,6 +24,14 @@ def _is_generated_dim(ctx: _context.ShapeInferenceContext, dim: int | ir.Symboli
     )
 
 
+def _shape_may_be_incomplete(value: ir.Value | None) -> bool:
+    """Return whether control-flow merging may have supplied only a branch shape."""
+    if value is None:
+        return False
+    producer = value.producer()
+    return producer is not None and producer.op_type in {"If", "Loop", "Scan"}
+
+
 def _resolve_symbolic_batch_dims(
     ctx: _context.ShapeInferenceContext,
     batch_shape: ir.Shape,
@@ -57,6 +65,8 @@ def _matmul_shape(
     shape_a: ir.Shape | None,
     shape_b: ir.Shape | None,
     output_dtype: ir.DataType | None,
+    *,
+    validate_contraction_dims: bool = True,
 ) -> None:
     """Compute matmul output shape and set on the first output."""
     if shape_a is None or shape_b is None:
@@ -66,6 +76,14 @@ def _matmul_shape(
 
     rank_a = shape_a.rank()
     rank_b = shape_b.rank()
+    k_dim_a = shape_a.dims[-1]
+    k_dim_b = shape_b.dims[0] if rank_b == 1 else shape_b.dims[-2]
+    contraction_mismatch = (
+        validate_contraction_dims
+        and isinstance(k_dim_a, int)
+        and isinstance(k_dim_b, int)
+        and k_dim_a != k_dim_b
+    )
 
     # Handle 1-D cases
     if rank_a == 1 and rank_b == 1:
@@ -107,6 +125,11 @@ def _matmul_shape(
 
     if len(node.outputs) > 0:
         ctx.set_shape_and_dtype(node.outputs[0], output_shape, output_dtype)
+    if contraction_mismatch:
+        ctx.record_error(
+            node,
+            f"Incompatible MatMul contraction dimensions: {k_dim_a} vs {k_dim_b}",
+        )
 
 
 @_registry.registry.register("", "MatMul", since_version=1)
@@ -122,7 +145,16 @@ def infer_matmul(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
     """
     (input_a, input_b) = _context.check_inputs(node, "A", "B")
     output_dtype = input_a.dtype or input_b.dtype
-    _matmul_shape(ctx, node, input_a.shape, input_b.shape, output_dtype)
+    _matmul_shape(
+        ctx,
+        node,
+        input_a.shape,
+        input_b.shape,
+        output_dtype,
+        validate_contraction_dims=not (
+            _shape_may_be_incomplete(input_a) or _shape_may_be_incomplete(input_b)
+        ),
+    )
 
 
 @_registry.registry.register("", "MatMulInteger", since_version=10)
@@ -132,7 +164,16 @@ def infer_matmul_integer(ctx: _context.ShapeInferenceContext, node: ir.Node) -> 
     Same shape logic as MatMul but output dtype is INT32.
     """
     (input_a, input_b) = _context.check_inputs(node, "A", "B")
-    _matmul_shape(ctx, node, input_a.shape, input_b.shape, ir.DataType.INT32)
+    _matmul_shape(
+        ctx,
+        node,
+        input_a.shape,
+        input_b.shape,
+        ir.DataType.INT32,
+        validate_contraction_dims=not (
+            _shape_may_be_incomplete(input_a) or _shape_may_be_incomplete(input_b)
+        ),
+    )
 
 
 @_registry.registry.register("", "QLinearMatMul", since_version=10)
@@ -152,4 +193,14 @@ def infer_qlinear_matmul(ctx: _context.ShapeInferenceContext, node: ir.Node) -> 
     shape_b = (
         node.inputs[3].shape if len(node.inputs) > 3 and node.inputs[3] is not None else None
     )
-    _matmul_shape(ctx, node, a.shape, shape_b, output_dtype)
+    b = node.inputs[3] if len(node.inputs) > 3 else None
+    _matmul_shape(
+        ctx,
+        node,
+        a.shape,
+        shape_b,
+        output_dtype,
+        validate_contraction_dims=not (
+            _shape_may_be_incomplete(a) or _shape_may_be_incomplete(b)
+        ),
+    )

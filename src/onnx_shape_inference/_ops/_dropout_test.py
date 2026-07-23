@@ -7,6 +7,7 @@ from __future__ import annotations
 import unittest
 
 import onnx_ir as ir
+import parameterized
 
 from onnx_shape_inference import OpUsageError
 from onnx_shape_inference._ops._testing import (
@@ -30,16 +31,24 @@ class DropoutTest(unittest.TestCase):
         )
         self.assertEqual(actual, [ts(FLOAT, [3, 4])])
 
-    def test_mask_output(self):
+    @parameterized.parameterized.expand(
+        [
+            ("version_7", 7, FLOAT),
+            ("version_9", 9, FLOAT),
+            ("version_10", 10, BOOL),
+            ("version_13", 13, BOOL),
+        ]
+    )
+    def test_mask_output_dtype_version_boundary(self, _name, opset_version, expected_dtype):
         actual = run_shape_inference(
             "",
             "Dropout",
             [ts(FLOAT, ["batch", 128])],
-            opset_version=13,
+            opset_version=opset_version,
             num_outputs=2,
         )
         self.assertEqual(actual[0], ts(FLOAT, ["batch", 128]))
-        self.assertEqual(actual[1], ts(BOOL, ["batch", 128]))
+        self.assertEqual(actual[1], ts(expected_dtype, ["batch", 128]))
 
     def test_symbolic_dims(self):
         """Dropout on ["N", "C"] → same shape ["N", "C"]."""
