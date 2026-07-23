@@ -8,7 +8,7 @@ import unittest
 
 import onnx_ir as ir
 
-from onnx_shape_inference import OpUsageError
+from onnx_shape_inference import OpUsageError, ShapeInferenceError
 from onnx_shape_inference._ops._testing import (
     run_shape_inference,
     run_shape_inference_with_values,
@@ -38,6 +38,26 @@ class OneHotTest(unittest.TestCase):
             opset_version=21,
         )
         self.assertEqual(actual, [ts(FLOAT, ["N", 4, "_d0"])])
+
+    def test_axis_out_of_range_records_error(self):
+        for axis in (5, -5):
+            with self.subTest(axis=axis), self.assertRaises(ShapeInferenceError):
+                run_shape_inference(
+                    "",
+                    "OneHot",
+                    [ts(INT64, [3, 4]), ts(INT64, []), ts(FLOAT, [2])],
+                    {"axis": ir.Attr("axis", ir.AttributeType.INT, axis)},
+                    opset_version=21,
+                )
+
+    def test_opset_9(self):
+        actual = run_shape_inference(
+            "",
+            "OneHot",
+            [ts(INT64, [3, 4]), ts(INT64, []), ts(FLOAT, [2])],
+            opset_version=9,
+        )
+        self.assertEqual(actual, [ts(FLOAT, [3, 4, "_d0"])])
 
     def test_none_input_raises(self):
         v_depth = ir.Value(name="depth", type=ir.TensorType(INT64), shape=ir.Shape([]))

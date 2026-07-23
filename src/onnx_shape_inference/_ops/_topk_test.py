@@ -84,13 +84,26 @@ class TopKTest(unittest.TestCase):
                 "", "TopK", [None, v], opset_version=21, num_outputs=2
             )
 
-    def test_opset_before_input_k_is_not_registered(self):
+    def test_opset_10_input_k(self):
+        x = ir.Value(name="x", type=ir.TensorType(FLOAT), shape=ir.Shape([3, 4]))
+        k = const_value([2])
+        actual = run_shape_inference_with_values(
+            "",
+            "TopK",
+            [x, k],
+            opset_version=10,
+            num_outputs=2,
+        )
+        self.assertEqual(actual, [ts(FLOAT, [3, 2]), ts(INT64, [3, 2])])
+
+    def test_attribute_k_schema_is_not_registered(self):
         with self.assertRaises(ValueError):
             run_shape_inference(
                 "",
                 "TopK",
-                [ts(FLOAT, [3, 4]), ts(INT64, [1])],
-                opset_version=10,
+                [ts(FLOAT, [3, 4])],
+                {"k": ir.Attr("k", ir.AttributeType.INT, 2)},
+                opset_version=9,
                 num_outputs=2,
             )
 

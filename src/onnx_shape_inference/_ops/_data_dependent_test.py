@@ -8,7 +8,7 @@ import unittest
 
 import onnx_ir as ir
 
-from onnx_shape_inference import OpUsageError, infer_symbolic_shapes
+from onnx_shape_inference import OpUsageError, ShapeInferenceError, infer_symbolic_shapes
 from onnx_shape_inference._ops._testing import (
     const_value,
     run_shape_inference,
@@ -21,6 +21,10 @@ INT64 = ir.DataType.INT64
 
 
 class NonZeroTest(unittest.TestCase):
+    def test_opset_9(self):
+        actual = run_shape_inference("", "NonZero", [ts(FLOAT, [3, 4])], opset_version=9)
+        self.assertEqual(actual, [ts(INT64, [2, "_d0"])])
+
     def test_known_rank(self):
         actual = run_shape_inference("", "NonZero", [ts(FLOAT, [3, 4])], opset_version=17)
         self.assertEqual(actual, [ts(INT64, [2, "_d0"])])
@@ -67,6 +71,20 @@ class NonZeroTest(unittest.TestCase):
 class CompressTest(unittest.TestCase):
     def test_basic(self):
         actual = run_shape_inference("", "Compress", [ts(FLOAT, ["N", 3])], opset_version=17)
+        self.assertEqual(actual, [ts(FLOAT, ["_d0"])])
+
+    def test_axis_out_of_range_records_error(self):
+        with self.assertRaises(ShapeInferenceError):
+            run_shape_inference(
+                "",
+                "Compress",
+                [ts(FLOAT, ["N", 3])],
+                {"axis": ir.Attr("axis", ir.AttributeType.INT, 5)},
+                opset_version=17,
+            )
+
+    def test_opset_9(self):
+        actual = run_shape_inference("", "Compress", [ts(FLOAT, ["N", 3])], opset_version=9)
         self.assertEqual(actual, [ts(FLOAT, ["_d0"])])
 
 

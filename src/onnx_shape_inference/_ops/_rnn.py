@@ -28,8 +28,11 @@ def _infer_rnn(
     direction = direction_attr.as_string() if direction_attr is not None else "forward"
     num_directions = 2 if direction == "bidirectional" else 1
 
-    layout_attr = node.attributes.get("layout")
-    layout = layout_attr.as_int() if layout_attr is not None else 0
+    if ctx.opset < 14:
+        layout = 0
+    else:
+        layout_attr = node.attributes.get("layout")
+        layout = layout_attr.as_int() if layout_attr is not None else 0
 
     # hidden_size is required per the ONNX spec
     hidden_size = _context.require_attr(node, "hidden_size").as_int()
@@ -75,15 +78,15 @@ def _infer_rnn(
         ctx.set_shape_and_dtype(node.outputs[2], y_c_shape, output_dtype)
 
 
-@_reg("", "GRU", since_version=7)
-@_reg("", "RNN", since_version=7)
+@_reg("", "GRU", since_version=1)
+@_reg("", "RNN", since_version=1)
 def infer_rnn_gru(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
     """Infer shape and dtype for RNN/GRU operators."""
     num_gates = 3 if node.op_type == "GRU" else 1
     _infer_rnn(ctx, node, num_gates)
 
 
-@_reg("", "LSTM", since_version=7)
+@_reg("", "LSTM", since_version=1)
 def infer_lstm(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
     """Infer shape and dtype for LSTM operator."""
     _infer_rnn(ctx, node, num_gates=4)

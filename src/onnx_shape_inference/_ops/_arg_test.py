@@ -65,6 +65,16 @@ class ArgMaxTest(unittest.TestCase):
                 opset_version=13,
             )
 
+    def test_opset_11(self):
+        actual = run_shape_inference(
+            "",
+            "ArgMax",
+            [ts(FLOAT, [3, 4, 5])],
+            {"axis": ir.Attr("axis", ir.AttributeType.INT, 1)},
+            opset_version=11,
+        )
+        self.assertEqual(actual, [ts(INT64, [3, 1, 5])])
+
 
 class ArgMinTest(unittest.TestCase):
     def test_basic(self):

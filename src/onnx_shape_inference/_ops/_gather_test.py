@@ -144,6 +144,15 @@ class GatherElementsTest(unittest.TestCase):
         )
         self.assertEqual(actual, [ts(FLOAT, expected_shape)])
 
+    def test_opset_11(self):
+        actual = run_shape_inference(
+            "",
+            "GatherElements",
+            [ts(FLOAT, [3, 4]), ts(INT64, [3, 2])],
+            opset_version=11,
+        )
+        self.assertEqual(actual, [ts(FLOAT, [3, 2])])
+
 
 class GatherNDTest(unittest.TestCase):
     def test_basic(self):
@@ -163,6 +172,26 @@ class GatherNDTest(unittest.TestCase):
             opset_version=17,
         )
         self.assertEqual(actual, [ts(FLOAT, ["K", "M", 3])])
+
+    def test_scalar_indices_records_error(self):
+        from onnx_shape_inference import ShapeInferenceError
+
+        with self.assertRaises(ShapeInferenceError):
+            run_shape_inference(
+                "",
+                "GatherND",
+                [ts(FLOAT, [5, 4, 3]), ts(INT64, [])],
+                opset_version=17,
+            )
+
+    def test_opset_11_uses_zero_batch_dims(self):
+        actual = run_shape_inference(
+            "",
+            "GatherND",
+            [ts(FLOAT, [5, 4, 3]), ts(INT64, [2, 2])],
+            opset_version=11,
+        )
+        self.assertEqual(actual, [ts(FLOAT, [2, 3])])
 
 
 if __name__ == "__main__":

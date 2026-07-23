@@ -11,9 +11,10 @@ __all__ = [
 import onnx_ir as ir
 
 from onnx_shape_inference import _context, _registry
+from onnx_shape_inference._ops import _shape_ops
 
 
-@_registry.registry.register("", "OneHot", since_version=11)
+@_registry.registry.register("", "OneHot", since_version=9)
 def infer_onehot(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
     """Infer shape and dtype for OneHot operator."""
     (indices, _depth, values) = _context.check_inputs(node, "indices", "depth", "values")
@@ -26,8 +27,11 @@ def infer_onehot(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
         indices_rank = indices.shape.rank()
         output_rank = indices_rank + 1
 
-        if axis < 0:
-            axis += output_rank
+        axis = _shape_ops.normalize_axis(ctx, node, axis, output_rank)
+        if axis is None:
+            if len(node.outputs) > 0:
+                ctx.set_shape_and_dtype(node.outputs[0], None, values.dtype)
+            return
 
         new_dims: list[int | ir.SymbolicDim] = []
         depth_val: int | ir.SymbolicDim = ctx.new_symbolic_dim()

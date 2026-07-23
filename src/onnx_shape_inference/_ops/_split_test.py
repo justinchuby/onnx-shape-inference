@@ -9,7 +9,7 @@ import unittest
 import onnx_ir as ir
 import parameterized
 
-from onnx_shape_inference import OpUsageError
+from onnx_shape_inference import OpUsageError, ShapeInferenceError
 from onnx_shape_inference._ops._testing import (
     const_value,
     run_shape_inference,
@@ -86,6 +86,17 @@ class SplitTest(unittest.TestCase):
             num_outputs=2,
         )
         self.assertEqual(actual, [ts(FLOAT, [2, 2])] * 2)
+
+    def test_axis_out_of_range_records_error(self):
+        with self.assertRaises(ShapeInferenceError):
+            run_shape_inference(
+                "",
+                "Split",
+                [ts(FLOAT, [2, 4, 6])],
+                {"axis": ir.Attr("axis", ir.AttributeType.INT, 5)},
+                opset_version=17,
+                num_outputs=2,
+            )
 
     def test_uneven_split(self):
         """From ONNX test_split_uneven_split_2d: 8 / 3 → [3, 3, 2]."""
