@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import unittest
+from types import SimpleNamespace
 
 import numpy as np
 import onnx_ir as ir
@@ -28,6 +29,21 @@ class ConstantTest(unittest.TestCase):
             opset_version=17,
         )
         self.assertEqual(actual, [ts(FLOAT, [2, 2])])
+
+    def test_sparse_tensor_value(self):
+        sparse_tensor = SimpleNamespace(
+            values=ir.Tensor(np.array([1.0, 2.0], dtype=np.float32)),
+            indices=ir.Tensor(np.array([[0, 1], [2, 3]], dtype=np.int64)),
+            dims=[3, 4],
+        )
+        actual = run_shape_inference(
+            "",
+            "Constant",
+            [],
+            {"sparse_value": ir.AttrSparseTensor("sparse_value", sparse_tensor)},
+            opset_version=17,
+        )
+        self.assertEqual(actual, [ts(FLOAT, [3, 4])])
 
     @parameterized.parameterized.expand(
         [

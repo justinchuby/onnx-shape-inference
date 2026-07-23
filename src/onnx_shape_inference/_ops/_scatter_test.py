@@ -83,6 +83,15 @@ class TensorScatterTest(unittest.TestCase):
         )
         self.assertEqual(actual, [ts(FLOAT, [5, 3])])
 
+    def test_optional_write_indices_omitted(self):
+        actual = run_shape_inference(
+            "",
+            "TensorScatter",
+            [ts(FLOAT, ["batch", 5, 3]), ts(FLOAT, [2, 3])],
+            opset_version=24,
+        )
+        self.assertEqual(actual, [ts(FLOAT, ["batch", 5, 3])])
+
 
 if __name__ == "__main__":
     unittest.main()
