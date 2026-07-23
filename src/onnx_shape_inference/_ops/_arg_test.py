@@ -75,6 +75,18 @@ class ArgMaxTest(unittest.TestCase):
         )
         self.assertEqual(actual, [ts(INT64, [3, 1, 5])])
 
+    @parameterized.parameterized.expand([("argmax", "ArgMax"), ("argmin", "ArgMin")])
+    def test_axis_out_of_range_gracefully_degrades(self, _name, op_type):
+        actual = run_shape_inference(
+            "",
+            op_type,
+            [ts(FLOAT, [3, 4, 5])],
+            {"axis": ir.Attr("axis", ir.AttributeType.INT, 5)},
+            opset_version=13,
+            policy="skip",
+        )
+        self.assertEqual(actual, [ts(INT64)])
+
 
 class ArgMinTest(unittest.TestCase):
     def test_basic(self):

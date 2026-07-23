@@ -138,6 +138,18 @@ class LayerNormalizationTest(unittest.TestCase):
                 num_outputs=3,
             )
 
+    def test_layer_normalization_invalid_axis_gracefully_degrades(self):
+        actual = run_shape_inference(
+            "",
+            "LayerNormalization",
+            [ts(FLOAT, [2, 3, 4]), ts(FLOAT, [4])],
+            {"axis": ir.Attr("axis", ir.AttributeType.INT, 5)},
+            opset_version=17,
+            num_outputs=3,
+            policy="skip",
+        )
+        self.assertEqual(actual, [ts(FLOAT, [2, 3, 4]), ts(FLOAT), ts(FLOAT)])
+
 
 class GroupNormalizationTest(unittest.TestCase):
     def test_basic(self):

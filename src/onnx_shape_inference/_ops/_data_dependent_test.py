@@ -29,6 +29,15 @@ class NonZeroTest(unittest.TestCase):
         actual = run_shape_inference("", "NonZero", [ts(FLOAT, [3, 4])], opset_version=17)
         self.assertEqual(actual, [ts(INT64, [2, "_d0"])])
 
+    def test_constant_input(self):
+        actual = run_shape_inference_with_values(
+            "",
+            "NonZero",
+            [const_value([0, 1, 2])],
+            opset_version=17,
+        )
+        self.assertEqual(actual, [ts(INT64, [1, 2])])
+
     def test_symbolic_input(self):
         actual = run_shape_inference("", "NonZero", [ts(FLOAT, ["N", 3])], opset_version=17)
         self.assertEqual(actual, [ts(INT64, [2, "_d0"])])
@@ -83,6 +92,28 @@ class CompressTest(unittest.TestCase):
                 opset_version=17,
             )
 
+    def test_axis_out_of_range_gracefully_degrades(self):
+        actual = run_shape_inference(
+            "",
+            "Compress",
+            [ts(FLOAT, ["N", 3])],
+            {"axis": ir.Attr("axis", ir.AttributeType.INT, 5)},
+            opset_version=17,
+            policy="skip",
+        )
+        self.assertEqual(actual, [ts(FLOAT)])
+
+    def test_constant_condition_with_valid_axis(self):
+        data = ir.Value(name="data", type=ir.TensorType(FLOAT), shape=ir.Shape([3, 4]))
+        actual = run_shape_inference_with_values(
+            "",
+            "Compress",
+            [data, const_value([True, False, True])],
+            {"axis": ir.Attr("axis", ir.AttributeType.INT, 0)},
+            opset_version=17,
+        )
+        self.assertEqual(actual, [ts(FLOAT, [2, 4])])
+
     def test_opset_9(self):
         actual = run_shape_inference("", "Compress", [ts(FLOAT, ["N", 3])], opset_version=9)
         self.assertEqual(actual, [ts(FLOAT, ["_d0"])])
@@ -97,6 +128,43 @@ class UniqueTest(unittest.TestCase):
         self.assertEqual(actual[1].type.dtype, INT64)
         self.assertEqual(actual[2].type.dtype, INT64)
         self.assertEqual(actual[3].type.dtype, INT64)
+
+    def test_constant_input_without_axis(self):
+        actual = run_shape_inference_with_values(
+            "",
+            "Unique",
+            [const_value([1, 1, 2, 2])],
+            opset_version=17,
+            num_outputs=4,
+        )
+        self.assertEqual(
+            actual,
+            [
+                ts(INT64, [2]),
+                ts(INT64, [2]),
+                ts(INT64, [4]),
+                ts(INT64, [2]),
+            ],
+        )
+
+    def test_constant_input_with_axis(self):
+        actual = run_shape_inference_with_values(
+            "",
+            "Unique",
+            [const_value([[1, 1], [1, 2]])],
+            {"axis": ir.Attr("axis", ir.AttributeType.INT, 0)},
+            opset_version=17,
+            num_outputs=4,
+        )
+        self.assertEqual(
+            actual,
+            [
+                ts(INT64, [2, 2]),
+                ts(INT64, [2]),
+                ts(INT64, [2]),
+                ts(INT64, [2]),
+            ],
+        )
 
     def test_none_input_raises(self):
         with self.assertRaises(OpUsageError):

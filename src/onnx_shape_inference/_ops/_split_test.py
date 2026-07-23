@@ -98,6 +98,18 @@ class SplitTest(unittest.TestCase):
                 num_outputs=2,
             )
 
+    def test_axis_out_of_range_gracefully_degrades(self):
+        actual = run_shape_inference(
+            "",
+            "Split",
+            [ts(FLOAT, [2, 4, 6])],
+            {"axis": ir.Attr("axis", ir.AttributeType.INT, 5)},
+            opset_version=17,
+            num_outputs=2,
+            policy="skip",
+        )
+        self.assertEqual(actual, [ts(FLOAT), ts(FLOAT)])
+
     def test_uneven_split(self):
         """From ONNX test_split_uneven_split_2d: 8 / 3 → [3, 3, 2]."""
         actual = run_shape_inference(
@@ -145,6 +157,38 @@ class SplitTest(unittest.TestCase):
         # ceil(N/2) is rendered by SymPy as -floor(-N/2).
         self.assertEqual(actual[0], ts(FLOAT, ["-floor(-N/2)", 4]))
         self.assertEqual(actual[1], ts(FLOAT, ["N + floor(-N/2)", 4]))
+
+    def test_unknown_split_dim_with_three_outputs(self):
+        actual = run_shape_inference(
+            "",
+            "Split",
+            [ts(FLOAT, ["N", 4])],
+            {"axis": ir.Attr("axis", ir.AttributeType.INT, 0)},
+            opset_version=17,
+            num_outputs=3,
+        )
+        self.assertEqual(
+            actual,
+            [
+                ts(FLOAT, ["_d0", 4]),
+                ts(FLOAT, ["_d1", 4]),
+                ts(FLOAT, ["_d2", 4]),
+            ],
+        )
+
+    def test_fewer_split_sizes_than_outputs(self):
+        actual = run_shape_inference(
+            "",
+            "Split",
+            [ts(FLOAT, [4, 6])],
+            {
+                "axis": ir.Attr("axis", ir.AttributeType.INT, 0),
+                "split": ir.Attr("split", ir.AttributeType.INTS, [2]),
+            },
+            opset_version=11,
+            num_outputs=2,
+        )
+        self.assertEqual(actual, [ts(FLOAT, [2, 6]), ts(FLOAT)])
 
     def test_split_no_inputs(self):
         with self.assertRaises(OpUsageError):
