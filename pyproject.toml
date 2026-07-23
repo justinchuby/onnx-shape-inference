@@ -83,30 +83,30 @@ select = [
 preview = true
 ignore = [
     "B9",  # Opinionated bugbear rules
-    "C408", # Sometimes it is preferable when we construct kwargs
+    "unnecessary-collection-call", # Sometimes it is preferable when we construct kwargs
     "D1", # D1 is for missing docstrings, which is not yet enforced.
-    "D401", # First line of docstring should be in imperative mood
+    "non-imperative-mood", # First line of docstring should be in imperative mood
     "E1", "E2", "E3", # Pycodestyle formatting rules that conflicts with the formatter
-    "E501", # Line length. Not enforced because black will handle formatting
-    "SIM103", # "Return the condition directly" obscures logic sometimes
-    "NPY002", # We may not always need a generator
-    "PERF203", # try-except in loops sometimes necessary
-    "PERF401", # List comprehension is not always readable
-    "PYI041", # int | float is more clear
-    "RUF022", # We don't need to sort __all__ for elements to be grouped
-    "RUF031", # Parentheses for tuple in subscripts is more readable
-    "RUF052", # Variables with `_` prefix may not be dummy variables in all cases
-    "RUF067", # More relaxed __init__.py files
-    "SIM102", # Collapible if statements are not always more readable
-    "SIM108", # We don't always encourage ternary operators
-    "SIM114", # Don't always combine if branches for debugability
-    "SIM116", # Don't use dict lookup to replace if-else
-    "TRY003", # Messages can be constructed in the exception
+    "line-too-long", # Line length. Not enforced because black will handle formatting
+    "needless-bool", # "Return the condition directly" obscures logic sometimes
+    "numpy-legacy-random", # We may not always need a generator
+    "try-except-in-loop", # try-except in loops sometimes necessary
+    "manual-list-comprehension", # List comprehension is not always readable
+    "redundant-numeric-union", # int | float is more clear
+    "unsorted-dunder-all", # We don't need to sort __all__ for elements to be grouped
+    "incorrectly-parenthesized-tuple-in-subscript", # Parentheses for tuple in subscripts is more readable
+    "used-dummy-variable", # Variables with `_` prefix may not be dummy variables in all cases
+    "non-empty-init-module", # More relaxed __init__.py files
+    "collapsible-if", # Collapible if statements are not always more readable
+    "if-else-block-instead-of-if-exp", # We don't always encourage ternary operators
+    "if-with-same-arms", # Don't always combine if branches for debugability
+    "if-else-block-instead-of-dict-lookup", # Don't use dict lookup to replace if-else
+    "raise-vanilla-args", # Messages can be constructed in the exception
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"__init__.py" = ["TID252"] # Allow relative imports in init files
-"**/*_test.py" = ["TID251"] # pathlib is allowed in tests
+"__init__.py" = ["relative-imports"] # Allow relative imports in init files
+"**/*_test.py" = ["banned-api"] # pathlib is allowed in tests
 
 [tool.ruff.lint.flake8-tidy-imports]
 # Disallow all relative imports.

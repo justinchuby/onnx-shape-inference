@@ -269,7 +269,7 @@ class OpShapeInferenceRegistry:
             registry.collect()
             func = registry.get("", "Relu", version=21)
         """
-        from onnx_shape_inference import _ops  # noqa: F401
+        from onnx_shape_inference import _ops  # ruff:ignore[unused-import]
 
     def clear(self) -> None:
         """Clear all registered functions (mainly for testing)."""

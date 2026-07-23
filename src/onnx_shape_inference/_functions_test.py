@@ -701,8 +701,10 @@ class OpSchemaFunctionUnitTest(unittest.TestCase):
 
 
 class TestChildContextAnchorAdoption(unittest.TestCase):
-    """End-to-end: a dim minted inside a function body must be visible to the
-    parent engine so anchor renaming and reservation work across the boundary.
+    """Ensure child-context dimensions are visible to the parent engine.
+
+    A dim minted inside a function body must be visible to the parent engine so
+    anchor renaming and reservation work across the boundary.
 
     These exercise the shared symbol allocator between parent and child contexts.
     """
