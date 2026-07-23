@@ -127,32 +127,6 @@ class SoundnessOracleTest(unittest.TestCase):
         self.assertEqual(result.status, "FAIL")
         self.assertEqual(result.value_name, "Y")
 
-    def test_reuses_one_worker_for_multiple_graphs(self):
-        oracle = SoundnessOracle(sample_rate=1)
-        try:
-            self.assertEqual(oracle.check(_case()).status, "PASS")
-            self.assertIsNotNone(oracle._worker)
-            first_pid = oracle._worker.pid
-            self.assertEqual(oracle.check(_case()).status, "PASS")
-            self.assertEqual(oracle._worker.pid, first_pid)
-        finally:
-            oracle.close()
-
-    def test_timeout_skips_one_graph_and_respawns_for_the_next(self):
-        oracle = SoundnessOracle(sample_rate=1)
-        try:
-            self.assertEqual(oracle.check(_case()).status, "PASS")
-            self.assertIsNotNone(oracle._worker)
-            worker = oracle._worker
-            first_pid = worker.pid
-            with mock.patch.object(worker, "_read", side_effect=TimeoutError):
-                self.assertEqual(oracle.check(_case()).status, "SKIP")
-            self.assertIsNone(worker.pid)
-            self.assertEqual(oracle.check(_case()).status, "PASS")
-            self.assertNotEqual(worker.pid, first_pid)
-        finally:
-            oracle.close()
-
 
 class HarnessTest(unittest.TestCase):
     def test_failure_contains_seed_and_oracle_name(self):

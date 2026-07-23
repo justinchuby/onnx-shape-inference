@@ -4,22 +4,16 @@
 
 from __future__ import annotations
 
-import atexit
-import base64
 import copy
 import faulthandler
 import json
 import os
-import select
 import signal
-import struct
 import subprocess
 import sys
-import time
-import weakref
 from contextlib import contextmanager, suppress
 from pathlib import Path
-from typing import Any, Protocol, runtime_checkable
+from typing import Protocol, runtime_checkable
 
 import numpy as np
 import onnx_ir as ir
@@ -273,129 +267,47 @@ def _data_dependent(case: FuzzCase, value_name: str, index: int) -> bool:
     return value_name in case.data_dependent_values
 
 
-class _PersistentRuntimeWorker:
-    """Isolated, reusable ONNX Runtime worker for soundness checks."""
+def _runtime_shapes(
+    proto,
+    feeds: dict[str, np.ndarray],
+    *,
+    seed: int,
+) -> dict[str, dict[str, object]]:
+    """Run ORT in a subprocess so an unsafe kernel becomes a coverage hole."""
+    import onnx
 
-    def __init__(self, *, timeout_seconds: float = 5.0) -> None:
-        self.timeout_seconds = timeout_seconds
-        self._process: subprocess.Popen[bytes] | None = None
-        _RUNTIME_WORKERS.add(self)
-
-    @property
-    def pid(self) -> int | None:
-        """Live worker PID, if one has been started."""
-        return self._process.pid if self._process is not None else None
-
-    def close(self) -> None:
-        """Terminate the worker and reap it."""
-        process, self._process = self._process, None
-        if process is None:
-            return
-        if process.poll() is None:
-            process.terminate()
-            try:
-                process.wait(timeout=1)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait()
-        for stream in (process.stdin, process.stdout, process.stderr):
-            if stream is not None:
-                with suppress(OSError):
-                    stream.close()
-
-    def request(
-        self, proto: Any, feeds: dict[str, np.ndarray]
-    ) -> dict[str, dict[str, object]]:
-        """Run one stateless request, restarting after a timeout or worker crash."""
-        payload = {
-            "model": base64.b64encode(proto.SerializeToString()).decode("ascii"),
-            "feeds": {
-                name: {
-                    "data": base64.b64encode(np.ascontiguousarray(value).tobytes()).decode(
-                        "ascii"
-                    ),
-                    "dtype": value.dtype.str,
-                    "shape": list(value.shape),
-                }
-                for name, value in feeds.items()
-            },
-        }
-        process = self._start()
-        try:
-            self._write(process, payload)
-            response = self._read(process)
-        except TimeoutError as error:
-            self.close()
-            raise RuntimeError("runtime worker timed out") from error
-        except (BrokenPipeError, OSError, RuntimeError, ValueError) as error:
-            self.close()
-            raise RuntimeError(f"runtime worker failed: {error}") from error
-        if not response.get("ok"):
+    directory = Path.cwd() / ".fuzz-runtime"
+    directory.mkdir(exist_ok=True)
+    stem = f"{os.getpid()}-{seed}"
+    model_path = directory / f"{stem}.onnx"
+    feeds_path = directory / f"{stem}.npz"
+    result_path = directory / f"{stem}.json"
+    try:
+        onnx.save(proto, model_path)
+        np.savez(feeds_path, **feeds)
+        completed = subprocess.run(
+            [
+                sys.executable,
+                str(Path(__file__).with_name("_runtime_worker.py")),
+                str(model_path),
+                str(feeds_path),
+                str(result_path),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if completed.returncode != 0:
             raise RuntimeError(
-                f"onnxruntime request failed: {response.get('error', 'unknown error')}"
+                completed.stderr.strip() or f"runtime exited {completed.returncode}"
             )
-        facts = response.get("facts")
-        if not isinstance(facts, dict):
-            raise TypeError("runtime worker returned invalid facts")
-        return facts
-
-    def _start(self) -> subprocess.Popen[bytes]:
-        if self._process is not None and self._process.poll() is not None:
-            self.close()
-        if self._process is None:
-            self._process = subprocess.Popen(
-                [sys.executable, str(Path(__file__).with_name("_runtime_worker.py"))],
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                bufsize=0,
-            )
-        return self._process
-
-    @staticmethod
-    def _write(process: subprocess.Popen[bytes], payload: dict[str, object]) -> None:
-        if process.stdin is None:
-            raise RuntimeError("runtime worker stdin is unavailable")
-        encoded = json.dumps(payload, sort_keys=True).encode()
-        process.stdin.write(struct.pack("!I", len(encoded)) + encoded)
-        process.stdin.flush()
-
-    def _read(self, process: subprocess.Popen[bytes]) -> dict[str, object]:
-        header = self._read_exact(process, 4)
-        length = struct.unpack("!I", header)[0]
-        return json.loads(self._read_exact(process, length))
-
-    def _read_exact(self, process: subprocess.Popen[bytes], size: int) -> bytes:
-        if process.stdout is None:
-            raise RuntimeError("runtime worker stdout is unavailable")
-        deadline = time.monotonic() + self.timeout_seconds
-        chunks = bytearray()
-        descriptor = process.stdout.fileno()
-        while len(chunks) < size:
-            if process.poll() is not None:
-                raise RuntimeError(f"runtime worker exited {process.returncode}")
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise TimeoutError
-            ready, _, _ = select.select([descriptor], [], [], remaining)
-            if not ready:
-                raise TimeoutError
-            chunk = os.read(descriptor, size - len(chunks))
-            if not chunk:
-                raise RuntimeError(f"runtime worker exited {process.poll()}")
-            chunks.extend(chunk)
-        return bytes(chunks)
-
-
-_RUNTIME_WORKERS: weakref.WeakSet[_PersistentRuntimeWorker] = weakref.WeakSet()
-
-
-def _close_runtime_workers() -> None:
-    for worker in list(_RUNTIME_WORKERS):
-        worker.close()
-
-
-atexit.register(_close_runtime_workers)
+        return json.loads(result_path.read_text())
+    finally:
+        for path in (model_path, feeds_path, result_path):
+            path.unlink(missing_ok=True)
+        with suppress(OSError):
+            directory.rmdir()
 
 
 class SoundnessOracle:
@@ -403,19 +315,8 @@ class SoundnessOracle:
 
     name = "soundness"
 
-    def __init__(self, *, sample_rate: int = 16, timeout_seconds: float = 5.0) -> None:
+    def __init__(self, *, sample_rate: int = 16) -> None:
         self.sample_rate = max(1, sample_rate)
-        self.timeout_seconds = timeout_seconds
-        self._worker: _PersistentRuntimeWorker | None = None
-
-    def __del__(self) -> None:
-        self.close()
-
-    def close(self) -> None:
-        """Release the isolated runtime worker."""
-        if self._worker is not None:
-            self._worker.close()
-            self._worker = None
 
     def applicable(self, case: FuzzCase) -> bool:
         try:
@@ -423,13 +324,6 @@ class SoundnessOracle:
         except ImportError:
             return False
         return case.model is not None and case.seed % self.sample_rate == 0
-
-    def _runtime_shapes(
-        self, proto: Any, feeds: dict[str, np.ndarray]
-    ) -> dict[str, dict[str, object]]:
-        if self._worker is None:
-            self._worker = _PersistentRuntimeWorker(timeout_seconds=self.timeout_seconds)
-        return self._worker.request(proto, feeds)
 
     def check(self, case: FuzzCase) -> OracleResult:
         try:
@@ -474,7 +368,7 @@ class SoundnessOracle:
                     feeds[value.name] = rng.integers(1, 4, shape, dtype=dtype)
                 else:
                     feeds[value.name] = rng.uniform(0.5, 1.5, shape).astype(dtype)
-            runtime = self._runtime_shapes(proto, feeds)
+            runtime = _runtime_shapes(proto, feeds, seed=case.seed)
             case.onnxruntime_result = runtime
         except Exception as error:
             return OracleResult.skipped(
