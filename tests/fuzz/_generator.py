@@ -436,6 +436,82 @@ def _numeric_dtype(
     return dtype
 
 
+def _unidirectional_broadcast_shape(
+    generator: _Generator,
+    primary_shape: _Shape,
+) -> _Shape:
+    """Return a shape that is unidirectionally broadcastable *to* ``primary_shape``.
+
+    Several operators require a secondary parameter input (for example PRelu
+    ``slope`` or LayerNormalization ``Scale``) to be unidirectionally
+    broadcastable to a primary tensor. Per the ONNX spec that means the result
+    has rank ``<= len(primary_shape)`` and, aligned on the trailing axes, every
+    dimension is either ``1`` or exactly the corresponding primary dimension.
+
+    The returned shape keeps the primary's (possibly symbolic) dimension when it
+    is preserved so downstream oracles bind the same symbol, and falls back to
+    ``1`` for unknown (``None``) dimensions since ``1`` broadcasts to anything.
+    """
+    if primary_shape is None:
+        return ()
+    rank = len(primary_shape)
+    keep = generator.rng.randint(0, rank)
+    if keep == 0:
+        return ()
+    tail = primary_shape[rank - keep :]
+    dims: list[_Dim] = []
+    for dim in tail:
+        if dim is None or generator.rng.randrange(2):
+            dims.append(1)
+        else:
+            dims.append(dim)
+    return tuple(dims)
+
+
+def _plan_prelu(
+    generator: _Generator,
+    schema: onnx.defs.OpSchema,
+    bindings: dict[str, ir.DataType],
+) -> _InputPlan:
+    x = generator._port_for_name(schema, "X", bindings, min_rank=1)
+    slope_shape = _unidirectional_broadcast_shape(generator, x.shape)
+    slope = generator._graph_input(x.dtype, slope_shape)
+    return _InputPlan([x, slope], output_shapes=(x.shape,))
+
+
+def _plan_layer_normalization(
+    generator: _Generator,
+    schema: onnx.defs.OpSchema,
+    bindings: dict[str, ir.DataType],
+) -> _InputPlan:
+    x = generator._port_for_name(schema, "X", bindings, min_rank=1)
+    inputs: list[_Port | None] = [
+        x,
+        generator._graph_input(x.dtype, _unidirectional_broadcast_shape(generator, x.shape)),
+    ]
+    input_names = {formal.name for formal in schema.inputs}
+    if "B" in input_names and generator.rng.randrange(2):
+        inputs.append(
+            generator._graph_input(
+                x.dtype, _unidirectional_broadcast_shape(generator, x.shape)
+            )
+        )
+    return _InputPlan(inputs, output_shapes=(x.shape,))
+
+
+def _plan_rms_normalization(
+    generator: _Generator,
+    schema: onnx.defs.OpSchema,
+    bindings: dict[str, ir.DataType],
+) -> _InputPlan:
+    x = generator._port_for_name(schema, "X", bindings, min_rank=1)
+    scale = generator._graph_input(
+        x.dtype, _unidirectional_broadcast_shape(generator, x.shape)
+    )
+    bindings["V"] = x.dtype
+    return _InputPlan([x, scale], output_shapes=(x.shape,))
+
+
 def _plan_conv(
     generator: _Generator,
     schema: onnx.defs.OpSchema,
@@ -590,6 +666,22 @@ def _plan_split(
     )
 
 
+def _plan_optional_get_element(
+    generator: _Generator,
+    schema: onnx.defs.OpSchema,
+    bindings: dict[str, ir.DataType],
+) -> _InputPlan:
+    # ``OptionalGetElement`` constrains the input element type (``O``) and the
+    # output element type (``V``) with *distinct* type parameters, so the
+    # default planner would pick them independently and can emit a model whose
+    # declared output dtype contradicts the input dtype. Per the ONNX spec the
+    # output element type must equal the input element type, so pre-bind ``V``
+    # and feed a plain tensor of that dtype (a spec-valid input for ``O``).
+    dtype = generator._dtype_for_type("V", schema, bindings)
+    data = generator._graph_input(dtype, generator._random_shape())
+    return _InputPlan([data], output_shapes=(data.shape,))
+
+
 _op_planners: dict[_OpKey, InputPlanner] = {
     ("", "ConstantOfShape"): _plan_constant_of_shape,
     ("", "Expand"): _plan_expand,
@@ -606,8 +698,12 @@ _op_planners: dict[_OpKey, InputPlanner] = {
     ("", "Conv"): _plan_conv,
     ("", "Gather"): _plan_gather,
     ("", "Gemm"): _plan_gemm,
+    ("", "LayerNormalization"): _plan_layer_normalization,
     ("", "MatMul"): _plan_matmul,
     ("", "MaxPool"): _plan_pool,
+    ("", "OptionalGetElement"): _plan_optional_get_element,
+    ("", "PRelu"): _plan_prelu,
+    ("", "RMSNormalization"): _plan_rms_normalization,
     ("", "Split"): _plan_split,
 }
 _semantic_planners: dict[_OpKey, InputPlanner] = {

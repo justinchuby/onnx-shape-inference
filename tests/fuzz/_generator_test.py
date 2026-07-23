@@ -44,6 +44,47 @@ def _node_by_name(case, name: str) -> ir.Node:
     return next(node for node in case.model.graph if node.name == name)
 
 
+def _is_unidirectional_broadcastable(secondary: ir.Shape, primary: ir.Shape) -> bool:
+    """Return True when ``secondary`` can broadcast *into* ``primary``.
+
+    A secondary tensor is unidirectionally broadcastable to a primary tensor
+    when its rank does not exceed the primary rank and each trailing-aligned
+    dimension is either ``1`` or equal to the corresponding primary dimension.
+    """
+    if secondary.rank() > primary.rank():
+        return False
+    offset = primary.rank() - secondary.rank()
+    for index in range(secondary.rank()):
+        sec_dim = secondary[index]
+        prim_dim = primary[offset + index]
+        if sec_dim == 1:
+            continue
+        if sec_dim != prim_dim:
+            return False
+    return True
+
+
+def _isolated_planner_model(
+    op_type: str, opset: int, seed: int
+) -> tuple[onnx.ModelProto, ir.Node]:
+    """Build a single-node model from a planner for isolated validation."""
+    generator = _generator._Generator(seed)
+    generator.opset = opset
+    generator._seed_port_pool()
+    ports = generator._add_operator(("", op_type))
+    node = generator.nodes[-1]
+    graph = ir.Graph(
+        inputs=generator.graph_inputs,
+        outputs=[port.value for port in ports],
+        nodes=[node],
+        initializers=generator.initializers,
+        opset_imports={"": opset},
+        name="planner_isolated",
+    )
+    model = ir.Model(graph, ir_version=10)
+    return ir.serde.serialize_model(model), node
+
+
 class GeneratorTest(unittest.TestCase):
     @parameterized.parameterized.expand([(seed,) for seed in range(32)])
     def test_generated_model_passes_checker_and_roundtrips(self, seed):
@@ -210,6 +251,17 @@ class GeneratorTest(unittest.TestCase):
         elif expected_op_type == "Split":
             self.assertEqual(len(node.outputs), 2)
             self.assertIn("axis", node.attributes)
+        elif expected_op_type in ("PRelu", "LayerNormalization", "RMSNormalization"):
+            primary = node.inputs[0]
+            self.assertGreaterEqual(primary.shape.rank(), 1)
+            for secondary in node.inputs[1:]:
+                if secondary is None:
+                    continue
+                self.assertTrue(
+                    _is_unidirectional_broadcastable(secondary.shape, primary.shape),
+                    f"{secondary.shape} not broadcastable to {primary.shape}",
+                )
+                self.assertEqual(secondary.dtype, primary.dtype)
         else:
             self.fail(f"Missing planner assertion for {expected_op_type}")
 
@@ -330,6 +382,74 @@ class ExpandedCoverageTest(unittest.TestCase):
         node = _node_by_name(case, case.metadata["planner_node"])
         self.assertEqual(node.op_type, "Split")
         self.assertEqual(len(node.outputs), 2)
+
+    @parameterized.parameterized.expand(
+        [
+            ("PRelu", 16),
+            ("PRelu", 22),
+            ("LayerNormalization", 17),
+            ("RMSNormalization", 23),
+        ]
+    )
+    def test_unidirectional_planners_emit_valid_broadcasts(self, op_type, opset):
+        # Every secondary input a unidirectional-broadcast planner emits must be
+        # broadcastable *into* the primary tensor, and the isolated single-op
+        # model must pass the strict ONNX checker across supporting opsets.
+        for seed in range(40):
+            proto, node = _isolated_planner_model(op_type, opset, seed)
+            onnx.checker.check_model(proto, full_check=True)
+            primary = node.inputs[0]
+            for secondary in node.inputs[1:]:
+                if secondary is None:
+                    continue
+                self.assertTrue(
+                    _is_unidirectional_broadcastable(secondary.shape, primary.shape),
+                    f"seed {seed}: {secondary.shape} not broadcastable to {primary.shape}",
+                )
+
+    @parameterized.parameterized.expand(
+        [
+            ((1, 1), 16),
+            ((2, 3), 16),
+            ((2, 3, 4), 22),
+        ]
+    )
+    def test_prelu_inference_agrees_with_runtime(self, x_shape, opset):
+        import onnxruntime as ort
+
+        import onnx_shape_inference as osi
+
+        generator = _generator._Generator(0)
+        x_shape = tuple(x_shape)
+        slope_shape = _generator._unidirectional_broadcast_shape(generator, x_shape)
+        x = onnx.helper.make_tensor_value_info("x", onnx.TensorProto.FLOAT, list(x_shape))
+        slope = onnx.helper.make_tensor_value_info(
+            "slope", onnx.TensorProto.FLOAT, list(slope_shape)
+        )
+        y = onnx.helper.make_tensor_value_info("y", onnx.TensorProto.FLOAT, list(x_shape))
+        node = onnx.helper.make_node("PRelu", ["x", "slope"], ["y"])
+        graph = onnx.helper.make_graph([node], "prelu", [x, slope], [y])
+        model = onnx.helper.make_model(
+            graph, opset_imports=[onnx.helper.make_opsetid("", opset)], ir_version=10
+        )
+        onnx.checker.check_model(model, full_check=True)
+
+        inferred = osi.infer_symbolic_shapes(ir.serde.deserialize_model(model))
+        inferred_shape = tuple(int(dim) for dim in inferred.graph.outputs[0].shape)
+
+        session = ort.InferenceSession(
+            model.SerializeToString(), providers=["CPUExecutionProvider"]
+        )
+        rng = np.random.default_rng(0)
+        outputs = session.run(
+            None,
+            {
+                "x": rng.standard_normal(x_shape).astype(np.float32),
+                "slope": rng.standard_normal(slope_shape).astype(np.float32),
+            },
+        )
+        self.assertEqual(inferred_shape, tuple(outputs[0].shape))
+        self.assertEqual(inferred_shape, x_shape)
 
     def test_random_shape_defaults_are_non_degenerate(self):
         generator = _generator._Generator(0)
