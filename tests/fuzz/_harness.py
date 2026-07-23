@@ -36,25 +36,31 @@ class FuzzHarness:
 
     def run(self, seeds: Iterable[int]) -> FuzzSummary:
         """Run *seeds*, raising an actionable assertion for the first failure."""
-        summary = FuzzSummary()
-        for seed in seeds:
-            case = self.generate(seed)
-            first_failure: tuple[Oracle, OracleResult] | None = None
-            for node in case.model.graph:
-                summary.op_coverage[(node.domain or "", node.op_type)] += 1
+        try:
+            summary = FuzzSummary()
+            for seed in seeds:
+                case = self.generate(seed)
+                first_failure: tuple[Oracle, OracleResult] | None = None
+                for node in case.model.graph:
+                    summary.op_coverage[(node.domain or "", node.op_type)] += 1
+                for oracle in self.oracles:
+                    if not oracle.applicable(case):
+                        result = OracleResult.skipped(oracle.name, "oracle not applicable")
+                    else:
+                        result = oracle.check(case)
+                    summary.results[result.status] += 1
+                    if result.status == "SKIP" and result.reason is not None:
+                        summary.skips[result.reason] += 1
+                    if result.status == "FAIL" and first_failure is None:
+                        first_failure = (oracle, result)
+                if first_failure is not None:
+                    raise AssertionError(self._failure_message(case, *first_failure))
+            return summary
+        finally:
             for oracle in self.oracles:
-                if not oracle.applicable(case):
-                    result = OracleResult.skipped(oracle.name, "oracle not applicable")
-                else:
-                    result = oracle.check(case)
-                summary.results[result.status] += 1
-                if result.status == "SKIP" and result.reason is not None:
-                    summary.skips[result.reason] += 1
-                if result.status == "FAIL" and first_failure is None:
-                    first_failure = (oracle, result)
-            if first_failure is not None:
-                raise AssertionError(self._failure_message(case, *first_failure))
-        return summary
+                close = getattr(oracle, "close", None)
+                if callable(close):
+                    close()
 
     @staticmethod
     def _failure_message(case: FuzzCase, oracle: Oracle, result: OracleResult) -> str:
