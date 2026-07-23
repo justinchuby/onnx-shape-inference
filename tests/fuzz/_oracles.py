@@ -320,7 +320,7 @@ class SoundnessOracle:
 
     def applicable(self, case: FuzzCase) -> bool:
         try:
-            import onnxruntime  # noqa: F401
+            import onnxruntime  # ruff:ignore[unused-import]
         except ImportError:
             return False
         return case.model is not None and case.seed % self.sample_rate == 0
@@ -328,7 +328,7 @@ class SoundnessOracle:
     def check(self, case: FuzzCase) -> OracleResult:
         try:
             import onnx
-            import onnxruntime  # noqa: F401
+            import onnxruntime  # ruff:ignore[unused-import]
         except ImportError:
             return OracleResult.skipped(self.name, "onnxruntime is unavailable")
 
