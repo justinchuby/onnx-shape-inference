@@ -10,7 +10,7 @@ __all__ = [
 ]
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -199,6 +199,61 @@ class OpShapeInferenceRegistry:
         """Check if any shape inference function is registered for an operator."""
         key = (domain, op_type)
         return key in self._registrations and len(self._registrations[key]) > 0
+
+    def version_boundaries(self, domain: str, op_type: str) -> tuple[int, ...]:
+        """Return the sorted ``since_version`` boundaries for an operator.
+
+        Each value is a version at which the dispatched inference function
+        changes.  Consumers such as the fuzzer use these to sample versions on
+        and around dispatch edges, a common source of ``since_version`` bugs.
+
+        Args:
+            domain: ONNX domain (``"ai.onnx"`` is normalized to ``""``).
+            op_type: Operator type (e.g. ``"Add"``).
+
+        The built-in operator modules are imported automatically (via
+        :meth:`collect`) so callers never observe a spuriously empty result
+        just because inference has not run yet in this process.
+
+        Returns:
+            A tuple of ``since_version`` integers in ascending order, or an
+            empty tuple if the operator is not registered.
+        """
+        self.collect()
+        key = (_normalize_domain(domain), op_type)
+        registrations = self._registrations.get(key)
+        if not registrations:
+            return ()
+        # ``register`` keeps registrations sorted by since_version ascending.
+        return tuple(since_version for since_version, _ in registrations)
+
+    def iter_supported(self) -> Iterator[tuple[str, str, tuple[int, ...]]]:
+        """Yield every registered operator with its version boundaries.
+
+        Yields ``(domain, op_type, since_versions)`` triples in deterministic
+        (sorted) order so that seed-driven consumers (e.g. the fuzzer) reproduce
+        the same op sampling across runs.  ``since_versions`` is the ascending
+        tuple of registered ``since_version`` values (see
+        :meth:`version_boundaries`).  Domains are already normalized (so
+        ``"ai.onnx"`` appears as ``""``).
+
+        The built-in operator modules are imported automatically (via
+        :meth:`collect`), so seed-driven consumers get the full supported set
+        without having to call :meth:`collect` (or run inference) first.
+
+        Example::
+
+            for domain, op_type, versions in registry.iter_supported():
+                ...
+        """
+        self.collect()
+        for domain, op_type in sorted(self._registrations):
+            registrations = self._registrations[(domain, op_type)]
+            yield (
+                domain,
+                op_type,
+                tuple(since_version for since_version, _ in registrations),
+            )
 
     def collect(self) -> None:
         """Import all built-in op modules to populate the registry.

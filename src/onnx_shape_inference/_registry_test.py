@@ -4,6 +4,9 @@
 
 from __future__ import annotations
 
+import subprocess
+import sys
+import textwrap
 import unittest
 
 from onnx_shape_inference._registry import OpShapeInferenceRegistry
@@ -129,6 +132,103 @@ class OpShapeInferenceRegistryTest(unittest.TestCase):
         # New lookup should work correctly
         func20 = self.registry.get("", "TestOp", version=20)
         self.assertEqual(func20(None, None), "v14")
+
+    def test_version_boundaries_returns_sorted_since_versions(self):
+        @self.registry.register("", "TestOp", since_version=14)
+        def infer_v14(ctx, node):
+            pass
+
+        @self.registry.register("", "TestOp", since_version=7)
+        def infer_v7(ctx, node):
+            pass
+
+        self.assertEqual(self.registry.version_boundaries("", "TestOp"), (7, 14))
+
+    def test_version_boundaries_normalizes_domain(self):
+        @self.registry.register("", "TestOp", since_version=7)
+        def infer_test(ctx, node):
+            pass
+
+        # "ai.onnx" must normalize to "" like get()/register() do.
+        self.assertEqual(self.registry.version_boundaries("ai.onnx", "TestOp"), (7,))
+
+    def test_version_boundaries_unregistered_is_empty(self):
+        self.assertEqual(self.registry.version_boundaries("", "Missing"), ())
+
+    def test_iter_supported_is_deterministic_and_sorted(self):
+        @self.registry.register("com.microsoft", "ZOp", since_version=1)
+        def infer_z(ctx, node):
+            pass
+
+        @self.registry.register("", "BOp", since_version=13)
+        def infer_b13(ctx, node):
+            pass
+
+        @self.registry.register("", "BOp", since_version=1)
+        def infer_b1(ctx, node):
+            pass
+
+        @self.registry.register("", "AOp", since_version=1)
+        def infer_a(ctx, node):
+            pass
+
+        supported = list(self.registry.iter_supported())
+        self.assertEqual(
+            supported,
+            [
+                ("", "AOp", (1,)),
+                ("", "BOp", (1, 13)),
+                ("com.microsoft", "ZOp", (1,)),
+            ],
+        )
+        # Deterministic across calls (seed reproducibility contract).
+        self.assertEqual(supported, list(self.registry.iter_supported()))
+
+    def test_iter_supported_empty_registry(self):
+        self.assertEqual(list(self.registry.iter_supported()), [])
+
+    def test_iter_supported_matches_version_boundaries(self):
+        @self.registry.register("", "TestOp", since_version=7)
+        def infer_v7(ctx, node):
+            pass
+
+        @self.registry.register("", "TestOp", since_version=14)
+        def infer_v14(ctx, node):
+            pass
+
+        for domain, op_type, versions in self.registry.iter_supported():
+            self.assertEqual(versions, self.registry.version_boundaries(domain, op_type))
+
+    def test_global_registry_autocollects_builtin_ops(self):
+        # The public introspection seams must reflect the built-in operators
+        # without the caller first invoking ``collect()`` or running inference.
+        from onnx_shape_inference._registry import registry
+
+        boundaries = registry.version_boundaries("", "Add")
+        self.assertTrue(boundaries)
+        self.assertIn(("", "Add", boundaries), list(registry.iter_supported()))
+
+    def test_iter_supported_autocollects_in_fresh_process(self):
+        # Cold-start guarantee: a fresh interpreter that only imports the
+        # registry (never ``_ops`` and never runs inference) must still see the
+        # full supported set, so the fuzzer can never silently generate nothing.
+        code = textwrap.dedent(
+            """
+            from onnx_shape_inference._registry import registry
+            boundaries = registry.version_boundaries("", "Add")
+            supported = list(registry.iter_supported())
+            assert boundaries, "version_boundaries did not auto-collect"
+            assert ("", "Add", boundaries) in supported, "iter_supported did not auto-collect"
+            print("OK", len(supported))
+            """
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", code],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertIn("OK", result.stdout)
 
 
 if __name__ == "__main__":

@@ -3,3 +3,4 @@ pytest-cov
 coverage[toml]
 parameterized
 onnx>=1.22
+onnxruntime
