@@ -7,6 +7,7 @@ from __future__ import annotations
 import unittest
 
 import onnx_ir as ir
+import parameterized
 
 from onnx_shape_inference import OpUsageError
 from onnx_shape_inference._ops._testing import (
@@ -197,19 +198,70 @@ class GridSampleSymbolicDimsTest(unittest.TestCase):
 
 
 class Col2ImSymbolicDimsTest(unittest.TestCase):
-    def test_symbolic_batch(self):
+    @parameterized.parameterized.expand(
+        [
+            ("concrete", [1, 12, 9], [1, 3, 5, 5]),
+            ("symbolic_batch", ["N", 12, 9], ["N", 3, 5, 5]),
+        ]
+    )
+    def test_known_block_shape_infers_channel(self, _name, input_shape, expected_shape):
         input_val = ir.Value(
-            name="input", type=ir.TensorType(FLOAT), shape=ir.Shape(["N", 27, 4])
+            name="input", type=ir.TensorType(FLOAT), shape=ir.Shape(input_shape)
         )
-        image_shape = const_value([4, 4], name="image_shape")
-        block_shape = const_value([3, 3], name="block_shape")
+        image_shape = const_value([5, 5], name="image_shape")
+        block_shape = const_value([2, 2], name="block_shape")
         actual = run_shape_inference_with_values(
             "",
             "Col2Im",
             [input_val, image_shape, block_shape],
             opset_version=18,
         )
-        self.assertEqual(actual, [ts(FLOAT, ["N", "_d0", 4, 4])])
+        self.assertEqual(actual, [ts(FLOAT, expected_shape)])
+
+    def test_symbolic_folded_channel_preserves_relationship(self):
+        input_val = ir.Value(
+            name="input", type=ir.TensorType(FLOAT), shape=ir.Shape([1, "M", 9])
+        )
+        actual = run_shape_inference_with_values(
+            "",
+            "Col2Im",
+            [
+                input_val,
+                const_value([5, 5], name="image_shape"),
+                const_value([2, 2], name="block_shape"),
+            ],
+            opset_version=18,
+        )
+        self.assertEqual(actual, [ts(FLOAT, [1, "floor(M/4)", 5, 5])])
+
+    def test_nonconstant_block_shape_uses_unknown_channel(self):
+        input_val = ir.Value(
+            name="input", type=ir.TensorType(FLOAT), shape=ir.Shape([1, 12, 9])
+        )
+        block_shape = ir.Value(
+            name="block_shape", type=ir.TensorType(INT64), shape=ir.Shape([2])
+        )
+        actual = run_shape_inference_with_values(
+            "",
+            "Col2Im",
+            [input_val, const_value([5, 5], name="image_shape"), block_shape],
+            opset_version=18,
+        )
+        self.assertEqual(actual, [ts(FLOAT, [1, "_d0", 5, 5])])
+
+    def test_unknown_input_shape_sets_dtype_only(self):
+        input_val = ir.Value(name="input", type=ir.TensorType(FLOAT))
+        actual = run_shape_inference_with_values(
+            "",
+            "Col2Im",
+            [
+                input_val,
+                const_value([5, 5], name="image_shape"),
+                const_value([2, 2], name="block_shape"),
+            ],
+            opset_version=18,
+        )
+        self.assertEqual(actual, [ts(FLOAT)])
 
 
 class CenterCropPadTest(unittest.TestCase):
