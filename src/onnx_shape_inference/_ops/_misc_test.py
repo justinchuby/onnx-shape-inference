@@ -7,6 +7,7 @@ from __future__ import annotations
 import unittest
 
 import onnx_ir as ir
+import parameterized
 
 from onnx_shape_inference import OpUsageError
 from onnx_shape_inference._ops._testing import (
@@ -70,15 +71,41 @@ class MelWeightMatrixTest(unittest.TestCase):
 
 
 class TfIdfVectorizerTest(unittest.TestCase):
-    def test_1d_input(self):
-        actual = run_shape_inference("", "TfIdfVectorizer", [ts(INT64, [10])], opset_version=9)
-        self.assertEqual(actual, [ts(FLOAT, ["_d0"])])
-
-    def test_2d_input(self):
+    @parameterized.parameterized.expand(
+        [
+            ("repro", [1], [0], [1]),
+            ("larger_feature_dim", [7], [0, 1, 2, 4], [5]),
+            ("batched", [3, 7], [0, 1, 2, 4], [3, 5]),
+            ("symbolic_batch", ["N", 7], [0, 1, 2, 4], ["N", 5]),
+        ]
+    )
+    def test_feature_dim_from_ngram_indexes(
+        self, _name, input_shape, ngram_indexes, expected_shape
+    ):
+        attrs = {
+            "ngram_indexes": ir.Attr("ngram_indexes", ir.AttributeType.INTS, ngram_indexes)
+        }
         actual = run_shape_inference(
-            "", "TfIdfVectorizer", [ts(INT64, [4, 10])], opset_version=9
+            "",
+            "TfIdfVectorizer",
+            [ts(INT64, input_shape)],
+            attrs,
+            opset_version=9,
         )
-        self.assertEqual(actual, [ts(FLOAT, [4, "_d0"])])
+        self.assertEqual(actual, [ts(FLOAT, expected_shape)])
+
+    def test_unknown_input_shape_sets_dtype_only(self):
+        attrs = {
+            "ngram_indexes": ir.Attr("ngram_indexes", ir.AttributeType.INTS, [0, 1, 2, 4])
+        }
+        actual = run_shape_inference(
+            "", "TfIdfVectorizer", [ts(INT64)], attrs, opset_version=9
+        )
+        self.assertEqual(actual, [ts(FLOAT)])
+
+    def test_missing_ngram_indexes_raises(self):
+        with self.assertRaises(OpUsageError):
+            run_shape_inference("", "TfIdfVectorizer", [ts(INT64, [7])], opset_version=9)
 
 
 if __name__ == "__main__":
