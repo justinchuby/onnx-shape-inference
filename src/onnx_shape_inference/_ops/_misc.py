@@ -79,16 +79,22 @@ def infer_tfidf_vectorizer(ctx: _context.ShapeInferenceContext, node: ir.Node) -
 
     Input 1-D → output 1-D [feature_dim]. Input 2-D → output 2-D [batch, feature_dim].
     """
+    (x,) = _context.check_inputs(node, "X")
+    ngram_indexes = _context.require_attr(node, "ngram_indexes").as_ints()
+    if not ngram_indexes:
+        raise _context.OpUsageError(node, "ngram_indexes must be non-empty")
+    feature_dim = max(ngram_indexes) + 1
+
     if len(node.outputs) > 0:
+        if x.shape is None:
+            ctx.set_shape_and_dtype(node.outputs[0], None, ir.DataType.FLOAT)
+            return
+
         output_shape = None
-        if len(node.inputs) > 0 and node.inputs[0] is not None:
-            x = node.inputs[0]
-            if x.shape is not None:
-                feat_dim = ctx.new_symbolic_dim()
-                if x.shape.rank() == 1:
-                    output_shape = ir.Shape([feat_dim])
-                elif x.shape.rank() == 2:
-                    output_shape = ir.Shape([x.shape[0], feat_dim])
+        if x.shape.rank() == 1:
+            output_shape = ir.Shape([feature_dim])
+        elif x.shape.rank() == 2:
+            output_shape = ir.Shape([x.shape[0], feature_dim])
         ctx.set_shape_and_dtype(node.outputs[0], output_shape, ir.DataType.FLOAT)
 
 
