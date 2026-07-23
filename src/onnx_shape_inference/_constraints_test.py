@@ -177,7 +177,7 @@ class RecordReshapeNumelEqualitiesTest(unittest.TestCase):
     def test_end_to_end_provenance_rewrites_inherited_floor(self):
         # A value declared [a,b,2*floor(c/2)] adopts c once the reshape numel
         # equality supplies the divisibility provenance.
-        graph, node = self._reshape_graph(["a", "b", "c"], ["a", "b", 2, "floor(c/2)"])
+        graph, _node = self._reshape_graph(["a", "b", "c"], ["a", "b", 2, "floor(c/2)"])
         # A second value that carries the flattened 2*floor(c/2) form.
         flat = ir.Value(
             name="flat",
@@ -274,7 +274,7 @@ class PropagateSymbolicConstraintsTest(unittest.TestCase):
         _constraints.propagate_symbolic_constraints(ctx, graph)
 
         self.assertEqual(graph.inputs[0].shape[0], _sym("N"))
-        self.assertEqual(list(graph.outputs)[0].shape[0], _sym("N"))
+        self.assertEqual(next(iter(graph.outputs)).shape[0], _sym("N"))
 
     def test_scaled_leaf_equality_rewrites_compound(self):
         graph = _identity_graph({"x": ["_d0"], "y": ["2*_d0"]})
@@ -284,7 +284,7 @@ class PropagateSymbolicConstraintsTest(unittest.TestCase):
         _constraints.propagate_symbolic_constraints(ctx, graph)
 
         self.assertEqual(graph.inputs[0].shape[0], _sym("dnz"))
-        self.assertEqual(list(graph.outputs)[0].shape[0], _sym("2*dnz"))
+        self.assertEqual(next(iter(graph.outputs)).shape[0], _sym("2*dnz"))
 
     def test_compound_replacement(self):
         graph = _identity_graph(
@@ -315,7 +315,7 @@ class PropagateSymbolicConstraintsTest(unittest.TestCase):
 
         _constraints.propagate_symbolic_constraints(ctx, graph)
 
-        out = list(graph.outputs)[0].shape
+        out = next(iter(graph.outputs)).shape
         self.assertEqual(out[0], 4)
         self.assertEqual(out[1], _sym("M"))
         self.assertEqual(out[2], _sym("dnz"))
@@ -328,7 +328,7 @@ class PropagateSymbolicConstraintsTest(unittest.TestCase):
 
         _constraints.propagate_symbolic_constraints(ctx, graph)
 
-        self.assertIsNone(list(graph.outputs)[0].shape)
+        self.assertIsNone(next(iter(graph.outputs)).shape)
         self.assertEqual(graph.inputs[0].shape[0], _sym("N"))
 
     def test_propagates_into_subgraph(self):
@@ -383,7 +383,7 @@ class AuthorDeclaredPlaceholderTest(unittest.TestCase):
 
         self.assertFalse(changed)
         self.assertEqual(graph.inputs[0].shape[0], _sym("_d0"))
-        self.assertEqual(list(graph.outputs)[0].shape[0], _sym("_d0"))
+        self.assertEqual(next(iter(graph.outputs)).shape[0], _sym("_d0"))
 
     def test_minted_underscore_d0_is_renamed(self):
         # The mirror image: when the SAME spelling was actually minted by this
@@ -406,7 +406,7 @@ class AuthorDeclaredPlaceholderTest(unittest.TestCase):
 
         _constraints.propagate_symbolic_constraints(ctx, graph)
 
-        out = list(graph.outputs)[0].shape
+        out = next(iter(graph.outputs)).shape
         self.assertEqual(out[0], _sym("_d0"))  # authored, preserved
         self.assertEqual(out[1], _sym("M"))  # minted, renamed
 
