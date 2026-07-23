@@ -742,5 +742,60 @@ class TestChildContextAnchorAdoption(unittest.TestCase):
         self.assertNotEqual(str(minted), "_d0")
 
 
+class TestFunctionOutputCacheReMinting(unittest.TestCase):
+    """Regression tests for re-minting cached data-dependent symbols.
+
+    The per-run output cache stores a function body's result shapes.  A
+    data-dependent body (e.g. ``NonZero``) mints anonymous symbols; two call
+    sites with identical input signatures must not share the same symbol, or two
+    genuinely independent data-dependent dimensions would be asserted equal.
+    """
+
+    def test_data_dependent_body_distinct_dims_across_call_sites(self):
+        # F(x) = NonZero(x). Called twice on inputs of identical shape [N] the
+        # cache would otherwise hand both call sites the same minted `_dN`.
+        func = _single_op_function("test", "MyNonZero", "NonZero", opset=20)
+        x1 = _make_value("x1", shape=["N"], dtype=INT64)
+        x2 = _make_value("x2", shape=["N"], dtype=INT64)
+        out1 = _make_value("out1", shape=None, dtype=None)
+        out2 = _make_value("out2", shape=None, dtype=None)
+        call1 = ir.Node("test", "MyNonZero", inputs=[x1], outputs=[out1], attributes={})
+        call2 = ir.Node("test", "MyNonZero", inputs=[x2], outputs=[out2], attributes={})
+        model = _make_model(
+            [call1, call2], [x1, x2], [out1, out2], [func], extra_domain="test"
+        )
+
+        infer_symbolic_shapes(model, warn_on_missing=False)
+
+        # Both outputs are [rank(=1), num_nonzero]; the num_nonzero dims are
+        # independent data-dependent quantities and must be distinct symbols.
+        self.assertIsNotNone(out1.shape)
+        self.assertIsNotNone(out2.shape)
+        self.assertEqual(out1.shape[0], 1)
+        self.assertEqual(out2.shape[0], 1)
+        self.assertNotEqual(out1.shape[1], out2.shape[1])
+
+    def test_data_independent_body_shares_input_derived_dims(self):
+        # F(x) = Identity(x). The output dim is input-derived (the declared
+        # symbol N), not engine-minted, so re-minting must NOT touch it: both
+        # call sites keep the exact input symbol N.
+        func = _single_op_function("test", "MyIdentity", "Identity", opset=20)
+        x1 = _make_value("x1", shape=["N"], dtype=FLOAT)
+        x2 = _make_value("x2", shape=["N"], dtype=FLOAT)
+        out1 = _make_value("out1", shape=None, dtype=None)
+        out2 = _make_value("out2", shape=None, dtype=None)
+        call1 = ir.Node("test", "MyIdentity", inputs=[x1], outputs=[out1], attributes={})
+        call2 = ir.Node("test", "MyIdentity", inputs=[x2], outputs=[out2], attributes={})
+        model = _make_model(
+            [call1, call2], [x1, x2], [out1, out2], [func], extra_domain="test"
+        )
+
+        infer_symbolic_shapes(model, warn_on_missing=False)
+
+        self.assertEqual(out1.shape, ir.Shape(["N"]))
+        self.assertEqual(out2.shape, ir.Shape(["N"]))
+        self.assertEqual(out1.shape[0], out2.shape[0])
+
+
 if __name__ == "__main__":
     unittest.main()

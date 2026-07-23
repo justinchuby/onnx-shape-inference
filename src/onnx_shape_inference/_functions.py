@@ -10,6 +10,7 @@ __all__ = [
 ]
 
 import contextlib
+import json
 import logging
 from collections.abc import Callable, Generator, Mapping
 from typing import TYPE_CHECKING
@@ -17,7 +18,7 @@ from typing import TYPE_CHECKING
 import onnx
 import onnx_ir as ir
 
-from onnx_shape_inference import _context
+from onnx_shape_inference import _context, _symbolic_shapes
 
 logger = logging.getLogger(__name__)
 
@@ -327,6 +328,95 @@ def _warn_unresolved_ref_attrs(
                 return  # Warn once per call
 
 
+def _remint_cached_generated_symbols(
+    ctx: _context.ShapeInferenceContext,
+    cached_outputs: list[tuple[ir.Shape | None, ir.DataType | None, str | None]],
+) -> list[tuple[ir.Shape | None, ir.DataType | None, str | None]]:
+    """Replace body-minted generated symbols in cached outputs with fresh ones.
+
+    The output cache stores a function body's result shapes verbatim.  A
+    data-dependent body (e.g. ``NonZero``) mints anonymous ``new_symbolic_dim``
+    symbols; reusing the cached shapes on a later call site would make two
+    independent data-dependent dimensions share a single symbol, falsely
+    asserting they are equal.
+
+    On a cache hit, every generated symbol (identified by
+    :meth:`ShapeInferenceContext.is_generated_symbol`) is remapped to a fresh
+    :meth:`ShapeInferenceContext.new_symbolic_dim`.  The remapping is consistent
+    within a single hit, so a body symbol appearing in several output dims stays
+    a single (fresh) symbol, while it differs across separate hits.  Concrete and
+    input-derived (non-generated) dims are reused unchanged, preserving genuine
+    dimension relationships.
+
+    Args:
+        ctx: The parent shape inference context minting the fresh symbols.
+        cached_outputs: The cached ``(shape, dtype, sym_data)`` tuples.
+
+    Returns:
+        A new list of ``(shape, dtype, sym_data)`` tuples with generated symbols
+        re-minted.
+    """
+    remap: dict[str, object] = {}
+
+    def fresh_symbol_for(name: str):
+        replacement = remap.get(name)
+        if replacement is None:
+            replacement = _symbolic_shapes.parse_symbolic_expression(
+                ctx.new_symbolic_dim().value
+            )
+            remap[name] = replacement
+        return replacement
+
+    def substitutions(expr):
+        return {
+            symbol: fresh_symbol_for(symbol.name)
+            for symbol in expr.free_symbols
+            if ctx.is_generated_symbol(symbol.name)
+        }
+
+    def remap_dim(dim: int | ir.SymbolicDim) -> int | ir.SymbolicDim:
+        expr = _symbolic_shapes.dim_to_expr(dim)
+        if expr is None:
+            return dim
+        subs = substitutions(expr)
+        if not subs:
+            return dim
+        return _symbolic_shapes.expr_to_dim(expr.subs(subs))
+
+    def remap_sym_data(sym_data: str | None) -> str | None:
+        if sym_data is None:
+            return None
+        try:
+            elements = json.loads(sym_data)
+        except (ValueError, TypeError):
+            return sym_data
+        changed = False
+        new_elements: list = []
+        for element in elements:
+            if isinstance(element, str):
+                expr = _symbolic_shapes.parse_symbolic_expression(element)
+                subs = substitutions(expr)
+                if subs:
+                    remapped = _symbolic_shapes.expr_to_dim(expr.subs(subs))
+                    new_elements.append(
+                        remapped if isinstance(remapped, int) else str(remapped)
+                    )
+                    changed = True
+                    continue
+            new_elements.append(element)
+        if not changed:
+            return sym_data
+        return json.dumps(new_elements)
+
+    remapped_outputs: list[tuple[ir.Shape | None, ir.DataType | None, str | None]] = []
+    for c_shape, c_dtype, c_sym_data in cached_outputs:
+        new_shape = c_shape
+        if c_shape is not None:
+            new_shape = ir.Shape([remap_dim(dim) for dim in c_shape.dims])
+        remapped_outputs.append((new_shape, c_dtype, remap_sym_data(c_sym_data)))
+    return remapped_outputs
+
+
 def infer_function_call_output_shapes(
     ctx: _context.ShapeInferenceContext,
     node: ir.Node,
@@ -408,7 +498,7 @@ def infer_function_call_output_shapes(
     if inference_cache is not None:
         cache_key = (id(f), _make_input_signature(f, node), _make_attr_signature(node))
         if cache_key in inference_cache:
-            cached_outputs = inference_cache[cache_key]
+            cached_outputs = _remint_cached_generated_symbols(ctx, inference_cache[cache_key])
             for n_out, (c_shape, c_dtype, c_sym_data) in zip(node.outputs, cached_outputs):
                 if n_out is None:
                     continue

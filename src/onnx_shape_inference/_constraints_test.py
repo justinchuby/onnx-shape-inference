@@ -190,6 +190,31 @@ class RecordReshapeNumelEqualitiesTest(unittest.TestCase):
         _constraints.propagate_symbolic_constraints(ctx, graph)
         self.assertEqual(flat.shape[-1], _sym("c"))
 
+    def test_divisibility_rewrite_scoped_to_reshape_numel(self):
+        # A reshape [a,b,c] -> [a,b,2,floor(c/2)] supplies the divisibility
+        # provenance for 2*floor(c/2) -> c.  It must collapse ONLY the value
+        # whose element count matches the reshape numel, not an unrelated value
+        # that carries a genuinely-rounding 2*floor(c/2) with a different numel.
+        graph, _node = self._reshape_graph(["a", "b", "c"], ["a", "b", 2, "floor(c/2)"])
+        # Inherited from the reshape: same numel (2*a*b*floor(c/2)) -> collapses.
+        inherited = ir.Value(
+            name="inherited",
+            type=ir.TensorType(ir.DataType.FLOAT),
+            shape=ir.Shape(["a", "b", "2*floor(c/2)"]),
+        )
+        # Unrelated genuine rounding: numel 2*floor(c/2) differs -> preserved.
+        genuine = ir.Value(
+            name="genuine",
+            type=ir.TensorType(ir.DataType.FLOAT),
+            shape=ir.Shape(["2*floor(c/2)"]),
+        )
+        graph.outputs.extend([inherited, genuine])
+        ctx = _context.ShapeInferenceContext()
+        _constraints.record_reshape_numel_equalities(ctx, graph)
+        _constraints.propagate_symbolic_constraints(ctx, graph)
+        self.assertEqual(inherited.shape[-1], _sym("c"))
+        self.assertEqual(genuine.shape[0], _sym("2*floor(c/2)"))
+
 
 class LeafEqualityTest(unittest.TestCase):
     """Direct tests for the reusable _leaf_equality helper."""

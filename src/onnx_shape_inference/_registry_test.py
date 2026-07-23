@@ -50,6 +50,27 @@ class OpShapeInferenceRegistryTest(unittest.TestCase):
         self.assertTrue(self.registry.has("", "TestOp"))
         self.assertFalse(self.registry.has("", "NonExistent"))
 
+    def test_has_normalizes_domain(self):
+        # 'ai.onnx' normalizes to the default domain '', so has() must agree
+        # with get() regardless of which spelling of the domain is used.
+        @self.registry.register("", "TestOp", since_version=1)
+        def infer_test(ctx, node):
+            pass
+
+        self.assertIsNotNone(self.registry.get("ai.onnx", "TestOp", version=17))
+        self.assertTrue(self.registry.has("ai.onnx", "TestOp"))
+        self.assertTrue(self.registry.has("", "TestOp"))
+
+        # A registration under the explicit 'ai.onnx' spelling is likewise found
+        # through the normalized default-domain query.
+        @self.registry.register("ai.onnx", "OtherOp", since_version=1)
+        def infer_other(ctx, node):
+            pass
+
+        self.assertTrue(self.registry.has("", "OtherOp"))
+        self.assertTrue(self.registry.has("ai.onnx", "OtherOp"))
+        self.assertIsNotNone(self.registry.get("", "OtherOp", version=1))
+
     def test_multiple_version_registrations(self):
         @self.registry.register("", "TestOp", since_version=7)
         def infer_v7(ctx, node):
