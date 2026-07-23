@@ -436,6 +436,82 @@ def _numeric_dtype(
     return dtype
 
 
+def _unidirectional_broadcast_shape(
+    generator: _Generator,
+    primary_shape: _Shape,
+) -> _Shape:
+    """Return a shape that is unidirectionally broadcastable *to* ``primary_shape``.
+
+    Several operators require a secondary parameter input (for example PRelu
+    ``slope`` or LayerNormalization ``Scale``) to be unidirectionally
+    broadcastable to a primary tensor. Per the ONNX spec that means the result
+    has rank ``<= len(primary_shape)`` and, aligned on the trailing axes, every
+    dimension is either ``1`` or exactly the corresponding primary dimension.
+
+    The returned shape keeps the primary's (possibly symbolic) dimension when it
+    is preserved so downstream oracles bind the same symbol, and falls back to
+    ``1`` for unknown (``None``) dimensions since ``1`` broadcasts to anything.
+    """
+    if primary_shape is None:
+        return ()
+    rank = len(primary_shape)
+    keep = generator.rng.randint(0, rank)
+    if keep == 0:
+        return ()
+    tail = primary_shape[rank - keep :]
+    dims: list[_Dim] = []
+    for dim in tail:
+        if dim is None or generator.rng.randrange(2):
+            dims.append(1)
+        else:
+            dims.append(dim)
+    return tuple(dims)
+
+
+def _plan_prelu(
+    generator: _Generator,
+    schema: onnx.defs.OpSchema,
+    bindings: dict[str, ir.DataType],
+) -> _InputPlan:
+    x = generator._port_for_name(schema, "X", bindings, min_rank=1)
+    slope_shape = _unidirectional_broadcast_shape(generator, x.shape)
+    slope = generator._graph_input(x.dtype, slope_shape)
+    return _InputPlan([x, slope], output_shapes=(x.shape,))
+
+
+def _plan_layer_normalization(
+    generator: _Generator,
+    schema: onnx.defs.OpSchema,
+    bindings: dict[str, ir.DataType],
+) -> _InputPlan:
+    x = generator._port_for_name(schema, "X", bindings, min_rank=1)
+    inputs: list[_Port | None] = [
+        x,
+        generator._graph_input(x.dtype, _unidirectional_broadcast_shape(generator, x.shape)),
+    ]
+    input_names = {formal.name for formal in schema.inputs}
+    if "B" in input_names and generator.rng.randrange(2):
+        inputs.append(
+            generator._graph_input(
+                x.dtype, _unidirectional_broadcast_shape(generator, x.shape)
+            )
+        )
+    return _InputPlan(inputs, output_shapes=(x.shape,))
+
+
+def _plan_rms_normalization(
+    generator: _Generator,
+    schema: onnx.defs.OpSchema,
+    bindings: dict[str, ir.DataType],
+) -> _InputPlan:
+    x = generator._port_for_name(schema, "X", bindings, min_rank=1)
+    scale = generator._graph_input(
+        x.dtype, _unidirectional_broadcast_shape(generator, x.shape)
+    )
+    bindings["V"] = x.dtype
+    return _InputPlan([x, scale], output_shapes=(x.shape,))
+
+
 def _plan_conv(
     generator: _Generator,
     schema: onnx.defs.OpSchema,
@@ -606,8 +682,11 @@ _op_planners: dict[_OpKey, InputPlanner] = {
     ("", "Conv"): _plan_conv,
     ("", "Gather"): _plan_gather,
     ("", "Gemm"): _plan_gemm,
+    ("", "LayerNormalization"): _plan_layer_normalization,
     ("", "MatMul"): _plan_matmul,
     ("", "MaxPool"): _plan_pool,
+    ("", "PRelu"): _plan_prelu,
+    ("", "RMSNormalization"): _plan_rms_normalization,
     ("", "Split"): _plan_split,
 }
 _semantic_planners: dict[_OpKey, InputPlanner] = {
