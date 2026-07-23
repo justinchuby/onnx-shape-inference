@@ -88,18 +88,13 @@ _GENERIC_EXCLUDED_OPS = frozenset(
         "ArgMin",
         "ArgMax",
         "Attention",
-        "AveragePool",
         "Constant",
-        "Concat",
-        "Conv",
         "ConvInteger",
         "ConvTranspose",
         "DeformConv",
         "Einsum",
         "GRU",
-        "Gather",
         "GatherND",
-        "Gemm",
         "GlobalAveragePool",
         "GlobalLpPool",
         "GlobalMaxPool",
@@ -109,9 +104,7 @@ _GENERIC_EXCLUDED_OPS = frozenset(
         "LinearAttention",
         "Loop",
         "LpPool",
-        "MatMul",
         "MatMulInteger",
-        "MaxPool",
         "MaxRoiPool",
         "MaxUnpool",
         "QLinearMatMul",
@@ -120,7 +113,6 @@ _GENERIC_EXCLUDED_OPS = frozenset(
         "RoiAlign",
         "Scan",
         "SequenceMap",
-        "Split",
         "STFT",
         "TensorScatter",
     }
@@ -151,6 +143,7 @@ class _InputPlan:
     inputs: list[_Port | None]
     attributes: dict[str, ir.Attr] = field(default_factory=dict)
     output_shapes: tuple[_Shape | None, ...] = ()
+    output_count: int | None = None
 
 
 InputPlanner: TypeAlias = Callable[
@@ -407,6 +400,196 @@ def _plan_space_to_depth(
     return _InputPlan([data], attributes)
 
 
+def _ints_attr(name: str, values: Sequence[int]) -> ir.Attr:
+    return ir.Attr(name, ir.AttributeType.INTS, tuple(int(v) for v in values))
+
+
+def _int_attr(name: str, value: int) -> ir.Attr:
+    return ir.Attr(name, ir.AttributeType.INT, int(value))
+
+
+def _numeric_dtype(
+    generator: _Generator,
+    type_str: str,
+    schema: onnx.defs.OpSchema,
+    bindings: dict[str, ir.DataType],
+    *,
+    prefer: Sequence[ir.DataType] = (ir.DataType.FLOAT,),
+) -> ir.DataType:
+    """Pick a dtype for ``type_str`` that we can also build initializers for.
+
+    Prefers the supplied dtypes (defaulting to float) so operators that only run
+    numerically under ONNX Runtime, e.g. pooling and convolution, receive a
+    runnable type when the schema allows it.
+    """
+    if type_str in bindings:
+        return bindings[type_str]
+    candidates = generator._dtype_candidates(type_str, schema)
+    if not candidates:
+        raise _PlanningError(f"No supported tensor dtype for {schema.name}.{type_str}")
+    for wanted in prefer:
+        if wanted in candidates:
+            bindings[type_str] = wanted
+            return wanted
+    dtype = candidates[0]
+    bindings[type_str] = dtype
+    return dtype
+
+
+def _plan_conv(
+    generator: _Generator,
+    schema: onnx.defs.OpSchema,
+    bindings: dict[str, ir.DataType],
+) -> _InputPlan:
+    dtype = _numeric_dtype(generator, "T", schema, bindings)
+    channels = generator.rng.choice((1, 2, 3))
+    features = generator.rng.choice((1, 2, 4))
+    size = generator.rng.choice((6, 8))
+    x = generator._graph_input(dtype, (1, channels, size, size))
+    weight = np.ones((features, channels, 3, 3), dtype=_DTYPE_TO_NUMPY[dtype])
+    w = generator._constant_port("conv_w", weight, dtype)
+    attributes = {
+        "kernel_shape": _ints_attr("kernel_shape", (3, 3)),
+        "pads": _ints_attr("pads", (1, 1, 1, 1)),
+        "strides": _ints_attr("strides", (1, 1)),
+    }
+    output_shape = (1, features, size, size)
+    return _InputPlan([x, w], attributes, output_shapes=(output_shape,))
+
+
+def _plan_pool(
+    generator: _Generator,
+    schema: onnx.defs.OpSchema,
+    bindings: dict[str, ir.DataType],
+) -> _InputPlan:
+    dtype = _numeric_dtype(generator, "T", schema, bindings)
+    channels = generator.rng.choice((1, 2, 3))
+    size = generator.rng.choice((6, 8))
+    x = generator._graph_input(dtype, (1, channels, size, size))
+    attributes = {
+        "kernel_shape": _ints_attr("kernel_shape", (2, 2)),
+        "strides": _ints_attr("strides", (2, 2)),
+    }
+    out = (size - 2) // 2 + 1
+    output_shape = (1, channels, out, out)
+    return _InputPlan([x], attributes, output_shapes=(output_shape,))
+
+
+def _plan_matmul(
+    generator: _Generator,
+    schema: onnx.defs.OpSchema,
+    bindings: dict[str, ir.DataType],
+) -> _InputPlan:
+    dtype = _numeric_dtype(generator, "T", schema, bindings)
+    m, k, n = (generator.rng.choice((2, 3, 4)) for _ in range(3))
+    a = generator._graph_input(dtype, (m, k))
+    weight = np.ones((k, n), dtype=_DTYPE_TO_NUMPY[dtype])
+    b = generator._constant_port("matmul_b", weight, dtype)
+    return _InputPlan([a, b], output_shapes=((m, n),))
+
+
+def _plan_gemm(
+    generator: _Generator,
+    schema: onnx.defs.OpSchema,
+    bindings: dict[str, ir.DataType],
+) -> _InputPlan:
+    dtype = _numeric_dtype(generator, "T", schema, bindings)
+    m, k, n = (generator.rng.choice((2, 3, 4)) for _ in range(3))
+    a = generator._graph_input(dtype, (m, k))
+    b = generator._constant_port(
+        "gemm_b", np.ones((k, n), dtype=_DTYPE_TO_NUMPY[dtype]), dtype
+    )
+    inputs: list[_Port | None] = [a, b]
+    if schema.min_input >= 3 or generator.rng.randrange(2):
+        c = generator._constant_port(
+            "gemm_c", np.ones((n,), dtype=_DTYPE_TO_NUMPY[dtype]), dtype
+        )
+        inputs.append(c)
+    return _InputPlan(inputs, output_shapes=((m, n),))
+
+
+def _plan_gather(
+    generator: _Generator,
+    schema: onnx.defs.OpSchema,
+    bindings: dict[str, ir.DataType],
+) -> _InputPlan:
+    data = generator._port_for_name(
+        schema,
+        "data",
+        bindings,
+        concrete_shape=True,
+        positive_shape=True,
+        min_rank=1,
+    )
+    assert data.shape is not None
+    axis = generator.rng.randrange(len(data.shape))
+    extent = int(data.shape[axis])
+    indices = generator._constant_port(
+        "gather_indices", [0, min(1, extent - 1)], ir.DataType.INT64
+    )
+    output_shape = (*data.shape[:axis], 2, *data.shape[axis + 1 :])
+    attributes = {"axis": _int_attr("axis", axis)}
+    return _InputPlan([data, indices], attributes, output_shapes=(output_shape,))
+
+
+def _plan_concat(
+    generator: _Generator,
+    schema: onnx.defs.OpSchema,
+    bindings: dict[str, ir.DataType],
+) -> _InputPlan:
+    first = generator._port_for_name(
+        schema,
+        "inputs",
+        bindings,
+        concrete_shape=True,
+        positive_shape=True,
+        min_rank=1,
+    )
+    assert first.shape is not None
+    dtype = first.dtype
+    axis = generator.rng.randrange(len(first.shape))
+    second_shape = [int(dim) for dim in first.shape]
+    second_shape[axis] = generator.rng.choice((1, 2, 3))
+    second = generator._graph_input(dtype, tuple(second_shape))
+    output_shape = [int(dim) for dim in first.shape]
+    output_shape[axis] = int(first.shape[axis]) + second_shape[axis]
+    attributes = {"axis": _int_attr("axis", axis)}
+    return _InputPlan([first, second], attributes, output_shapes=(tuple(output_shape),))
+
+
+def _plan_split(
+    generator: _Generator,
+    schema: onnx.defs.OpSchema,
+    bindings: dict[str, ir.DataType],
+) -> _InputPlan:
+    dtype = _numeric_dtype(
+        generator, "T", schema, bindings, prefer=(ir.DataType.FLOAT, ir.DataType.INT64)
+    )
+    rank = generator.rng.randint(1, 3)
+    shape = [generator.rng.choice((1, 2, 3)) for _ in range(rank)]
+    axis = generator.rng.randrange(rank)
+    shape[axis] = 4
+    x = generator._graph_input(dtype, tuple(shape))
+    half = list(shape)
+    half[axis] = 2
+    output_shape = tuple(half)
+    attributes: dict[str, ir.Attr] = {"axis": _int_attr("axis", axis)}
+    inputs: list[_Port | None] = [x]
+    input_names = {formal.name for formal in schema.inputs}
+    if "split" in input_names:
+        inputs.append(generator._constant_port("split_sizes", [2, 2], ir.DataType.INT64))
+    elif "num_outputs" in schema.attributes:
+        attributes["num_outputs"] = _int_attr("num_outputs", 2)
+    else:
+        attributes["split"] = _ints_attr("split", (2, 2))
+    return _InputPlan(
+        inputs,
+        attributes,
+        output_shapes=(output_shape, output_shape),
+        output_count=2,
+    )
+
+
 _op_planners: dict[_OpKey, InputPlanner] = {
     ("", "ConstantOfShape"): _plan_constant_of_shape,
     ("", "Expand"): _plan_expand,
@@ -418,6 +601,14 @@ _op_planners: dict[_OpKey, InputPlanner] = {
     ("", "Slice"): _plan_slice,
     ("", "Tile"): _plan_tile,
     ("", "TopK"): _plan_topk,
+    ("", "AveragePool"): _plan_pool,
+    ("", "Concat"): _plan_concat,
+    ("", "Conv"): _plan_conv,
+    ("", "Gather"): _plan_gather,
+    ("", "Gemm"): _plan_gemm,
+    ("", "MatMul"): _plan_matmul,
+    ("", "MaxPool"): _plan_pool,
+    ("", "Split"): _plan_split,
 }
 _semantic_planners: dict[_OpKey, InputPlanner] = {
     ("", "DepthToSpace"): _plan_depth_to_space,
@@ -455,6 +646,7 @@ class _Generator:
         planner_node = self.nodes[-1].name
         for _ in range(6):
             self._add_weighted_operator()
+        self._maybe_add_control_flow()
 
         graph_output = (
             template_output.value if template_output is not None else self.graph_inputs[0]
@@ -519,6 +711,17 @@ class _Generator:
         self._graph_input(ir.DataType.FLOAT, (shared, 1))
         self._graph_input(ir.DataType.INT64, (self.rng.choice((1, 2, 3)),))
         self._graph_input(ir.DataType.BOOL, ())
+        # Seed a few small-integer typed ports so dtype-specific operator paths
+        # (bitwise, quantized-adjacent, cast targets) get exercised with
+        # reusable inputs rather than only float/int64/bool.
+        for dtype in (
+            ir.DataType.INT32,
+            ir.DataType.INT8,
+            ir.DataType.INT16,
+            ir.DataType.UINT8,
+            ir.DataType.UINT16,
+        ):
+            self._graph_input(dtype, (self.rng.choice((1, 2, 3)),))
 
     def _new_value_name(self, prefix: str) -> str:
         name = f"{prefix}_{self.value_index}"
@@ -541,7 +744,8 @@ class _Generator:
         *,
         concrete: bool = False,
         positive: bool = False,
-        min_rank: int = 0,
+        allow_zero: bool = False,
+        min_rank: int = 1,
         max_rank: int = 4,
     ) -> _Shape:
         rank = self.rng.randint(min_rank, max_rank)
@@ -555,7 +759,13 @@ class _Generator:
                 else:
                     dims.append(self.rng.choice(sorted(self.symbolic_dims)))
             else:
-                values = (1, 1, 2, 2, 3) if positive else (0, 1, 1, 2, 2, 3)
+                # Bias away from zero-length extents: they frequently make ONNX
+                # Runtime unable to execute the graph, starving the soundness
+                # oracle. Callers must opt in to zeros explicitly.
+                if allow_zero and not positive:
+                    values = (0, 1, 1, 2, 2, 3)
+                else:
+                    values = (1, 1, 2, 2, 3)
                 dims.append(self.rng.choice(values))
         return tuple(dims)
 
@@ -639,7 +849,7 @@ class _Generator:
         *,
         concrete_shape: bool = False,
         positive_shape: bool = False,
-        min_rank: int = 0,
+        min_rank: int = 1,
         max_rank: int = 4,
     ) -> _Port:
         formal = next((formal for formal in schema.inputs if formal.name == name), None)
@@ -820,7 +1030,10 @@ class _Generator:
                 continue
             count = 1
             if formal.option == onnx.defs.OpSchema.FormalParameterOption.Variadic:
-                count = max(1, schema.min_output - len(output_formals))
+                if plan.output_count is not None:
+                    count = max(1, plan.output_count - len(output_formals))
+                else:
+                    count = max(1, schema.min_output - len(output_formals))
             output_formals.extend([formal] * count)
         outputs: list[ir.Value] = []
         ports: list[_Port] = []
@@ -856,6 +1069,181 @@ class _Generator:
         self.selected_ops.append((*op_key, boundary))
         self.op_counts[op_key] = self.op_counts.get(op_key, 0) + 1
         return ports
+
+    def _cf_value(self, prefix: str, dtype: ir.DataType, shape: _Shape) -> ir.Value:
+        return ir.Value(
+            name=self._new_value_name(prefix),
+            type=ir.TensorType(dtype),
+            shape=ir.Shape(shape),
+        )
+
+    def _cf_constant_node(
+        self, array: np.ndarray, dtype: ir.DataType
+    ) -> tuple[ir.Node, ir.Value]:
+        """Build a self-contained ``Constant`` node for use inside a subgraph."""
+        out = self._cf_value("cf_const", dtype, array.shape)
+        node = ir.Node(
+            "",
+            "Constant",
+            inputs=[],
+            outputs=[out],
+            attributes={
+                "value": ir.Attr(
+                    "value",
+                    ir.AttributeType.TENSOR,
+                    ir.Tensor(array, name=self._new_value_name("cf_value")),
+                )
+            },
+            name=self._new_value_name("node"),
+        )
+        return node, out
+
+    def _register_control_flow(
+        self,
+        op_type: str,
+        node: ir.Node,
+        output: ir.Value,
+        shape: _Shape,
+        dtype: ir.DataType,
+    ) -> None:
+        self.nodes.append(node)
+        self.ports.append(_Port(output, dtype, shape))
+        boundaries = [
+            version
+            for version in _registry.registry.version_boundaries("", op_type)
+            if version <= self.opset
+        ]
+        if boundaries:
+            self.selected_ops.append(("", op_type, max(boundaries)))
+        self.op_counts[("", op_type)] = self.op_counts.get(("", op_type), 0) + 1
+
+    def _add_if(self) -> None:
+        dtype = ir.DataType.FLOAT
+        shape: _Shape = (2, 3)
+        cond = self._constant_port("if_cond", True, ir.DataType.BOOL)
+        then_node, then_out = self._cf_constant_node(np.ones(shape, np.float32), dtype)
+        then_branch = ir.Graph(
+            inputs=[],
+            outputs=[then_out],
+            nodes=[then_node],
+            name=self._new_value_name("then_branch"),
+        )
+        else_node, else_out = self._cf_constant_node(np.full(shape, 2.0, np.float32), dtype)
+        else_branch = ir.Graph(
+            inputs=[],
+            outputs=[else_out],
+            nodes=[else_node],
+            name=self._new_value_name("else_branch"),
+        )
+        out = self._cf_value("if_out", dtype, shape)
+        node = ir.Node(
+            "",
+            "If",
+            inputs=[cond.value],
+            outputs=[out],
+            attributes={
+                "then_branch": ir.Attr("then_branch", ir.AttributeType.GRAPH, then_branch),
+                "else_branch": ir.Attr("else_branch", ir.AttributeType.GRAPH, else_branch),
+            },
+            name=self._new_value_name("node"),
+        )
+        self._register_control_flow("If", node, out, shape, dtype)
+
+    def _add_loop(self) -> None:
+        dtype = ir.DataType.FLOAT
+        shape: _Shape = (2, 3)
+        trip = self._constant_port("loop_trip", 3, ir.DataType.INT64)
+        cond = self._constant_port("loop_cond", True, ir.DataType.BOOL)
+        init = self._constant_port("loop_init", np.ones(shape, np.float32), dtype)
+        iter_num = self._cf_value("loop_iter", ir.DataType.INT64, ())
+        cond_in = self._cf_value("loop_cond_in", ir.DataType.BOOL, ())
+        carried_in = self._cf_value("loop_carried_in", dtype, shape)
+        cond_out = self._cf_value("loop_cond_out", ir.DataType.BOOL, ())
+        carried_out = self._cf_value("loop_carried_out", dtype, shape)
+        body = ir.Graph(
+            inputs=[iter_num, cond_in, carried_in],
+            outputs=[cond_out, carried_out],
+            nodes=[
+                ir.Node(
+                    "",
+                    "Identity",
+                    inputs=[cond_in],
+                    outputs=[cond_out],
+                    name=self._new_value_name("node"),
+                ),
+                ir.Node(
+                    "",
+                    "Identity",
+                    inputs=[carried_in],
+                    outputs=[carried_out],
+                    name=self._new_value_name("node"),
+                ),
+            ],
+            name=self._new_value_name("loop_body"),
+        )
+        out = self._cf_value("loop_out", dtype, shape)
+        node = ir.Node(
+            "",
+            "Loop",
+            inputs=[trip.value, cond.value, init.value],
+            outputs=[out],
+            attributes={"body": ir.Attr("body", ir.AttributeType.GRAPH, body)},
+            name=self._new_value_name("node"),
+        )
+        self._register_control_flow("Loop", node, out, shape, dtype)
+
+    def _add_scan(self) -> None:
+        dtype = ir.DataType.FLOAT
+        slice_shape: _Shape = (2, 3)
+        seq_len = 4
+        seq = self._constant_port(
+            "scan_seq", np.ones((seq_len, *slice_shape), np.float32), dtype
+        )
+        x_in = self._cf_value("scan_x", dtype, slice_shape)
+        y_out = self._cf_value("scan_y", dtype, slice_shape)
+        body = ir.Graph(
+            inputs=[x_in],
+            outputs=[y_out],
+            nodes=[
+                ir.Node(
+                    "",
+                    "Identity",
+                    inputs=[x_in],
+                    outputs=[y_out],
+                    name=self._new_value_name("node"),
+                )
+            ],
+            name=self._new_value_name("scan_body"),
+        )
+        output_shape = (seq_len, *slice_shape)
+        out = self._cf_value("scan_out", dtype, output_shape)
+        node = ir.Node(
+            "",
+            "Scan",
+            inputs=[seq.value],
+            outputs=[out],
+            attributes={
+                "body": ir.Attr("body", ir.AttributeType.GRAPH, body),
+                "num_scan_inputs": ir.Attr("num_scan_inputs", ir.AttributeType.INT, 1),
+            },
+            name=self._new_value_name("node"),
+        )
+        self._register_control_flow("Scan", node, out, output_shape, dtype)
+
+    def _maybe_add_control_flow(self) -> None:
+        """Occasionally append a control-flow op with valid, small subgraphs.
+
+        If and Loop require GRAPH-typed subgraph attributes that the generic
+        schema-driven planner cannot synthesise, so they are constructed here.
+        Scan is only emitted at opset 9+, where its modern (no ``sequence_lens``)
+        form is available.
+        """
+        if self.seed % 3 != 0:
+            return
+        builders = [self._add_if, self._add_loop]
+        if self.opset >= 9:
+            builders.append(self._add_scan)
+        builders[(self.seed // 3) % len(builders)]()
 
     def _template_node(
         self,
