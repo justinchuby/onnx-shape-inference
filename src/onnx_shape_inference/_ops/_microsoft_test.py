@@ -1475,6 +1475,27 @@ class QLinearConvTest(unittest.TestCase):
         )
         self.assertEqual(actual, [ts(INT8, ["batch", "height - 2", "width - 2", 8])])
 
+    def test_missing_required_input_raises(self):
+        with self.assertRaises(OpUsageError):
+            run_shape_inference(
+                MSFT,
+                "QLinearConv",
+                [
+                    ts(ir.DataType.UINT8, [1, 5, 5, 3]),
+                    ts(FLOAT, []),
+                    ts(ir.DataType.UINT8, []),
+                    ts(INT8, [8, 3, 3, 3]),
+                    None,
+                    ts(INT8, []),
+                    ts(FLOAT, []),
+                    ts(INT8, []),
+                ],
+                attributes={
+                    "channels_last": ir.Attr("channels_last", ir.AttributeType.INT, 1)
+                },
+                opset_version=1,
+            )
+
 
 # ---------------------------------------------------------------------------
 # QLinearConcat

@@ -1027,15 +1027,26 @@ def _infer_qlinear_binary(ctx: _context.ShapeInferenceContext, node: ir.Node) ->
 @_reg(_MSFT, "QLinearConv", since_version=1)
 def infer_qlinear_conv(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
     """Quantized Conv. x(0), x_scale(1), x_zp(2), w(3), w_scale(4), w_zp(5), ..."""
-    if len(node.inputs) < 8:
-        raise _context.OpUsageError(
-            node, f"Expected at least 8 inputs, got {len(node.inputs)}"
-        )
-    if node.inputs[0] is None or node.inputs[3] is None or node.inputs[7] is None:
-        raise _context.OpUsageError(node, "Expected inputs x, w, and y_zero_point")
-    x = node.inputs[0]
-    w = node.inputs[3]
-    y_zero_point = node.inputs[7]
+    (
+        x,
+        _x_scale,
+        _x_zero_point,
+        w,
+        _w_scale,
+        _w_zero_point,
+        _y_scale,
+        y_zero_point,
+    ) = _context.check_inputs(
+        node,
+        "x",
+        "x_scale",
+        "x_zero_point",
+        "w",
+        "w_scale",
+        "w_zero_point",
+        "y_scale",
+        "y_zero_point",
+    )
 
     output_dtype = y_zero_point.dtype
 
