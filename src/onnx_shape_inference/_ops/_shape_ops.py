@@ -30,6 +30,7 @@ def infer_shape(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
     (data,) = _context.check_inputs(node, "data")
 
     output_shape: ir.Shape | None = None
+    dims: list[int | ir.SymbolicDim] | None = None
     if data.shape is not None:
         # Since opset 15, start/end attributes can slice the shape
         start_attr = node.attributes.get("start")
@@ -44,15 +45,13 @@ def infer_shape(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
             end += rank
         start = max(0, min(start, rank))
         end = max(0, min(end, rank))
-
         output_shape = ir.Shape([max(0, end - start)])
-
-        # Store the shape dims as symbolic_value for data propagation
-        if len(node.outputs) > 0:
-            ctx.set_symbolic_value(node.outputs[0], list(data.shape.dims[start:end]))
+        dims = list(data.shape.dims[start:end])
 
     if len(node.outputs) > 0:
         ctx.set_shape_and_dtype(node.outputs[0], output_shape, ir.DataType.INT64)
+        if dims is not None:
+            ctx.set_symbolic_value(node.outputs[0], dims)
 
 
 @_registry.registry.register("", "Size", since_version=1)
