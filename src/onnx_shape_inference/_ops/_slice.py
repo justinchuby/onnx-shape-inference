@@ -98,18 +98,23 @@ def infer_slice(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
             )
             output_dims[axis] = slice_len
         elif step > 0 and start >= 0:
-            effective_end = dim + end if isinstance(end, int) and end < 0 else end
-            clamped_end = _utils.min_dim(dim, effective_end)
-            if clamped_end is None:
-                output_dims[axis] = ctx.new_symbolic_dim()
-                continue
-            sliced_extent = _utils.ceil_div_dim(clamped_end - start, step)
-            nonnegative_extent = _utils.max_dim(0, sliced_extent)
-            output_dims[axis] = (
-                nonnegative_extent
-                if nonnegative_extent is not None
-                else ctx.new_symbolic_dim()
-            )
+            if isinstance(end, int) and end >= 0:
+                # Assume the common concrete-bounds case is in range so downstream
+                # optimization sees a concrete extent instead of a symbolic clamp.
+                output_dims[axis] = max(0, (end - start + step - 1) // step)
+            else:
+                effective_end = dim + end if isinstance(end, int) and end < 0 else end
+                clamped_end = _utils.min_dim(dim, effective_end)
+                if clamped_end is None:
+                    output_dims[axis] = ctx.new_symbolic_dim()
+                    continue
+                sliced_extent = _utils.ceil_div_dim(clamped_end - start, step)
+                nonnegative_extent = _utils.max_dim(0, sliced_extent)
+                output_dims[axis] = (
+                    nonnegative_extent
+                    if nonnegative_extent is not None
+                    else ctx.new_symbolic_dim()
+                )
         else:
             output_dims[axis] = ctx.new_symbolic_dim()
 

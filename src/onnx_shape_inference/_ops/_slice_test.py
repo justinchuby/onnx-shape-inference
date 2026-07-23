@@ -71,14 +71,25 @@ class SliceTest(unittest.TestCase):
         self.assertEqual(actual, [ts(FLOAT, [1, 2])])
 
     def test_symbolic_dim_const_start_end(self):
-        """A concrete end is clamped by the unknown input dimension."""
+        """Concrete in-bounds start/end produce a concrete extent."""
         actual = self._run(ts(FLOAT, ["N", 10]), [1], [5], [0], [1])
-        self.assertEqual(actual, [ts(FLOAT, ["Min(5, N) - 1", 10])])
+        self.assertEqual(actual, [ts(FLOAT, [4, 10])])
 
     def test_symbolic_dim_const_start_end_step_2(self):
-        """Clamping is preserved when deriving a stepped slice extent."""
+        """Concrete in-bounds start/end/step produce a concrete extent."""
         actual = self._run(ts(FLOAT, ["N", 10]), [0], [6], [0], [2])
-        self.assertEqual(actual, [ts(FLOAT, ["-floor(-Min(6, N)/2)", 10])])
+        self.assertEqual(actual, [ts(FLOAT, [3, 10])])
+
+    @parameterized.parameterized.expand(
+        [
+            ("unit_step", 1, 98),
+            ("step_3", 3, 33),
+        ]
+    )
+    def test_symbolic_dim_concrete_bounds_assume_in_bounds(self, _name, step, expected):
+        """Concrete non-negative bounds use their extent even past an unknown dim."""
+        actual = self._run(ts(FLOAT, ["N"]), [2], [100], [0], [step])
+        self.assertEqual(actual, [ts(FLOAT, [expected])])
 
     def test_symbolic_dim_negative_start_becomes_unknown(self):
         """Negative start depends on actual dim size, so result is unknown."""
@@ -256,7 +267,7 @@ class SliceTest(unittest.TestCase):
             axes=[2, 1],
             steps=[1, 1],
         )
-        self.assertEqual(actual, [ts(FLOAT, ["a", "Min(100, b)", "c - 1"])])
+        self.assertEqual(actual, [ts(FLOAT, ["a", 100, "c - 1"])])
 
     def test_symbolic_end_with_step_derives_extent(self):
         batch = ir.SymbolicDim("batch")
