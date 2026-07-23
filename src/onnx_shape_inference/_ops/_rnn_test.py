@@ -54,34 +54,30 @@ class RNNBasicTest(unittest.TestCase):
         with self.assertRaises(OpUsageError):
             run_shape_inference_with_values("", op_type, [None], opset_version=21)
 
-    @parameterized.parameterized.expand(
-        [
-            ("rnn", "RNN", 2),
-            ("gru", "GRU", 2),
-            ("lstm", "LSTM", 3),
-        ]
-    )
-    def test_historical_opset_1(self, _name, op_type, num_outputs):
-        actual = run_shape_inference(
-            "",
-            op_type,
-            [ts(FLOAT, [10, 2, 8])],
-            {"hidden_size": ir.Attr("hidden_size", ir.AttributeType.INT, 16)},
-            opset_version=1,
-            num_outputs=num_outputs,
-        )
-        self.assertEqual(actual[0], ts(FLOAT, [10, 1, 2, 16]))
+    def test_opset_1_output_sequence_zero_is_not_registered(self):
+        with self.assertRaises(ValueError):
+            run_shape_inference(
+                "",
+                "RNN",
+                [ts(FLOAT, [5, 2, 3])],
+                {
+                    "hidden_size": ir.Attr("hidden_size", ir.AttributeType.INT, 4),
+                    "output_sequence": ir.Attr("output_sequence", ir.AttributeType.INT, 0),
+                },
+                opset_version=1,
+                num_outputs=2,
+            )
 
-    def test_lstm_opset_7(self):
+    def test_rnn_opset_7_always_has_sequence_output(self):
         actual = run_shape_inference(
             "",
-            "LSTM",
-            [ts(FLOAT, [10, 2, 8])],
-            {"hidden_size": ir.Attr("hidden_size", ir.AttributeType.INT, 16)},
+            "RNN",
+            [ts(FLOAT, [5, 2, 3])],
+            {"hidden_size": ir.Attr("hidden_size", ir.AttributeType.INT, 4)},
             opset_version=7,
-            num_outputs=3,
+            num_outputs=2,
         )
-        self.assertEqual(actual[0], ts(FLOAT, [10, 1, 2, 16]))
+        self.assertEqual(actual[0], ts(FLOAT, [5, 1, 2, 4]))
 
 
 class LSTMLayoutTest(unittest.TestCase):

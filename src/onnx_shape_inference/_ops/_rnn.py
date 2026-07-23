@@ -78,15 +78,15 @@ def _infer_rnn(
         ctx.set_shape_and_dtype(node.outputs[2], y_c_shape, output_dtype)
 
 
-@_reg("", "GRU", since_version=1)
-@_reg("", "RNN", since_version=1)
+@_reg("", "GRU", since_version=7)
+@_reg("", "RNN", since_version=7)
 def infer_rnn_gru(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
     """Infer shape and dtype for RNN/GRU operators."""
     num_gates = 3 if node.op_type == "GRU" else 1
     _infer_rnn(ctx, node, num_gates)
 
 
-@_reg("", "LSTM", since_version=1)
+@_reg("", "LSTM", since_version=7)
 def infer_lstm(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
     """Infer shape and dtype for LSTM operator."""
     _infer_rnn(ctx, node, num_gates=4)
