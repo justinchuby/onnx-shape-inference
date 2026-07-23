@@ -135,12 +135,16 @@ def infer_center_crop_pad(ctx: _context.ShapeInferenceContext, node: ir.Node) ->
                 node,
                 f"CenterCropPad axes length {len(axes)} does not match shape length {len(shape_vals)}",
             )
+            if len(node.outputs) > 0:
+                ctx.set_shape_and_dtype(node.outputs[0], None, output_dtype)
             return
         normalized_axes: list[int] = []
         for axis in axes:
             axis = axis + rank if axis < 0 else axis
             if axis < 0 or axis >= rank or axis in normalized_axes:
                 ctx.record_error(node, f"CenterCropPad axis {axis} is invalid for rank {rank}")
+                if len(node.outputs) > 0:
+                    ctx.set_shape_and_dtype(node.outputs[0], None, output_dtype)
                 return
             normalized_axes.append(axis)
         output_dims: list[int | ir.SymbolicDim] = list(input_dims)
@@ -156,6 +160,8 @@ def infer_center_crop_pad(ctx: _context.ShapeInferenceContext, node: ir.Node) ->
             axis = axis + rank if axis < 0 else axis
             if axis < 0 or axis >= rank:
                 ctx.record_error(node, f"CenterCropPad axis {axis} is invalid for rank {rank}")
+                if len(node.outputs) > 0:
+                    ctx.set_shape_and_dtype(node.outputs[0], None, output_dtype)
                 return
             output_dims_sym[axis] = ctx.new_symbolic_dim()
         output_shape = ir.Shape(output_dims_sym)

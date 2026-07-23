@@ -9,7 +9,7 @@ import unittest
 import onnx_ir as ir
 import parameterized
 
-from onnx_shape_inference import OpUsageError
+from onnx_shape_inference import OpUsageError, _context, _registry
 from onnx_shape_inference._ops._testing import (
     const_value,
     run_shape_inference,
@@ -362,6 +362,35 @@ class CenterCropPadTest(unittest.TestCase):
             policy="skip",
         )
         self.assertIsNone(actual[0].shape)
+
+    @parameterized.parameterized.expand(
+        [
+            ("mismatched_axes_length", [2], [16, 16]),
+            ("out_of_range_axis", [4], [16]),
+        ]
+    )
+    def test_center_crop_pad_invalid_axes_record_error_and_set_dtype(
+        self, _name, axes, target_shape
+    ):
+        input_val = ir.Value(
+            name="input", type=ir.TensorType(FLOAT), shape=ir.Shape([1, 3, 32, 32])
+        )
+        output = ir.Value(name="output")
+        node = ir.Node(
+            "",
+            "CenterCropPad",
+            inputs=[input_val, const_value(target_shape)],
+            outputs=[output],
+            attributes={"axes": ir.Attr("axes", ir.AttributeType.INTS, axes)},
+        )
+        ctx = _context.ShapeInferenceContext({"": 18}, policy="skip")
+        func = _registry.registry.get("", "CenterCropPad", version=18)
+        self.assertIsNotNone(func)
+        func(ctx, node)
+
+        self.assertEqual(len(ctx.errors), 1)
+        self.assertEqual(output.type, ir.TensorType(FLOAT))
+        self.assertIsNone(output.shape)
 
     def test_center_crop_pad_missing_input_shape(self):
         input_val = ir.Value(name="input", type=ir.TensorType(FLOAT))
