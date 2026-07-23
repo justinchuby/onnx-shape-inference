@@ -47,7 +47,14 @@ def infer_gemm(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
 
     m_dim = shape_a[1] if trans_a else shape_a[0]
     n_dim = shape_b[0] if trans_b else shape_b[1]
+    k_dim_a = shape_a[0] if trans_a else shape_a[1]
+    k_dim_b = shape_b[1] if trans_b else shape_b[0]
 
     output_shape = ir.Shape([m_dim, n_dim])
     if len(node.outputs) > 0:
         ctx.set_shape_and_dtype(node.outputs[0], output_shape, output_dtype)
+    if isinstance(k_dim_a, int) and isinstance(k_dim_b, int) and k_dim_a != k_dim_b:
+        ctx.record_error(
+            node,
+            f"Incompatible Gemm contraction dimensions: {k_dim_a} vs {k_dim_b}",
+        )
