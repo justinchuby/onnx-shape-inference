@@ -16,6 +16,8 @@ __all__ = [
     "infer_roi_align",
 ]
 
+import math
+
 import onnx_ir as ir
 
 from onnx_shape_inference import _context, _registry
@@ -83,18 +85,25 @@ def infer_col2im(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
 
     Spec: https://onnx.ai/onnx/operators/onnx__Col2Im.html
     """
-    (input_val, image_shape, _block_shape) = _context.check_inputs(
+    (input_val, image_shape, block_shape) = _context.check_inputs(
         node, "input", "image_shape", "block_shape"
     )
 
     output_dtype = input_val.dtype
 
     image_shape_const = ir.convenience.get_const_tensor(image_shape)
+    block_shape_const = ir.convenience.get_const_tensor(block_shape)
     if input_val.shape is not None and image_shape_const is not None:
         image_dims = [int(d) for d in image_shape_const.numpy().flatten()]
         n = input_val.shape[0]
-        # C is complex to compute; use symbolic
-        c: int | ir.SymbolicDim = ctx.new_symbolic_dim()
+        c: int | ir.SymbolicDim | None = None
+        if input_val.shape.rank() > 1 and block_shape_const is not None:
+            block_dims = [int(d) for d in block_shape_const.numpy().flatten()]
+            prod_block = math.prod(block_dims)
+            if prod_block > 0:
+                c = input_val.shape[1] // prod_block
+        if c is None:
+            c = ctx.new_symbolic_dim()
         output_dims: list[int | ir.SymbolicDim] = [n, c, *image_dims]
         output_shape: ir.Shape | None = ir.Shape(output_dims)
     else:
