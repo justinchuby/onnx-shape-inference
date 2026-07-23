@@ -8,7 +8,7 @@ import unittest
 
 import onnx_ir as ir
 
-from onnx_shape_inference import OpUsageError
+from onnx_shape_inference import OpUsageError, ShapeInferenceError
 from onnx_shape_inference._ops._testing import (
     run_shape_inference,
     run_shape_inference_with_values,
@@ -19,6 +19,26 @@ FLOAT = ir.DataType.FLOAT
 
 
 class ConvTransposeTest(unittest.TestCase):
+    def test_opset_10(self):
+        actual = run_shape_inference(
+            "",
+            "ConvTranspose",
+            [ts(FLOAT, [1, 1, 3, 3]), ts(FLOAT, [1, 1, 3, 3])],
+            opset_version=10,
+        )
+        self.assertEqual(actual, [ts(FLOAT, [1, 1, 5, 5])])
+
+    def test_invalid_spatial_attributes_raise_shape_error(self):
+        attrs = {"strides": ir.Attr("strides", ir.AttributeType.INTS, [0])}
+        with self.assertRaises(ShapeInferenceError):
+            run_shape_inference(
+                "",
+                "ConvTranspose",
+                [ts(FLOAT, [1, 1, 3, 3]), ts(FLOAT, [1, 1, 3, 3])],
+                attrs,
+                opset_version=11,
+            )
+
     def test_basic(self):
         # X=[1,1,3,3], W=[1,1,3,3], stride=1, no pads
         # output = 1*(3-1) + 0 + (3-1)*1+1 - 0 - 0 = 2+3 = 5

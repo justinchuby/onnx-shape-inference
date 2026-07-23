@@ -38,6 +38,24 @@ def _attrs(**kwargs) -> dict[str, ir.Attr]:
 class ConvTest(unittest.TestCase):
     @parameterized.parameterized.expand(
         [
+            ("short_strides", _attrs(strides=[1])),
+            ("zero_stride", _attrs(strides=[0, 1])),
+            ("rank_mismatched_weight", _attrs()),
+        ]
+    )
+    def test_invalid_spatial_attributes_raise_shape_error(self, _name, attrs):
+        weight_shape = [16, 3, 3] if _name == "rank_mismatched_weight" else [16, 3, 3, 3]
+        with self.assertRaises(ShapeInferenceError):
+            run_shape_inference(
+                "",
+                "Conv",
+                [ts(FLOAT, [1, 3, 5, 5]), ts(FLOAT, weight_shape)],
+                attrs,
+                opset_version=17,
+            )
+
+    @parameterized.parameterized.expand(
+        [
             # Basic cases
             (
                 "basic_no_pad",

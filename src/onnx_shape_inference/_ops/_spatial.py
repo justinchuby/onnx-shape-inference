@@ -54,7 +54,7 @@ def infer_affine_grid(ctx: _context.ShapeInferenceContext, node: ir.Node) -> Non
         ctx.set_shape_and_dtype(node.outputs[0], output_shape, output_dtype)
 
 
-@_reg("", "GridSample", since_version=20)
+@_reg("", "GridSample", since_version=16)
 def infer_grid_sample(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
     """Infer shape and dtype for GridSample operator.
 
@@ -127,17 +127,37 @@ def infer_center_crop_pad(ctx: _context.ShapeInferenceContext, node: ir.Node) ->
     if input_data.shape is not None and shape_const is not None:
         shape_vals = [int(s) for s in shape_const.numpy().flatten()]
         input_dims = list(input_data.shape.dims)
-        output_dims: list[int | ir.SymbolicDim] = []
-        for i in range(len(input_dims)):
-            if i < len(shape_vals):
-                output_dims.append(shape_vals[i])
-            else:
-                output_dims.append(input_dims[i])
+        rank = input_data.shape.rank()
+        axes_attr = node.attributes.get("axes")
+        axes = list(axes_attr.as_ints()) if axes_attr is not None else list(range(rank))
+        if len(axes) != len(shape_vals):
+            ctx.record_error(
+                node,
+                f"CenterCropPad axes length {len(axes)} does not match shape length {len(shape_vals)}",
+            )
+            return
+        normalized_axes: list[int] = []
+        for axis in axes:
+            axis = axis + rank if axis < 0 else axis
+            if axis < 0 or axis >= rank or axis in normalized_axes:
+                ctx.record_error(node, f"CenterCropPad axis {axis} is invalid for rank {rank}")
+                return
+            normalized_axes.append(axis)
+        output_dims: list[int | ir.SymbolicDim] = list(input_dims)
+        for axis, target_dim in zip(normalized_axes, shape_vals, strict=True):
+            output_dims[axis] = target_dim
         output_shape: ir.Shape | None = ir.Shape(output_dims)
     elif input_data.shape is not None:
-        output_dims_sym: list[int | ir.SymbolicDim] = [
-            ctx.new_symbolic_dim() for _ in range(input_data.shape.rank())
-        ]
+        rank = input_data.shape.rank()
+        axes_attr = node.attributes.get("axes")
+        axes = list(axes_attr.as_ints()) if axes_attr is not None else list(range(rank))
+        output_dims_sym: list[int | ir.SymbolicDim] = list(input_data.shape.dims)
+        for axis in axes:
+            axis = axis + rank if axis < 0 else axis
+            if axis < 0 or axis >= rank:
+                ctx.record_error(node, f"CenterCropPad axis {axis} is invalid for rank {rank}")
+                return
+            output_dims_sym[axis] = ctx.new_symbolic_dim()
         output_shape = ir.Shape(output_dims_sym)
     else:
         output_shape = None
@@ -146,7 +166,7 @@ def infer_center_crop_pad(ctx: _context.ShapeInferenceContext, node: ir.Node) ->
         ctx.set_shape_and_dtype(node.outputs[0], output_shape, output_dtype)
 
 
-@_reg("", "RoiAlign", since_version=16)
+@_reg("", "RoiAlign", since_version=10)
 def infer_roi_align(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
     """Infer shape and dtype for RoiAlign operator.
 
@@ -213,7 +233,7 @@ def infer_max_roi_pool(ctx: _context.ShapeInferenceContext, node: ir.Node) -> No
         ctx.set_shape_and_dtype(node.outputs[0], output_shape, output_dtype)
 
 
-@_reg("", "MaxUnpool", since_version=11)
+@_reg("", "MaxUnpool", since_version=9)
 def infer_max_unpool(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
     """Infer shape and dtype for MaxUnpool operator.
 
