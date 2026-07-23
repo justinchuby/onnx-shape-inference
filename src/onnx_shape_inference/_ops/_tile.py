@@ -14,7 +14,7 @@ from onnx_shape_inference import _context, _registry
 from onnx_shape_inference._ops import _utils
 
 
-@_registry.registry.register("", "Tile", since_version=13)
+@_registry.registry.register("", "Tile", since_version=6)
 def infer_tile(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
     """Infer shape and dtype for Tile operator."""
     (input_val, repeats) = _context.check_inputs(node, "input", "repeats")

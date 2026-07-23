@@ -15,7 +15,7 @@ import onnx_ir as ir
 from onnx_shape_inference import _context, _registry
 
 
-@_registry.registry.register("", "Cast", since_version=6)
+@_registry.registry.register("", "Cast", since_version=1)
 def infer_cast(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
     """Infer shape and dtype for Cast operator.
 

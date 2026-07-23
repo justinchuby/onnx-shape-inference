@@ -50,6 +50,16 @@ class CastTest(unittest.TestCase):
         )
         self.assertEqual(actual, [ts(INT64, ["N", "C"])])
 
+    def test_opset_1(self):
+        actual = run_shape_inference(
+            "",
+            "Cast",
+            [ts(FLOAT, [3, 4])],
+            {"to": ir.Attr("to", ir.AttributeType.INT, INT64)},
+            opset_version=1,
+        )
+        self.assertEqual(actual, [ts(INT64, [3, 4])])
+
     def test_missing_shape(self):
         actual = run_shape_inference(
             "",

@@ -50,6 +50,15 @@ class NegativeLogLikelihoodLossTest(unittest.TestCase):
         )
         self.assertEqual(actual, [ts(FLOAT, [])])
 
+    def test_opset_12(self):
+        actual = run_shape_inference(
+            "",
+            "NegativeLogLikelihoodLoss",
+            [ts(FLOAT, [2, 3]), ts(INT64, [2])],
+            opset_version=12,
+        )
+        self.assertEqual(actual, [ts(FLOAT, [])])
+
     def test_no_inputs(self):
         with self.assertRaises(OpUsageError):
             run_shape_inference("", "NegativeLogLikelihoodLoss", [], opset_version=13)
@@ -91,6 +100,15 @@ class SoftmaxCrossEntropyLossTest(unittest.TestCase):
             "SoftmaxCrossEntropyLoss",
             [ts(FLOAT, [2, 3]), ts(INT64, [2])],
             opset_version=13,
+        )
+        self.assertEqual(actual, [ts(FLOAT, [])])
+
+    def test_opset_12(self):
+        actual = run_shape_inference(
+            "",
+            "SoftmaxCrossEntropyLoss",
+            [ts(FLOAT, [2, 3]), ts(INT64, [2])],
+            opset_version=12,
         )
         self.assertEqual(actual, [ts(FLOAT, [])])
 

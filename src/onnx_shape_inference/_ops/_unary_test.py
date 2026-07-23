@@ -85,6 +85,23 @@ class UnaryTest(unittest.TestCase):
 
     @parameterized.parameterized.expand(
         [
+            ("abs", "Abs", 1),
+            ("mish", "Mish", 18),
+            ("prelu", "PRelu", 1),
+            ("cumsum", "CumSum", 11),
+        ]
+    )
+    def test_earliest_shape_compatible_opset(self, _name, op_type, opset_version):
+        inputs = [ts(FLOAT, [3, 4])]
+        if op_type == "PRelu":
+            inputs.append(ts(FLOAT, [1]))
+        elif op_type == "CumSum":
+            inputs.append(ts(ir.DataType.INT32, []))
+        actual = run_shape_inference("", op_type, inputs, opset_version=opset_version)
+        self.assertEqual(actual, [ts(FLOAT, [3, 4])])
+
+    @parameterized.parameterized.expand(
+        [
             ("not", "Not", BOOL, [3, 4], BOOL),
             ("isnan", "IsNaN", FLOAT, [2, 3], BOOL),
             ("isinf", "IsInf", FLOAT, [4, 5], BOOL),

@@ -54,6 +54,31 @@ class RNNBasicTest(unittest.TestCase):
         with self.assertRaises(OpUsageError):
             run_shape_inference_with_values("", op_type, [None], opset_version=21)
 
+    def test_opset_1_output_sequence_zero_is_not_registered(self):
+        with self.assertRaises(ValueError):
+            run_shape_inference(
+                "",
+                "RNN",
+                [ts(FLOAT, [5, 2, 3])],
+                {
+                    "hidden_size": ir.Attr("hidden_size", ir.AttributeType.INT, 4),
+                    "output_sequence": ir.Attr("output_sequence", ir.AttributeType.INT, 0),
+                },
+                opset_version=1,
+                num_outputs=2,
+            )
+
+    def test_rnn_opset_7_always_has_sequence_output(self):
+        actual = run_shape_inference(
+            "",
+            "RNN",
+            [ts(FLOAT, [5, 2, 3])],
+            {"hidden_size": ir.Attr("hidden_size", ir.AttributeType.INT, 4)},
+            opset_version=7,
+            num_outputs=2,
+        )
+        self.assertEqual(actual[0], ts(FLOAT, [5, 1, 2, 4]))
+
 
 class LSTMLayoutTest(unittest.TestCase):
     def test_lstm_layout_1(self):

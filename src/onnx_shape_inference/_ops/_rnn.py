@@ -28,8 +28,11 @@ def _infer_rnn(
     direction = direction_attr.as_string() if direction_attr is not None else "forward"
     num_directions = 2 if direction == "bidirectional" else 1
 
-    layout_attr = node.attributes.get("layout")
-    layout = layout_attr.as_int() if layout_attr is not None else 0
+    if ctx.opset < 14:
+        layout = 0
+    else:
+        layout_attr = node.attributes.get("layout")
+        layout = layout_attr.as_int() if layout_attr is not None else 0
 
     # hidden_size is required per the ONNX spec
     hidden_size = _context.require_attr(node, "hidden_size").as_int()

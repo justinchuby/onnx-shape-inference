@@ -11,10 +11,10 @@ __all__ = [
 import onnx_ir as ir
 
 from onnx_shape_inference import _context, _registry
-from onnx_shape_inference._ops import _utils
+from onnx_shape_inference._ops import _shape_ops, _utils
 
 
-@_registry.registry.register("", "TopK", since_version=11)
+@_registry.registry.register("", "TopK", since_version=10)
 def infer_topk(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
     """Infer shape and dtype for TopK operator."""
     (x, k) = _context.check_inputs(node, "X", "K")
@@ -25,10 +25,12 @@ def infer_topk(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
     output_shape: ir.Shape | None = None
     if x.shape is not None:
         rank = x.shape.rank()
-        if axis < 0:
-            axis += rank
-        if not 0 <= axis < rank:
-            ctx.record_error(node, f"axis={axis} is out of range for rank {rank}")
+        axis = _shape_ops.normalize_axis(ctx, node, axis, rank)
+        if axis is None:
+            if len(node.outputs) > 0:
+                ctx.set_shape_and_dtype(node.outputs[0], None, x.dtype)
+            if len(node.outputs) > 1:
+                ctx.set_shape_and_dtype(node.outputs[1], None, ir.DataType.INT64)
             return
 
         new_dims: list[int | ir.SymbolicDim] = []
