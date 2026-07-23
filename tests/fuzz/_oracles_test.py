@@ -4,13 +4,13 @@
 
 from __future__ import annotations
 
-import copy
 import importlib.util
 import unittest
 from unittest import mock
 
 import onnx_ir as ir
 
+from onnx_shape_inference import infer_symbolic_shapes
 from tests.fuzz._binding import bind_symbols, materialize_model
 from tests.fuzz._harness import FuzzHarness
 from tests.fuzz._oracles import (
@@ -114,14 +114,36 @@ class SoundnessOracleTest(unittest.TestCase):
         case = FuzzCase(model=model, seed=0, opset_imports={"": 21})
         self.assertEqual(SoundnessOracle().check(case).status, "PASS")
 
+    def test_declared_output_dtype_does_not_override_isolated_inference(self):
+        x = ir.Value(name="X", type=ir.TensorType(ir.DataType.FLOAT), shape=ir.Shape([2]))
+        cast = ir.Node(
+            "",
+            "Cast",
+            [x],
+            num_outputs=1,
+            attributes={"to": ir.Attr("to", ir.AttributeType.INT, int(ir.DataType.FLOAT))},
+        )
+        cast.outputs[0].name = "Y"
+        cast.outputs[0].type = ir.TensorType(ir.DataType.INT64)
+        cast.outputs[0].shape = ir.Shape([2])
+        model = ir.Model(
+            ir.Graph([x], list(cast.outputs), nodes=[cast], opset_imports={"": 21}),
+            ir_version=10,
+        )
+        case = FuzzCase(model=model, seed=0, opset_imports={"": 21})
+        self.assertEqual(SoundnessOracle().check(case).status, "PASS")
+
     def test_wrong_inferred_shape_fails_against_runtime(self):
         case = _case()
-        wrong = copy.deepcopy(case.model)
-        wrong_output = next(iter(wrong.graph.outputs))
-        wrong_output.shape = ir.Shape([99, 3])
+
+        def infer_wrong_shape(model):
+            infer_symbolic_shapes(model)
+            if (model.graph.name or "").startswith("soundness_"):
+                next(iter(model.graph.outputs)).shape = ir.Shape([99, 3])
+
         with mock.patch(
-            "tests.fuzz._oracles._infer_ours",
-            return_value=wrong,
+            "tests.fuzz._oracles.infer_symbolic_shapes",
+            side_effect=infer_wrong_shape,
         ):
             result = SoundnessOracle().check(case)
         self.assertEqual(result.status, "FAIL")

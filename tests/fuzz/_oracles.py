@@ -23,7 +23,6 @@ from onnx_shape_inference import OpUsageError, ShapeInferenceError, infer_symbol
 from onnx_shape_inference._symbolic_shapes import parse_symbolic_expression
 from tests.fuzz._binding import (
     bind_symbols,
-    evaluate_dim,
     iter_values,
     materialize_model,
 )
@@ -394,16 +393,12 @@ class SoundnessOracle:
 
         bindings = bind_symbols(case)
         try:
-            symbolic = _infer_ours(case)
             concrete = materialize_model(case, bindings)
             infer_symbolic_shapes(concrete)
         except Exception as error:
             return OracleResult.skipped(
                 self.name, f"cannot materialize graph: {type(error).__name__}: {error}"
             )
-        symbolic_values = {
-            value.name: value for value in iter_values(symbolic.graph) if value.name
-        }
         node_counts = {"pass": 0, "skip": 0}
         node_results: dict[str, dict[str, object]] = {}
         rng = np.random.default_rng(case.seed)
@@ -415,6 +410,11 @@ class SoundnessOracle:
                     opset_imports=case.opset_imports,
                     name=f"soundness_{case.seed}_{index}",
                 )
+                ours = copy.deepcopy(model)
+                infer_symbolic_shapes(ours)
+                expected_values = {
+                    output.name: output for output in ours.graph.outputs if output.name
+                }
                 feeds = {value.name: _runtime_feed(value, rng) for value in inputs}
                 if any(value is None for value in feeds.values()):
                     node_counts["skip"] += 1
@@ -428,7 +428,7 @@ class SoundnessOracle:
                 node_results[name] = {"status": "SKIP", "reason": type(error).__name__}
                 continue
             for output in node.outputs:
-                expected = symbolic_values.get(output.name)
+                expected = expected_values.get(output.name)
                 actual = runtime.get(output.name)
                 if expected is None or expected.shape is None or actual is None:
                     continue
@@ -460,15 +460,16 @@ class SoundnessOracle:
                 for dim_index, dim in enumerate(expected.shape):
                     if _data_dependent(case, output.name, dim_index):
                         continue
-                    predicted = evaluate_dim(dim, bindings)
-                    if predicted is not None and predicted != actual_shape[dim_index]:
+                    if not isinstance(dim, int):
+                        continue
+                    if dim != actual_shape[dim_index]:
                         return OracleResult.failed(
                             self.name,
                             "runtime dimension contradiction",
                             value_name=output.name,
                             kind="concrete_dim",
                             expected=actual_shape[dim_index],
-                            actual=predicted,
+                            actual=dim,
                             details={
                                 "index": dim_index,
                                 "binding": bindings,
