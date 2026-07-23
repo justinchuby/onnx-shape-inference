@@ -8,9 +8,15 @@ import math
 import unittest
 
 import onnx_ir as ir
+import parameterized
 import sympy
 
-from onnx_shape_inference._symbolic_shapes import parse_symbolic_expression
+from onnx_shape_inference._symbolic_shapes import (
+    dim_to_expr,
+    expr_to_dim,
+    parse_symbolic_expression,
+    simplify_expression,
+)
 
 
 class SymbolicDimTest(unittest.TestCase):
@@ -612,6 +618,99 @@ class ParseSymbolicExpressionSecurityTest(unittest.TestCase):
         """Test that string literals are rejected."""
         with self.assertRaises(ValueError):
             parse_symbolic_expression('"hello"')
+
+
+class SimplifyExpressionTest(unittest.TestCase):
+    """Tests for simplify_expression (Bucket B canonicalization)."""
+
+    @parameterized.parameterized.expand(
+        [
+            # name, input, assume_divisible, expected
+            # Divisibility mode cancels a scaled floor when the divisor is
+            # removed by an outer factor.
+            ("scaled_floor_c2", "2*floor(c/2)", True, "c"),
+            ("scaled_floor_c3", "3*floor(c/3)", True, "c"),
+            # Outer factor larger than divisor: remainder kept symbolic.
+            ("scaled_floor_remainder", "16*floor(V/8)", True, "2*V"),
+            # A standalone floor must be preserved: the rounding is real.
+            ("standalone_floor_kept", "floor(c/2)", True, "floor(c/2)"),
+            ("standalone_floor_default", "floor(c/2)", False, "floor(c/2)"),
+            # Default (non-divisible) mode never cancels a scaled floor.
+            ("default_keeps_scaled", "2*floor(c/2)", False, "2*floor(c/2)"),
+            ("default_keeps_tile", "2*floor(H/2)", False, "2*floor(H/2)"),
+            # Concrete/edge expressions.
+            ("integer_floor_ratio", "(2*H)//H", True, "2"),
+            ("plain_symbol", "c", True, "c"),
+            ("plain_symbol_default", "c", False, "c"),
+            ("plain_int", "5", True, "5"),
+            ("sum_no_floor", "a + b", True, "a + b"),
+            # Mixed sum: only the scaled-floor term cancels; the rest is kept.
+            ("mixed_sum", "2*floor(c/2) + 3", True, "c + 3"),
+            ("mixed_sum_two_floors", "2*floor(c/2) + floor(d/2)", True, "c + floor(d/2)"),
+        ]
+    )
+    def test_simplify(self, _name, expr, assume_divisible, expected):
+        got = str(simplify_expression(expr, assume_divisible=assume_divisible))
+        self.assertEqual(got, expected)
+
+    def test_accepts_parsed_expr_input(self):
+        # simplify_expression accepts an already-parsed SymPy expression.
+        expr = parse_symbolic_expression("2*floor(c/2)")
+        self.assertEqual(str(simplify_expression(expr, assume_divisible=True)), "c")
+
+    def test_cancels_scaled_ceiling_expr(self):
+        # ceil is written as -floor(-x) in dim strings, but the canonicalizer
+        # also handles a genuine sympy.ceiling under divisibility.
+        c = sympy.Symbol("c", integer=True, positive=True)
+        self.assertEqual(
+            simplify_expression(2 * sympy.ceiling(c / 2), assume_divisible=True), c
+        )
+
+
+class DimExprBridgeTest(unittest.TestCase):
+    """Tests for the dim <-> SymPy expression bridges."""
+
+    def test_dim_to_expr_concrete_int(self):
+        expr = dim_to_expr(7)
+        self.assertEqual(expr, sympy.Integer(7))
+        self.assertTrue(expr.is_Integer)
+
+    def test_dim_to_expr_named_symbol(self):
+        expr = dim_to_expr(ir.SymbolicDim("N"))
+        self.assertEqual(expr, sympy.Symbol("N", integer=True, positive=True))
+
+    def test_dim_to_expr_compound(self):
+        expr = dim_to_expr(ir.SymbolicDim("2*a + 1"))
+        self.assertEqual(expr, 2 * sympy.Symbol("a", integer=True, positive=True) + 1)
+
+    def test_dim_to_expr_unknown_returns_none(self):
+        # An unknown symbolic placeholder carries no expression.
+        self.assertIsNone(dim_to_expr(ir.SymbolicDim(None)))
+
+    @parameterized.parameterized.expand(
+        [
+            ("integer", sympy.Integer(3), 3),
+            ("symbol", sympy.Symbol("N"), ir.SymbolicDim("N")),
+            ("compound", 2 * sympy.Symbol("a") + 1, ir.SymbolicDim("2*a + 1")),
+        ]
+    )
+    def test_expr_to_dim(self, _name, expr, expected):
+        self.assertEqual(expr_to_dim(expr), expected)
+
+    def test_expr_to_dim_returns_int_type(self):
+        result = expr_to_dim(sympy.Integer(4))
+        self.assertIsInstance(result, int)
+
+    @parameterized.parameterized.expand(
+        [
+            ("int", 5),
+            ("symbol", ir.SymbolicDim("batch")),
+            ("compound", ir.SymbolicDim("a + b")),
+        ]
+    )
+    def test_round_trip(self, _name, dim):
+        # dim_to_expr then expr_to_dim is the identity on concrete/named dims.
+        self.assertEqual(expr_to_dim(dim_to_expr(dim)), dim)
 
 
 if __name__ == "__main__":

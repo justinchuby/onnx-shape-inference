@@ -14,14 +14,72 @@ __all__ = [
 
 import json
 import logging
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from typing import Literal
 
 import onnx_ir as ir
 
+from onnx_shape_inference import _symbolic_shapes
+
 logger = logging.getLogger(__name__)
 
 SYM_DATA_KEY = "pkg.onnx_shape_inference.sym_data"
+
+# Engine-generated anonymous dimension names (see
+# :meth:`ShapeInferenceContext.new_symbolic_dim`).  These are placeholders for
+# genuinely data-dependent dims and are the only symbols the anchor/constraint
+# pass is allowed to rename.  Eligibility for renaming is tracked by identity on
+# the context (``ShapeInferenceContext.is_generated_symbol``), NOT by matching
+# this spelling — a model author may legitimately declare a symbol named ``_d0``
+# and must never have it rewritten.  The prefix is only the seed for minting.
+_ANON_DIM_PREFIX = "_d"
+
+
+class _SymbolAllocator:
+    """Shared minting state for a context tree (parent + function-body children).
+
+    A single instance is shared *by reference* across a parent context and every
+    child context created for model-local function or op-schema-function bodies
+    (see :meth:`ShapeInferenceContext.create_child`).  Sharing this state keeps
+    every minted name globally unique and — critically for soundness — ensures:
+
+    * ``reserved`` (names already present in the model) is visible to children,
+      so a child never mints a name the parent reserved (e.g. an author-declared
+      ``_d0``), which would falsely conflate independent dims; and
+    * ``generated`` (names the engine minted) is visible to the parent, so a
+      symbol minted inside a child body is still recognised as engine-generated
+      upstream by :meth:`ShapeInferenceContext.is_generated_symbol` — enabling
+      correct renaming and blocking unsound ones.
+    """
+
+    def __init__(self) -> None:
+        self.counter: int = 0
+        # Names already present in the model; never minted.
+        self.reserved: set[str] = set()
+        # Names the engine minted via ``mint`` (rename-eligible).
+        self.generated: set[str] = set()
+
+    def mint(self) -> str:
+        """Return a fresh ``_dN`` name not in ``reserved`` or ``generated``."""
+        while True:
+            name = f"{_ANON_DIM_PREFIX}{self.counter}"
+            self.counter += 1
+            if name not in self.reserved and name not in self.generated:
+                self.generated.add(name)
+                return name
+
+
+def _dim_expr_string(dim: int | ir.SymbolicDim | str | None) -> str | None:
+    """Return the canonical expression string for a dimension, or ``None``.
+
+    Concrete ints and unknown/anonymous ``SymbolicDim(None)`` return ``None``
+    because they carry no symbol to relate.
+    """
+    if isinstance(dim, str):
+        return dim or None
+    if isinstance(dim, ir.SymbolicDim):
+        return dim.value
+    return None
 
 
 class ShapeInferenceError(ValueError):
@@ -186,6 +244,8 @@ class ShapeInferenceContext:
         opset_imports: Mapping[str, int] | None = None,
         policy: ShapeMergePolicy = "refine",
         resolved_attrs: dict[str, ir.Attr] | None = None,
+        *,
+        allocator: _SymbolAllocator | None = None,
     ) -> None:
         """Initialize the shape inference context.
 
@@ -199,6 +259,10 @@ class ShapeInferenceContext:
                 (from the call site or function defaults).  Used to substitute
                 RefAttr references before calling each op's inference function.
                 ``None`` for top-level (non-function) graph inference.
+            allocator: Shared symbolic-dim minting state.  Defaults to a fresh
+                :class:`_SymbolAllocator`; child contexts for function bodies pass
+                the parent's allocator (via :meth:`create_child`) so reserved and
+                generated names are shared across the whole context tree.
         """
         self.opset_imports: Mapping[str, int] = opset_imports or {"": 1}
         self.policy = policy
@@ -206,10 +270,50 @@ class ShapeInferenceContext:
 
         # Recorded errors from shape inference
         self._errors: list[ShapeInferenceError] = []
-        # Counter for generating unique symbolic dimension names
-        self._dim_counter: int = 0
+        # Shared minting state (counter + reserved + generated names).  Shared by
+        # reference with any child context, so names stay globally unique and the
+        # reserved/generated sets propagate both ways across parent and children.
+        self._allocator: _SymbolAllocator = allocator or _SymbolAllocator()
         # Partial data propagation: symbolic element values keyed by ir.Value
         self._symbolic_values: dict[ir.Value, list[int | ir.SymbolicDim]] = {}
+        # Symbolic-dimension equality constraints discovered during inference,
+        # stored as canonical ``(a_str, b_str)`` string pairs.  These relate an
+        # engine-inferred expression to a user-declared (anchor) expression and
+        # are resolved into a renaming by the engine's anchor/constraint pass.
+        self._symbolic_equalities: list[tuple[str, str]] = []
+        # Upper-bound constraints ``lhs <= rhs`` for data-dependent dims (e.g.
+        # ``NonZero`` count <= number of elements).  Kept for consumers that
+        # want provable bounds; not used for renaming.
+        self._symbolic_upper_bounds: list[tuple[str, str]] = []
+
+    def create_child(
+        self,
+        opset_imports: Mapping[str, int] | None = None,
+        *,
+        resolved_attrs: dict[str, ir.Attr] | None = None,
+    ) -> ShapeInferenceContext:
+        """Create a child context for function-body inference.
+
+        The child shares this context's :class:`_SymbolAllocator` (counter plus
+        reserved and generated name sets) so that symbolic-dim identities stay
+        globally consistent across parent and child: the child never mints a name
+        the parent reserved, and any name the child mints is recognised as
+        engine-generated at the parent level.
+
+        Args:
+            opset_imports: Opset versions for the child (the function body's own
+                imports).  Defaults to this context's imports.
+            resolved_attrs: Resolved attribute values for the function body.
+
+        Returns:
+            A new :class:`ShapeInferenceContext` sharing this one's allocator.
+        """
+        return ShapeInferenceContext(
+            opset_imports=opset_imports if opset_imports is not None else self.opset_imports,
+            policy=self.policy,
+            resolved_attrs=resolved_attrs,
+            allocator=self._allocator,
+        )
 
     @property
     def opset(self) -> int:
@@ -224,6 +328,34 @@ class ShapeInferenceContext:
             return self.opset
         return 1
 
+    def reserve_symbol_names(self, names: Iterable[str]) -> None:
+        """Reserve pre-existing model symbol names so mints never collide.
+
+        Called by the engine before inference with every symbol name already
+        present in the model (graph inputs/outputs, ``value_info``,
+        initializers, and subgraphs).  A reserved name is skipped by
+        :meth:`new_symbolic_dim`.  Because the reserved set lives on the shared
+        allocator, reservations made on a parent context are also honoured by any
+        child context created via :meth:`create_child`.
+        """
+        self._allocator.reserved.update(names)
+
+    def is_generated_symbol(self, name: str) -> bool:
+        """Return whether *name* was minted by ``new_symbolic_dim``.
+
+        This is the authoritative (identity-based) test for anonymous-symbol
+        eligibility used by the anchor/constraint pass — as opposed to matching
+        the ``_dN`` spelling, which would misclassify an author-declared symbol
+        literally named ``_d0``.  The generated set is shared across the context
+        tree, so a name minted in a function-body child is recognised here too.
+        """
+        return name in self._allocator.generated
+
+    @property
+    def generated_dim_names(self) -> frozenset[str]:
+        """The set of anonymous dim names minted in this context tree."""
+        return frozenset(self._allocator.generated)
+
     def new_symbolic_dim(self) -> ir.SymbolicDim:
         """Create a new symbolic dimension with a unique auto-generated name.
 
@@ -231,12 +363,97 @@ class ShapeInferenceContext:
         dimension gets a distinct identity.  Subsequent inference steps can
         then establish relationships between these named dimensions.
 
+        The generated name is guaranteed not to collide with any symbol already
+        present in the model (see :meth:`reserve_symbol_names`) and is recorded
+        as engine-generated so the anchor/constraint pass may rename it.
+
         Returns:
             A :class:`ir.SymbolicDim` with a unique name like ``_d0``, ``_d1``, …
         """
-        name = f"_d{self._dim_counter}"
-        self._dim_counter += 1
-        return ir.SymbolicDim(name)
+        return ir.SymbolicDim(self._allocator.mint())
+
+    def simplify_dim(
+        self,
+        dim: int | ir.SymbolicDim,
+        *,
+        assume_divisible: bool = False,
+    ) -> int | ir.SymbolicDim:
+        """Canonicalize a (possibly symbolic) dimension.
+
+        Concrete ints and anonymous/unknown dims are returned unchanged.  A
+        named symbolic dim is simplified via
+        :func:`_symbolic_shapes.simplify_expression`.
+
+        Args:
+            dim: The dimension to simplify.
+            assume_divisible: Passed through to
+                :func:`_symbolic_shapes.simplify_expression`.  Ops that
+                guarantee exact division (e.g. ``Reshape`` resolving a ``-1``
+                dimension) may pass ``True`` to collapse ``2*(c//2) -> c``.
+                Ops with genuine rounding (``Resize``/``Tile``/pooling) must
+                leave it ``False``.
+
+        Returns:
+            The simplified dimension, as an ``int`` when it reduces to a
+            concrete value, otherwise a :class:`ir.SymbolicDim`.
+        """
+        if isinstance(dim, int):
+            return dim
+        if not isinstance(dim, ir.SymbolicDim) or dim.value is None:
+            return dim
+        simplified = _symbolic_shapes.simplify_expression(
+            dim.value, assume_divisible=assume_divisible
+        )
+        return _symbolic_shapes.expr_to_dim(simplified)
+
+    def add_symbolic_equality(
+        self,
+        a: int | ir.SymbolicDim | str,
+        b: int | ir.SymbolicDim | str,
+    ) -> None:
+        """Record that two symbolic dimension expressions are equal.
+
+        The pair is stored as strings and later resolved by the engine's
+        anchor/constraint pass, which renames engine-anonymous ``_dN`` symbols
+        to the user-visible names on the other side of the equality.  Ops may
+        call this directly (e.g. a broadcast of two differing symbolic dims, or
+        an ``If`` merging two branch dims) to relate the symbols they produce.
+
+        Concrete-int operands and trivial ``a == a`` pairs are ignored.
+        """
+        a_str = _dim_expr_string(a)
+        b_str = _dim_expr_string(b)
+        if a_str is None or b_str is None or a_str == b_str:
+            return
+        pair = (a_str, b_str)
+        if pair not in self._symbolic_equalities and (b_str, a_str) not in (
+            self._symbolic_equalities
+        ):
+            self._symbolic_equalities.append(pair)
+
+    def add_upper_bound(
+        self,
+        lhs: int | ir.SymbolicDim | str,
+        rhs: int | ir.SymbolicDim | str,
+    ) -> None:
+        """Record an upper-bound constraint ``lhs <= rhs`` for a symbolic dim."""
+        lhs_str = _dim_expr_string(lhs)
+        rhs_str = _dim_expr_string(rhs)
+        if lhs_str is None or rhs_str is None or lhs_str == rhs_str:
+            return
+        pair = (lhs_str, rhs_str)
+        if pair not in self._symbolic_upper_bounds:
+            self._symbolic_upper_bounds.append(pair)
+
+    @property
+    def symbolic_equalities(self) -> Sequence[tuple[str, str]]:
+        """All recorded symbolic-dimension equality constraints."""
+        return self._symbolic_equalities
+
+    @property
+    def symbolic_upper_bounds(self) -> Sequence[tuple[str, str]]:
+        """All recorded symbolic-dimension upper-bound constraints."""
+        return self._symbolic_upper_bounds
 
     def name_anonymous_dims(self, value: ir.Value) -> bool:
         """Replace anonymous (``None``) symbolic dims on *value* with unique names.
@@ -367,6 +584,11 @@ class ShapeInferenceContext:
         new_dims: list[int | ir.SymbolicDim] = []
 
         for e_dim, i_dim in zip(existing.dims, inferred.dims):
+            # The existing dim may be a user-declared *anchor* (e.g. a graph
+            # output or value_info name).  When inference produced a different
+            # symbolic expression, record an equality so the anchor/constraint
+            # pass can adopt the declared name everywhere.
+            self._maybe_record_anchor_equality(e_dim, i_dim)
             if _is_more_specific(i_dim, e_dim):
                 new_dims.append(i_dim)
                 modified = True
@@ -377,6 +599,34 @@ class ShapeInferenceContext:
             value.shape = ir.Shape(new_dims)
 
         return modified
+
+    def _maybe_record_anchor_equality(
+        self,
+        existing_dim: int | ir.SymbolicDim,
+        inferred_dim: int | ir.SymbolicDim,
+    ) -> None:
+        """Record an equality when a declared anchor dim meets a different symbol.
+
+        Only fires when the *existing* dim carries a user-visible name (i.e. it
+        is not concrete, not unknown, and not one this context itself minted)
+        and the inferred dim is a different symbolic expression.  This is the
+        hook that turns declared output / value_info names into rename
+        constraints for the engine's anchor pass.
+        """
+        if not isinstance(existing_dim, ir.SymbolicDim) or existing_dim.value is None:
+            return
+        if not isinstance(inferred_dim, ir.SymbolicDim) or inferred_dim.value is None:
+            return
+        if existing_dim.value == inferred_dim.value:
+            return
+        # The anchor side must contain at least one user-provided symbol;
+        # otherwise this is internal-vs-internal noise not worth relating.
+        anchor_expr = _symbolic_shapes.dim_to_expr(existing_dim)
+        if anchor_expr is None or all(
+            self.is_generated_symbol(s.name) for s in anchor_expr.free_symbols
+        ):
+            return
+        self.add_symbolic_equality(inferred_dim.value, existing_dim.value)
 
     def set_dtype(self, value: ir.Value, dtype: ir.DataType) -> bool:
         """Set the dtype of a value according to the merge policy.

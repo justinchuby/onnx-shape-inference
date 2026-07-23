@@ -14,6 +14,7 @@ __all__ = [
 import onnx_ir as ir
 
 from onnx_shape_inference import _context, _registry
+from onnx_shape_inference._ops import _utils
 
 _reg = _registry.registry.register
 
@@ -31,17 +32,14 @@ def _head_size(
 ) -> int | ir.SymbolicDim:
     """Split a packed hidden size into per-head size.
 
-    Returns a concrete ``hidden // num_heads`` when both are known integers and
-    divide evenly; otherwise a fresh symbolic dim (the value is data-dependent
-    or not statically resolvable).
+    Returns ``hidden // num_heads`` when the packed hidden size and head count
+    are available, preserving a symbolic expression when ``hidden`` is symbolic.
+    A fresh symbolic dim is used when the split is not statically resolvable.
     """
-    if (
-        isinstance(hidden, int)
-        and isinstance(num_heads, int)
-        and num_heads > 0
-        and hidden % num_heads == 0
-    ):
-        return hidden // num_heads
+    if isinstance(num_heads, int) and num_heads > 0 and hidden is not None:
+        if isinstance(hidden, int) and hidden % num_heads != 0:
+            return ctx.new_symbolic_dim()
+        return _utils.floor_div_dim(hidden, num_heads)
     return ctx.new_symbolic_dim()
 
 
@@ -74,8 +72,8 @@ def infer_attention(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
                 q_nh = q_nh_attr.as_int() if q_nh_attr is not None else None
                 kv_nh = kv_nh_attr.as_int() if kv_nh_attr is not None else None
                 v_hidden = v.shape[2]
-                if q_nh is not None and kv_nh is not None and isinstance(v_hidden, int):
-                    v_head_size = v_hidden // kv_nh
+                if q_nh is not None and kv_nh is not None:
+                    v_head_size = _head_size(ctx, v_hidden, kv_nh)
                     out_hidden: int | ir.SymbolicDim = q_nh * v_head_size
                 else:
                     out_hidden = v_hidden
@@ -207,7 +205,7 @@ def infer_linear_attention(ctx: _context.ShapeInferenceContext, node: ir.Node) -
         if q.shape is not None and q.shape.rank() == 3:
             v_hidden = v.shape[2] if v.shape is not None else None
             d_v = _head_size(ctx, v_hidden, kv_num_heads)
-            if isinstance(d_v, int) and q_num_heads is not None:
+            if q_num_heads is not None:
                 out_hidden: int | ir.SymbolicDim = q_num_heads * d_v
             else:
                 out_hidden = ctx.new_symbolic_dim()

@@ -15,6 +15,42 @@ import onnx_ir as ir
 from onnx_shape_inference import _broadcast, _context, _registry
 
 
+def _is_generated_dim(ctx: _context.ShapeInferenceContext, dim: int | ir.SymbolicDim) -> bool:
+    """Return whether the context minted this symbolic dimension."""
+    return (
+        isinstance(dim, ir.SymbolicDim)
+        and dim.value is not None
+        and ctx.is_generated_symbol(dim.value)
+    )
+
+
+def _resolve_symbolic_batch_dims(
+    ctx: _context.ShapeInferenceContext,
+    batch_shape: ir.Shape,
+    batch_a: ir.Shape,
+    batch_b: ir.Shape,
+) -> ir.Shape:
+    """Resolve differing symbolic batch dims without assuming broadcast equality."""
+    dims_a = [1] * (batch_shape.rank() - batch_a.rank()) + list(batch_a.dims)
+    dims_b = [1] * (batch_shape.rank() - batch_b.rank()) + list(batch_b.dims)
+    output_dims = list(batch_shape.dims)
+    equalities = {frozenset((left, right)) for left, right in ctx.symbolic_equalities}
+    for i, (dim_a, dim_b) in enumerate(zip(dims_a, dims_b)):
+        if not isinstance(dim_a, ir.SymbolicDim) or not isinstance(dim_b, ir.SymbolicDim):
+            continue
+        if dim_a == dim_b:
+            continue
+        equality_recorded = frozenset((str(dim_a), str(dim_b))) in equalities
+        if equality_recorded:
+            if _is_generated_dim(ctx, dim_a) and not _is_generated_dim(ctx, dim_b):
+                output_dims[i] = dim_b
+            elif _is_generated_dim(ctx, dim_b) and not _is_generated_dim(ctx, dim_a):
+                output_dims[i] = dim_a
+        else:
+            output_dims[i] = ctx.new_symbolic_dim()
+    return ir.Shape(output_dims)
+
+
 def _matmul_shape(
     ctx: _context.ShapeInferenceContext,
     node: ir.Node,
@@ -49,6 +85,8 @@ def _matmul_shape(
         batch_a = ir.Shape(list(shape_a.dims[:-2])) if rank_a > 2 else ir.Shape([])
         batch_b = ir.Shape(list(shape_b.dims[:-2])) if rank_b > 2 else ir.Shape([])
         batch_shape = _broadcast.broadcast_shapes(batch_a, batch_b)
+        if batch_shape is not None:
+            batch_shape = _resolve_symbolic_batch_dims(ctx, batch_shape, batch_a, batch_b)
 
         m_dim = shape_a.dims[-2]
         n_dim = shape_b.dims[-1]

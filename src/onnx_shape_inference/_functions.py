@@ -430,15 +430,13 @@ def infer_function_call_output_shapes(
     # Warn if any body node has a RefAttr that resolved_attrs cannot cover
     _warn_unresolved_ref_attrs(f, func_key, resolved_attrs)
 
-    # Child context: function's own opset versions so body dispatch is correct
-    child_ctx = _context.ShapeInferenceContext(
-        opset_imports=f.opset_imports or ctx.opset_imports,
-        policy=ctx.policy,
+    # Child context: function's own opset versions so body dispatch is correct.
+    # ``create_child`` shares the parent's symbol allocator so minted names stay
+    # globally unique and the reserved/generated sets propagate both ways.
+    child_ctx = ctx.create_child(
+        f.opset_imports or ctx.opset_imports,
         resolved_attrs=resolved_attrs,
     )
-    # Share the dim counter so symbolic dim names are globally unique across
-    # parent and child contexts
-    child_ctx._dim_counter = ctx._dim_counter
 
     with _function_binding_scope(f, node):
         process_graph_fn(
@@ -468,9 +466,6 @@ def infer_function_call_output_shapes(
         # Store in cache for subsequent identical calls
         if inference_cache is not None and cache_key is not None:
             inference_cache[cache_key] = output_results
-
-    # Propagate dim counter back to the parent context
-    ctx._dim_counter = child_ctx._dim_counter
 
 
 # Per-inference-run cache of materialized op-schema functions, keyed by
@@ -626,14 +621,10 @@ def infer_via_op_schema_function(
 
     # Child context: merge the parent's opset versions (which carry the correct
     # default-domain version for the body's standard ops) with the function's
-    # own opset imports.
+    # own opset imports.  ``create_child`` shares the parent's symbol allocator.
     child_opsets = dict(ctx.opset_imports)
     child_opsets.update(f.opset_imports or {})
-    child_ctx = _context.ShapeInferenceContext(
-        opset_imports=child_opsets,
-        policy=ctx.policy,
-    )
-    child_ctx._dim_counter = ctx._dim_counter
+    child_ctx = ctx.create_child(child_opsets)
 
     try:
         with _function_binding_scope(f, node):
@@ -666,8 +657,6 @@ def infer_via_op_schema_function(
             node.op_type,
             e,
         )
-        ctx._dim_counter = child_ctx._dim_counter
         return False
 
-    ctx._dim_counter = child_ctx._dim_counter
     return True

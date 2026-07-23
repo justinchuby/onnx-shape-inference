@@ -6,7 +6,9 @@ from __future__ import annotations
 
 import unittest
 
+import numpy as np
 import onnx_ir as ir
+import parameterized
 
 from onnx_shape_inference import _context, _engine
 
@@ -431,6 +433,168 @@ class ScanBodyPropagationGuardTest(unittest.TestCase):
             {"num_scan_inputs": ir.Attr("num_scan_inputs", ir.AttributeType.INT, 1)}
         )
         _engine._propagate_types_to_scan_body(ctx, node)
+
+
+class AnchorConstraintPropagationTest(unittest.TestCase):
+    """End-to-end tests for the adopt_declared_symbols anchor pass."""
+
+    def _nonzero_model(
+        self, anchor_last_dim: str | int | None = "dnz"
+    ) -> tuple[ir.Model, ir.Node]:
+        """NonZero -> Identity graph.
+
+        The graph output ``Y`` declares ``[2, anchor_last_dim]`` as its anchor
+        (unless *anchor_last_dim* is ``None``, in which case ``Y`` is left
+        unshaped so there is nothing to adopt).
+        """
+        x = ir.Value(name="X", type=ir.TensorType(ir.DataType.FLOAT), shape=ir.Shape([2, 5]))
+        nz = ir.Node("", "NonZero", inputs=[x], num_outputs=1)
+        nz.outputs[0].name = "Z"
+        ident = ir.Node("", "Identity", inputs=[nz.outputs[0]], num_outputs=1)
+        y = ident.outputs[0]
+        y.name = "Y"
+        y.type = ir.TensorType(ir.DataType.INT64)
+        if anchor_last_dim is not None:
+            y.shape = ir.Shape([2, anchor_last_dim])
+        graph = ir.Graph([x], [y], nodes=[nz, ident], opset_imports={"": 21})
+        return ir.Model(graph, ir_version=10), nz
+
+    @parameterized.parameterized.expand(
+        [
+            ("default", {}),
+            ("explicit_true", {"adopt_declared_symbols": True}),
+        ]
+    )
+    def test_adopts_declared_symbol(self, _name, kwargs):
+        model, nz = self._nonzero_model()
+        _engine.infer_symbolic_shapes(model, **kwargs)
+        # The engine-anonymous dim on the intermediate Z is renamed to "dnz".
+        self.assertEqual(nz.outputs[0].shape[1], ir.SymbolicDim("dnz"))
+        # The declared anchor dim is preserved on the output.
+        self.assertEqual(next(iter(model.graph.outputs)).shape[1], ir.SymbolicDim("dnz"))
+
+    def test_opt_out_keeps_anonymous_symbol(self):
+        model, nz = self._nonzero_model()
+        _engine.infer_symbolic_shapes(model, adopt_declared_symbols=False)
+        # Without the pass the engine-anonymous symbol (_dN) is preserved.
+        last = nz.outputs[0].shape[1]
+        self.assertIsInstance(last, ir.SymbolicDim)
+        self.assertRegex(str(last), r"^_d\d+$")
+
+    def test_no_anchor_keeps_anonymous_symbol(self):
+        # With no declared anchor there is nothing to adopt; the data-dependent
+        # symbol is left as the engine generated it (no spurious rename).
+        model, nz = self._nonzero_model(anchor_last_dim=None)
+        _engine.infer_symbolic_shapes(model)
+        last = nz.outputs[0].shape[1]
+        self.assertIsInstance(last, ir.SymbolicDim)
+        self.assertRegex(str(last), r"^_d\d+$")
+
+    def test_concrete_anchor_leaves_symbol_unrelated(self):
+        # A concrete anchor dim relates to nothing; the anon symbol stays anon.
+        model, nz = self._nonzero_model(anchor_last_dim=7)
+        _engine.infer_symbolic_shapes(model)
+        last = nz.outputs[0].shape[1]
+        self.assertIsInstance(last, ir.SymbolicDim)
+        self.assertRegex(str(last), r"^_d\d+$")
+
+    def test_adopts_topk_k_name_on_both_outputs(self):
+        x = ir.Value(
+            name="X", type=ir.TensorType(ir.DataType.FLOAT), shape=ir.Shape(["N", "N"])
+        )
+        k = ir.Value(name="K", type=ir.TensorType(ir.DataType.INT64), shape=ir.Shape([1]))
+        topk = ir.Node("", "TopK", [x, k], num_outputs=2)
+        y = ir.Value(
+            name="Y",
+            type=ir.TensorType(ir.DataType.FLOAT),
+            shape=ir.Shape(["N", "TopK_k"]),
+        )
+        identity = ir.Node("", "Identity", [topk.outputs[0]], outputs=[y])
+        model = ir.Model(
+            ir.Graph([x, k], [y], nodes=[topk, identity], opset_imports={"": 21}),
+            ir_version=10,
+        )
+
+        _engine.infer_symbolic_shapes(model)
+
+        self.assertEqual(topk.outputs[0].shape, ir.Shape(["N", "TopK_k"]))
+        self.assertEqual(topk.outputs[1].shape, ir.Shape(["N", "TopK_k"]))
+
+    def test_adopts_nonzero_name_through_reshape_expression(self):
+        x = ir.Value(
+            name="X",
+            type=ir.TensorType(ir.DataType.FLOAT),
+            shape=ir.Shape(["batch", "seq"]),
+        )
+        nonzero = ir.Node("", "NonZero", [x], num_outputs=1)
+        shape = ir.Value(
+            name="shape",
+            const_value=ir.Tensor(np.array([-1], dtype=np.int64), name="shape"),
+            type=ir.TensorType(ir.DataType.INT64),
+            shape=ir.Shape([1]),
+        )
+        flattened = ir.Node(
+            "",
+            "Reshape",
+            [nonzero.outputs[0], shape],
+            num_outputs=1,
+        )
+        y = ir.Value(
+            name="Y",
+            type=ir.TensorType(ir.DataType.INT64),
+            shape=ir.Shape(["2*dnz"]),
+        )
+        identity = ir.Node("", "Identity", [flattened.outputs[0]], outputs=[y])
+        model = ir.Model(
+            ir.Graph([x], [y], nodes=[nonzero, flattened, identity], opset_imports={"": 21}),
+            ir_version=10,
+        )
+
+        _engine.infer_symbolic_shapes(model)
+
+        self.assertEqual(nonzero.outputs[0].shape, ir.Shape([2, "dnz"]))
+        self.assertEqual(flattened.outputs[0].shape, ir.Shape(["2*dnz"]))
+
+    def test_author_declared_underscore_dn_symbol_is_not_renamed(self):
+        # ISSUE A regression: a model that literally authors `_d0` on its input
+        # must never have that symbol adopted/renamed by the anchor pass, even
+        # when an Identity forwards it to a declared output `K`.  Eligibility is
+        # by minted-identity, not by `_dN` spelling.
+        x = ir.Value(name="X", type=ir.TensorType(ir.DataType.FLOAT), shape=ir.Shape(["_d0"]))
+        y = ir.Value(name="Y", type=ir.TensorType(ir.DataType.FLOAT), shape=ir.Shape(["K"]))
+        identity = ir.Node("", "Identity", [x], outputs=[y])
+        model = ir.Model(
+            ir.Graph([x], [y], nodes=[identity], opset_imports={"": 21}), ir_version=10
+        )
+
+        _engine.infer_symbolic_shapes(model)
+
+        # The authored input symbol is untouched.
+        self.assertEqual(x.shape[0], ir.SymbolicDim("_d0"))
+
+    def test_minted_symbol_avoids_colliding_with_authored_name(self):
+        # ISSUE A regression: when the model already authors `_d0`, a freshly
+        # minted anonymous dim (for the genuinely unknown NonZero last dim) must
+        # NOT reuse `_d0` — otherwise the two would be conflated.
+        x = ir.Value(
+            name="X",
+            type=ir.TensorType(ir.DataType.FLOAT),
+            shape=ir.Shape(["_d0", 5]),
+        )
+        nz = ir.Node("", "NonZero", inputs=[x], num_outputs=1)
+        nz.outputs[0].name = "Z"
+        model = ir.Model(
+            ir.Graph([x], [nz.outputs[0]], nodes=[nz], opset_imports={"": 21}),
+            ir_version=10,
+        )
+
+        _engine.infer_symbolic_shapes(model)
+
+        minted = nz.outputs[0].shape[1]
+        self.assertIsInstance(minted, ir.SymbolicDim)
+        # Whatever it minted, it must differ from the authored `_d0`.
+        self.assertNotEqual(minted, ir.SymbolicDim("_d0"))
+        self.assertEqual(x.shape[0], ir.SymbolicDim("_d0"))
 
 
 if __name__ == "__main__":

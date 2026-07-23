@@ -9,7 +9,7 @@ import unittest
 import onnx_ir as ir
 import parameterized
 
-from onnx_shape_inference import OpUsageError
+from onnx_shape_inference import OpUsageError, _context, _registry
 from onnx_shape_inference._ops._testing import (
     run_shape_inference,
     run_shape_inference_with_values,
@@ -49,6 +49,106 @@ class MatMulTest(unittest.TestCase):
             opset_version=17,
         )
         self.assertIsNone(actual[0].shape)
+
+    def test_unproven_named_batch_dim_is_not_substituted(self):
+        actual = run_shape_inference(
+            "",
+            "MatMul",
+            [
+                ts(FLOAT, [None, 16, "sequence_length", "total_sequence_length"]),
+                ts(FLOAT, ["batch_size", 16, "total_sequence_length", 128]),
+            ],
+            opset_version=17,
+        )
+        self.assertEqual(
+            actual,
+            [ts(FLOAT, ["_d1", 16, "sequence_length", 128])],
+        )
+
+    def test_generated_second_batch_dim_is_conservative(self):
+        actual = run_shape_inference(
+            "",
+            "MatMul",
+            [
+                ts(FLOAT, ["batch_size", 2, 3]),
+                ts(FLOAT, [None, 3, 4]),
+            ],
+            opset_version=17,
+        )
+        self.assertEqual(actual, [ts(FLOAT, ["_d1", 2, 4])])
+
+    def test_generated_first_batch_dim_is_conservative(self):
+        actual = run_shape_inference(
+            "",
+            "MatMul",
+            [
+                ts(FLOAT, [None, 2, 3]),
+                ts(FLOAT, ["batch_size", 3, 4]),
+            ],
+            opset_version=17,
+        )
+        self.assertEqual(actual, [ts(FLOAT, ["_d1", 2, 4])])
+
+    def test_differing_named_batch_dims_produce_fresh_dim(self):
+        actual = run_shape_inference(
+            "",
+            "MatMul",
+            [
+                ts(FLOAT, ["batch_a", 2, 3]),
+                ts(FLOAT, ["batch_b", 3, 4]),
+            ],
+            opset_version=17,
+        )
+        self.assertEqual(actual, [ts(FLOAT, ["_d0", 2, 4])])
+
+    def test_author_named_generated_pattern_is_not_treated_as_generated(self):
+        a = ir.Value(
+            name="a",
+            type=ir.TensorType(FLOAT),
+            shape=ir.Shape(["_d0", 2, 3]),
+        )
+        b = ir.Value(
+            name="b",
+            type=ir.TensorType(FLOAT),
+            shape=ir.Shape(["batch_size", 3, 4]),
+        )
+        output = ir.Value(name="output")
+        node = ir.Node("", "MatMul", inputs=[a, b], outputs=[output], attributes={})
+        ctx = _context.ShapeInferenceContext({"": 17})
+        ctx.reserve_symbol_names(["_d0", "batch_size"])
+
+        func = _registry.registry.get("", "MatMul", version=17)
+        func(ctx, node)
+
+        self.assertEqual(
+            ir.TypeAndShape(output.type, output.shape),
+            ts(FLOAT, ["_d1", 2, 4]),
+        )
+
+    def test_equal_named_batch_dim_is_substituted(self):
+        a = ir.Value(
+            name="a",
+            type=ir.TensorType(FLOAT),
+            shape=ir.Shape([None, 16, "sequence_length", "total_sequence_length"]),
+        )
+        b = ir.Value(
+            name="b",
+            type=ir.TensorType(FLOAT),
+            shape=ir.Shape(["batch_size", 16, "total_sequence_length", 128]),
+        )
+        output = ir.Value(name="output")
+        node = ir.Node("", "MatMul", inputs=[a, b], outputs=[output], attributes={})
+        ctx = _context.ShapeInferenceContext({"": 17})
+        ctx.name_anonymous_dims(a)
+        ctx.add_symbolic_equality("_d0", "batch_size")
+
+        func = _registry.registry.get("", "MatMul", version=17)
+        func(ctx, node)
+
+        self.assertEqual(
+            ir.TypeAndShape(output.type, output.shape),
+            ts(FLOAT, ["batch_size", 16, "sequence_length", 128]),
+        )
 
     def test_matmul_no_inputs(self):
         with self.assertRaises(OpUsageError):

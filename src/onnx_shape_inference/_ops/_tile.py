@@ -11,6 +11,7 @@ __all__ = [
 import onnx_ir as ir
 
 from onnx_shape_inference import _context, _registry
+from onnx_shape_inference._ops import _utils
 
 
 @_registry.registry.register("", "Tile", since_version=13)
@@ -19,9 +20,8 @@ def infer_tile(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
     (input_val, repeats) = _context.check_inputs(node, "input", "repeats")
 
     output_shape: ir.Shape | None = None
-    repeats_const = ir.convenience.get_const_tensor(repeats)
-    if input_val.shape is not None and repeats_const is not None:
-        repeats_vals = [int(x) for x in repeats_const.numpy().flatten()]
+    repeats_vals = _utils.get_known_dim_values(ctx, repeats)
+    if input_val.shape is not None and repeats_vals is not None:
         new_dims: list[int | ir.SymbolicDim] = []
         for i, dim in enumerate(input_val.shape.dims):
             if i < len(repeats_vals):

@@ -143,6 +143,80 @@ class ReshapeTest(unittest.TestCase):
         )
         self.assertEqual(actual, [ts(FLOAT, ["N", 12])])
 
+    @parameterized.parameterized.expand(
+        [
+            (
+                "preserve_inherited_half_width",
+                ["a", "b", 2, "floor(c/2)"],
+                ["a", "b", "2*floor(c/2)"],
+            ),
+            (
+                "preserve_inherited_grouped_width",
+                ["a", "b", 16, "floor(V/8)"],
+                ["a", "b", "16*floor(V/8)"],
+            ),
+        ]
+    )
+    def test_inferred_dim_uses_exact_element_count(self, _name, input_shape, expected_shape):
+        data = ir.Value(
+            name="data",
+            shape=ir.Shape(input_shape),
+            type=ir.TensorType(FLOAT),
+        )
+        actual = run_shape_inference_with_values(
+            "",
+            "Reshape",
+            [data, const_value([0, 0, -1])],
+            opset_version=21,
+        )
+        self.assertEqual(actual, [ts(FLOAT, expected_shape)])
+
+    def test_inherited_floor_is_not_assumed_divisible(self):
+        data = ir.Value(
+            name="data",
+            shape=ir.Shape([2, "floor(H/2)"]),
+            type=ir.TensorType(FLOAT),
+        )
+        actual = run_shape_inference_with_values(
+            "",
+            "Reshape",
+            [data, const_value([-1])],
+            opset_version=21,
+        )
+        self.assertEqual(actual, [ts(FLOAT, ["2*floor(H/2)"])])
+
+    @parameterized.parameterized.expand(
+        [
+            (
+                "infer_collapsed_dimension",
+                ["batch", 8, 2, "sequence", 128],
+                [0, 16, -1, 128],
+                ["batch", 16, "sequence", 128],
+            ),
+            (
+                "flatten_trailing_dimensions",
+                ["batch", "sequence", 16, 128],
+                [0, 0, 2048],
+                ["batch", "sequence", 2048],
+            ),
+        ]
+    )
+    def test_zero_copy_preserves_symbolic_dims(
+        self, _name, input_shape, target_shape, expected_shape
+    ):
+        data = ir.Value(
+            name="data",
+            shape=ir.Shape(input_shape),
+            type=ir.TensorType(FLOAT),
+        )
+        actual = run_shape_inference_with_values(
+            "",
+            "Reshape",
+            [data, const_value(target_shape)],
+            opset_version=21,
+        )
+        self.assertEqual(actual, [ts(FLOAT, expected_shape)])
+
     def test_zero_dim_no_input_shape(self):
         """0-dim in target with no input shape → symbolic dim."""
         data = ir.Value(name="data", type=ir.TensorType(FLOAT))

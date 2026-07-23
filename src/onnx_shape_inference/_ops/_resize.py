@@ -14,6 +14,7 @@ import math
 import onnx_ir as ir
 
 from onnx_shape_inference import _context, _registry
+from onnx_shape_inference._ops import _utils
 
 
 @_registry.registry.register("", "Resize", since_version=10)
@@ -40,15 +41,18 @@ def infer_resize(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
     # Check if sizes input (index 3) has const_value
     if x_shape is not None and len(node.inputs) > 3 and node.inputs[3] is not None:
         sizes_input = node.inputs[3]
-        sizes_const = ir.convenience.get_const_tensor(sizes_input)
-        if sizes_const is not None:
-            sizes_vals = [int(s) for s in sizes_const.numpy().flatten()]
+        sizes_vals = _utils.get_known_dim_values(ctx, sizes_input)
+        if sizes_vals is not None:
             output_dims: list[int | ir.SymbolicDim] = list(x_shape.dims)
             target_axes = axes if axes is not None else list(range(x_shape.rank()))
             for i, ax in enumerate(target_axes):
                 if ax < 0:
                     ax += x_shape.rank()
-                if policy in ("not_larger", "not_smaller") and isinstance(x_shape[ax], int):
+                if (
+                    policy in ("not_larger", "not_smaller")
+                    and isinstance(x_shape[ax], int)
+                    and all(isinstance(size, int) for size in sizes_vals)
+                ):
                     # Compute uniform scale from all target axes
                     scales_per_axis = [
                         sizes_vals[j] / x_shape[target_axes[j]]
@@ -82,10 +86,7 @@ def infer_resize(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
                     if ax < 0:
                         ax += x_shape.rank()
                     d = x_shape[ax]
-                    if isinstance(d, int):
-                        output_dims_list[ax] = math.floor(d * scales[i])
-                    else:
-                        output_dims_list[ax] = ctx.new_symbolic_dim()
+                    output_dims_list[ax] = _utils.scale_dim(d, scales[i])
                 if len(node.outputs) > 0:
                     ctx.set_shape_and_dtype(
                         node.outputs[0], ir.Shape(output_dims_list), output_dtype
@@ -123,10 +124,7 @@ def infer_upsample(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
                 output_dims: list[int | ir.SymbolicDim] = []
                 for i in range(x_shape.rank()):
                     d = x_shape[i]
-                    if isinstance(d, int):
-                        output_dims.append(math.floor(d * scales[i]))
-                    else:
-                        output_dims.append(ctx.new_symbolic_dim())
+                    output_dims.append(_utils.scale_dim(d, scales[i]))
                 if len(node.outputs) > 0:
                     ctx.set_shape_and_dtype(
                         node.outputs[0], ir.Shape(output_dims), output_dtype

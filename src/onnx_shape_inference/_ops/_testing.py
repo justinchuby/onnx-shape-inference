@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 
 import numpy as np
 import onnx_ir as ir
@@ -73,6 +73,7 @@ def run_shape_inference(
     opset_version: int,
     num_outputs: int = 1,
     policy: _context.ShapeMergePolicy = "override",
+    symbolic_values: Mapping[int, Sequence[int | ir.SymbolicDim]] | None = None,
 ) -> list[ir.TypeAndShape]:
     """Run the registered shape inference function for an op and return output types/shapes.
 
@@ -88,6 +89,7 @@ def run_shape_inference(
         opset_version: Opset version for the default domain.
         num_outputs: Number of outputs to create.
         policy: Shape merge policy for the context.
+        symbolic_values: Known element values keyed by input index.
 
     Returns:
         A list of :class:`ir.TypeAndShape`, one per output, representing the
@@ -139,11 +141,12 @@ def run_shape_inference_with_values(
     opset_version: int,
     num_outputs: int = 1,
     policy: _context.ShapeMergePolicy = "override",
+    symbolic_values: Mapping[int, Sequence[int | ir.SymbolicDim]] | None = None,
 ) -> list[ir.TypeAndShape]:
     """Like :func:`run_shape_inference` but accepts pre-built :class:`ir.Value` objects.
 
-    Use this when inputs need ``const_value`` set (e.g. for Reshape, Slice,
-    Expand) or when testing error paths with ``None`` (missing optional) inputs.
+    Use this when inputs need ``const_value`` or known symbolic element values
+    set, or when testing error paths with ``None`` (missing optional) inputs.
     """
     output_values = [ir.Value(name=f"output_{i}") for i in range(num_outputs)]
 
@@ -162,6 +165,12 @@ def run_shape_inference_with_values(
     for v in list(input_values):
         if v is not None:
             ctx.name_anonymous_dims(v)
+    if symbolic_values is not None:
+        for input_index, data in symbolic_values.items():
+            value = input_values[input_index]
+            if value is None:
+                raise ValueError(f"Cannot set symbolic values on missing input {input_index}")
+            ctx.set_symbolic_value(value, list(data))
 
     func = _registry.registry.get(domain, op_type, version=opset_version)
     if func is None:
