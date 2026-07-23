@@ -81,6 +81,8 @@ def infer_tfidf_vectorizer(ctx: _context.ShapeInferenceContext, node: ir.Node) -
     """
     (x,) = _context.check_inputs(node, "X")
     ngram_indexes = _context.require_attr(node, "ngram_indexes").as_ints()
+    if not ngram_indexes:
+        raise _context.OpUsageError(node, "ngram_indexes must be non-empty")
     feature_dim = max(ngram_indexes) + 1
 
     if len(node.outputs) > 0:

@@ -107,6 +107,15 @@ class TfIdfVectorizerTest(unittest.TestCase):
         with self.assertRaises(OpUsageError):
             run_shape_inference("", "TfIdfVectorizer", [ts(INT64, [7])], opset_version=9)
 
+    def test_empty_ngram_indexes_raises(self):
+        attrs = {
+            "ngram_indexes": ir.Attr("ngram_indexes", ir.AttributeType.INTS, []),
+        }
+        with self.assertRaisesRegex(OpUsageError, "ngram_indexes must be non-empty"):
+            run_shape_inference(
+                "", "TfIdfVectorizer", [ts(INT64, [7])], attrs, opset_version=9
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
