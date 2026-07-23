@@ -13,7 +13,20 @@ import parameterized
 
 from onnx_shape_inference import _registry
 from tests.fuzz import _generator
+from tests.fuzz._oracles import CrashOracle
 from tests.fuzz._types import DATA_DEPENDENT_OPS
+
+
+def _seed_for_planner(op_type: str) -> int:
+    return sorted(_generator._op_planners).index(("", op_type))
+
+
+def _first_seed_emitting(op_type: str, limit: int = 300) -> int:
+    for seed in range(limit):
+        case = _generator.generate(seed)
+        if any(selected[1] == op_type for selected in case.selected_ops):
+            return seed
+    raise AssertionError(f"No seed below {limit} emitted {op_type}")
 
 
 def _proto(seed: int) -> onnx.ModelProto:
@@ -158,6 +171,45 @@ class GeneratorTest(unittest.TestCase):
             k_value = int(_constant(k)[0])
             self.assertGreaterEqual(k_value, 1)
             self.assertLessEqual(k_value, data.shape[axis])
+        elif expected_op_type == "Conv":
+            x, weight = node.inputs
+            kernel = _constant(weight)
+            self.assertEqual(kernel.ndim, 4)
+            self.assertEqual(x.shape.rank(), 4)
+            self.assertEqual(int(x.shape[1]), kernel.shape[1])
+            self.assertEqual(list(node.attributes["kernel_shape"].as_ints()), [3, 3])
+        elif expected_op_type in ("MaxPool", "AveragePool"):
+            (x,) = node.inputs
+            self.assertEqual(x.shape.rank(), 4)
+            self.assertEqual(list(node.attributes["kernel_shape"].as_ints()), [2, 2])
+        elif expected_op_type == "MatMul":
+            a, b = node.inputs
+            weight = _constant(b)
+            self.assertEqual(a.shape.rank(), 2)
+            self.assertEqual(weight.ndim, 2)
+            self.assertEqual(int(a.shape[1]), weight.shape[0])
+        elif expected_op_type == "Gemm":
+            a, b = node.inputs[0], node.inputs[1]
+            weight = _constant(b)
+            self.assertEqual(a.shape.rank(), 2)
+            self.assertEqual(int(a.shape[1]), weight.shape[0])
+        elif expected_op_type == "Gather":
+            data, indices = node.inputs
+            axis = node.attributes["axis"].as_int()
+            values = _constant(indices)
+            extent = int(data.shape[axis])
+            self.assertTrue(np.all(values < extent))
+            self.assertTrue(np.all(values >= -extent))
+        elif expected_op_type == "Concat":
+            first, second = node.inputs
+            axis = node.attributes["axis"].as_int()
+            self.assertEqual(first.shape.rank(), second.shape.rank())
+            for index in range(first.shape.rank()):
+                if index != axis:
+                    self.assertEqual(int(first.shape[index]), int(second.shape[index]))
+        elif expected_op_type == "Split":
+            self.assertEqual(len(node.outputs), 2)
+            self.assertIn("axis", node.attributes)
         else:
             self.fail(f"Missing planner assertion for {expected_op_type}")
 
@@ -195,7 +247,12 @@ class GeneratorTest(unittest.TestCase):
         )
         self.assertEqual(recorded, sorted(divisors))
 
-    @parameterized.parameterized.expand([(4, "Range"), (9, "TopK")])
+    @parameterized.parameterized.expand(
+        [
+            (sorted(_generator._op_planners).index(("", "Range")), "Range"),
+            (sorted(_generator._op_planners).index(("", "TopK")), "TopK"),
+        ]
+    )
     def test_data_dependent_planner_outputs_are_marked(self, seed, op_type):
         case = _generator.generate(seed)
         node = _node_by_name(case, case.metadata["planner_node"])
@@ -204,6 +261,118 @@ class GeneratorTest(unittest.TestCase):
         self.assertTrue(
             {output.name for output in node.outputs}.issubset(case.data_dependent_values)
         )
+
+
+class ExpandedCoverageTest(unittest.TestCase):
+    """Tests for the planner, control-flow, dtype, and non-degenerate widening."""
+
+    @parameterized.parameterized.expand(
+        [
+            ("Conv",),
+            ("MatMul",),
+            ("Gemm",),
+            ("Gather",),
+            ("Concat",),
+            ("Split",),
+            ("MaxPool",),
+            ("AveragePool",),
+        ]
+    )
+    def test_new_planners_generate_and_pass_crash_oracle(self, op_type):
+        seed = _seed_for_planner(op_type)
+        case = _generator.generate(seed)
+        self.assertEqual(case.metadata["planner_op"], ("", op_type))
+        onnx.checker.check_model(ir.serde.serialize_model(case.model))
+        result = CrashOracle().check(case)
+        self.assertEqual(result.status, "PASS", result.reason)
+
+    @parameterized.parameterized.expand([("If",), ("Loop",), ("Scan",)])
+    def test_control_flow_emitted_during_generation(self, op_type):
+        seed = _first_seed_emitting(op_type)
+        case = _generator.generate(seed)
+        self.assertTrue(
+            any(node.op_type == op_type for node in case.model.graph),
+            f"seed {seed} did not emit {op_type}",
+        )
+        self.assertIn(("", op_type), {op[:2] for op in case.selected_ops})
+
+    @parameterized.parameterized.expand([("_add_if",), ("_add_loop",), ("_add_scan",)])
+    def test_control_flow_subgraphs_are_valid(self, builder):
+        import onnx_shape_inference as osi
+
+        generator = _generator._Generator(0)
+        generator.opset = 18
+        getattr(generator, builder)()
+        node = generator.nodes[-1]
+        graph_attrs = [
+            attr for attr in node.attributes.values() if attr.type == ir.AttributeType.GRAPH
+        ]
+        self.assertTrue(graph_attrs, "control-flow node needs subgraph attributes")
+        for attr in graph_attrs:
+            self.assertGreater(len(attr.as_graph()), 0)
+        output = generator.ports[-1].value
+        graph = ir.Graph(
+            inputs=[],
+            outputs=[output],
+            nodes=generator.nodes,
+            initializers=generator.initializers,
+            opset_imports={"": 18},
+            name="cf_isolated",
+        )
+        model = ir.Model(graph, ir_version=10)
+        proto = ir.serde.serialize_model(model)
+        # full_check validates the nested subgraphs via ONNX shape inference.
+        onnx.checker.check_model(proto, full_check=True)
+        osi.infer_symbolic_shapes(ir.serde.deserialize_model(proto))
+
+    def test_split_planner_emits_two_outputs(self):
+        case = _generator.generate(_seed_for_planner("Split"))
+        node = _node_by_name(case, case.metadata["planner_node"])
+        self.assertEqual(node.op_type, "Split")
+        self.assertEqual(len(node.outputs), 2)
+
+    def test_random_shape_defaults_are_non_degenerate(self):
+        generator = _generator._Generator(0)
+        for _ in range(200):
+            shape = generator._random_shape()
+            self.assertGreaterEqual(len(shape), 1, "default rank must be >= 1")
+            for dim in shape:
+                if isinstance(dim, int):
+                    self.assertGreaterEqual(dim, 1, "default extents must be >= 1")
+
+    def test_random_shape_allow_zero_reintroduces_empty_extents(self):
+        generator = _generator._Generator(3)
+        saw_zero = any(
+            dim == 0
+            for _ in range(400)
+            for dim in generator._random_shape(allow_zero=True)
+            if isinstance(dim, int)
+        )
+        self.assertTrue(saw_zero)
+
+    def test_default_planned_inputs_avoid_zero_length_dims(self):
+        # Graph inputs created by the generic planner should never carry a
+        # zero-length static extent (the intentional bool scalar in the seed
+        # pool is rank-0 but not zero-length).
+        for seed in range(120):
+            case = _generator.generate(seed)
+            for value in case.model.graph.inputs:
+                if value.shape is None:
+                    continue
+                for dim in value.shape:
+                    if isinstance(dim, int):
+                        self.assertNotEqual(dim, 0, f"seed {seed} produced empty dim")
+
+    def test_seed_pool_exercises_small_integer_dtypes(self):
+        generator = _generator._Generator(0)
+        generator._seed_port_pool()
+        dtypes = {port.dtype for port in generator.ports}
+        for dtype in (
+            ir.DataType.INT8,
+            ir.DataType.INT16,
+            ir.DataType.UINT16,
+        ):
+            self.assertIn(dtype, dtypes)
 
 
 if __name__ == "__main__":
