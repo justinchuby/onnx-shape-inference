@@ -127,6 +127,35 @@ class SoundnessOracleTest(unittest.TestCase):
         self.assertEqual(result.status, "FAIL")
         self.assertEqual(result.value_name, "Y")
 
+    def test_isolates_unsupported_node_failures(self):
+        x = ir.Value(name="X", type=ir.TensorType(ir.DataType.FLOAT), shape=ir.Shape([2]))
+        relu = ir.Node("", "Relu", [x], num_outputs=1)
+        relu.outputs[0].name = "relu"
+        add = ir.Node("", "Add", [relu.outputs[0], x], num_outputs=1)
+        add.outputs[0].name = "add"
+        empty_shape = ir.Value(
+            name="empty_shape",
+            type=ir.TensorType(ir.DataType.INT64),
+            shape=ir.Shape([0]),
+            const_value=ir.tensor([], dtype=ir.DataType.INT64),
+        )
+        invalid = ir.Node("", "CenterCropPad", [x, empty_shape], num_outputs=1)
+        invalid.outputs[0].name = "invalid"
+        model = ir.Model(
+            ir.Graph(
+                [x],
+                [add.outputs[0], invalid.outputs[0]],
+                nodes=[relu, add, invalid],
+                initializers=[empty_shape],
+                opset_imports={"": 18},
+                name="mixed_node_soundness",
+            ),
+            ir_version=10,
+        )
+        result = SoundnessOracle().check(FuzzCase(model=model, seed=0, opset_imports={"": 18}))
+        self.assertEqual(result.status, "PASS")
+        self.assertEqual(result.details["nodes"], {"pass": 2, "skip": 1})
+
 
 class HarnessTest(unittest.TestCase):
     def test_failure_contains_seed_and_oracle_name(self):
