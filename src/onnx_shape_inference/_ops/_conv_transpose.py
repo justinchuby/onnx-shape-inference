@@ -13,7 +13,7 @@ import onnx_ir as ir
 from onnx_shape_inference import _context, _registry
 
 
-@_registry.registry.register("", "ConvTranspose", since_version=11)
+@_registry.registry.register("", "ConvTranspose", since_version=1)
 def infer_conv_transpose(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
     """Infer shape and dtype for ConvTranspose operator.
 
@@ -40,6 +40,15 @@ def infer_conv_transpose(ctx: _context.ShapeInferenceContext, node: ir.Node) -> 
 
     n_spatial = x_rank - 2
 
+    if w_shape.rank() != x_rank:
+        ctx.record_error(
+            node,
+            f"ConvTranspose weight rank {w_shape.rank()} does not match input rank {x_rank}",
+        )
+        if len(node.outputs) > 0:
+            ctx.set_shape_and_dtype(node.outputs[0], None, output_dtype)
+        return
+
     group_attr = node.attributes.get("group")
     group = group_attr.as_int() if group_attr is not None else 1
 
@@ -52,6 +61,14 @@ def infer_conv_transpose(ctx: _context.ShapeInferenceContext, node: ir.Node) -> 
     output_shape_attr = node.attributes.get("output_shape")
     if output_shape_attr is not None:
         spatial_dims: list[int | ir.SymbolicDim] = list(output_shape_attr.as_ints())
+        if len(spatial_dims) != n_spatial:
+            ctx.record_error(
+                node,
+                "ConvTranspose output_shape length does not match the input spatial rank",
+            )
+            if len(node.outputs) > 0:
+                ctx.set_shape_and_dtype(node.outputs[0], None, output_dtype)
+            return
         output_dims: list[int | ir.SymbolicDim] = [batch_dim, out_channels, *spatial_dims]
         if len(node.outputs) > 0:
             ctx.set_shape_and_dtype(node.outputs[0], ir.Shape(output_dims), output_dtype)
@@ -59,6 +76,13 @@ def infer_conv_transpose(ctx: _context.ShapeInferenceContext, node: ir.Node) -> 
 
     strides_attr = node.attributes.get("strides")
     strides = list(strides_attr.as_ints()) if strides_attr is not None else [1] * n_spatial
+    if len(strides) != n_spatial or any(stride <= 0 for stride in strides):
+        ctx.record_error(
+            node, "ConvTranspose strides must contain one positive value per spatial dimension"
+        )
+        if len(node.outputs) > 0:
+            ctx.set_shape_and_dtype(node.outputs[0], None, output_dtype)
+        return
 
     # For SAME_UPPER/SAME_LOWER, output = input * stride
     if auto_pad in ("SAME_UPPER", "SAME_LOWER"):
@@ -76,7 +100,7 @@ def infer_conv_transpose(ctx: _context.ShapeInferenceContext, node: ir.Node) -> 
     kernel_shape_attr = node.attributes.get("kernel_shape")
     if kernel_shape_attr is not None:
         kernel_shape: list[int | None] = list(kernel_shape_attr.as_ints())
-    elif w_shape.rank() > 2:
+    elif w_shape.rank() == x_rank:
         kernel_shape = [
             w_shape[i + 2] if isinstance(w_shape[i + 2], int) else None  # type: ignore[misc]
             for i in range(n_spatial)
@@ -100,6 +124,37 @@ def infer_conv_transpose(ctx: _context.ShapeInferenceContext, node: ir.Node) -> 
         if output_padding_attr is not None
         else [0] * n_spatial
     )
+
+    if len(kernel_shape) != n_spatial:
+        ctx.record_error(
+            node,
+            "ConvTranspose kernel_shape length does not match the input spatial rank",
+        )
+        if len(node.outputs) > 0:
+            ctx.set_shape_and_dtype(node.outputs[0], None, output_dtype)
+        return
+    if len(dilations) != n_spatial or any(dilation <= 0 for dilation in dilations):
+        ctx.record_error(
+            node,
+            "ConvTranspose dilations must contain one positive value per spatial dimension",
+        )
+        if len(node.outputs) > 0:
+            ctx.set_shape_and_dtype(node.outputs[0], None, output_dtype)
+        return
+    if len(pads) != 2 * n_spatial:
+        ctx.record_error(
+            node, "ConvTranspose pads length does not match the input spatial rank"
+        )
+        if len(node.outputs) > 0:
+            ctx.set_shape_and_dtype(node.outputs[0], None, output_dtype)
+        return
+    if len(output_padding) != n_spatial:
+        ctx.record_error(
+            node, "ConvTranspose output_padding length does not match the input spatial rank"
+        )
+        if len(node.outputs) > 0:
+            ctx.set_shape_and_dtype(node.outputs[0], None, output_dtype)
+        return
 
     spatial_dims_out: list[int | ir.SymbolicDim] = []
     for i in range(n_spatial):
