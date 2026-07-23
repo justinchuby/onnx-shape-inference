@@ -282,31 +282,48 @@ def _runtime_feed(value: ir.Value, rng: np.random.Generator) -> np.ndarray | Non
 
 
 def _single_node_model(
-    node: ir.Node, *, opset_imports: dict[str, int], name: str
+    node: ir.Node,
+    *,
+    opset_imports: dict[str, int],
+    name: str,
+    value_arrays: dict[str, np.ndarray],
+    bake_names: set[str],
 ) -> tuple[ir.Model, list[ir.Value]]:
-    """Build a concrete single-node model, retaining constant node inputs."""
+    """Build a concrete single-node model fed with ground-truth arrays.
+
+    Every input's type and shape are derived from its ground-truth array in
+    *value_arrays* (a graph input's random feed, an authored initializer, or an
+    upstream node's actual ONNX Runtime output). Names in *bake_names* become
+    initializers carrying that array as their ``const_value`` so that our
+    isolated inference reads correct, ground-truth shape values; every other
+    input becomes a fed graph input whose value inference must treat as unknown.
+    """
     inputs: list[ir.Value] = []
     initializers: list[ir.Value] = []
     copied: dict[str, ir.Value] = {}
     node_inputs: list[ir.Value] = []
     for value in node.inputs:
-        if value is None or value.name in copied:
-            if value is None:
-                raise ValueError("optional inputs are not supported by the node isolator")
+        if value is None:
+            raise ValueError("optional inputs are not supported by the node isolator")
+        if value.name in copied:
             node_inputs.append(copied[value.name])
             continue
-        clone = ir.Value(
-            name=value.name,
-            type=copy.deepcopy(value.type),
-            shape=copy.deepcopy(value.shape),
-            const_value=copy.deepcopy(value.const_value),
-        )
+        array = value_arrays[value.name]
+        dtype = ir.DataType.from_numpy(array.dtype)
+        shape = ir.Shape(list(array.shape))
+        if value.name in bake_names:
+            clone = ir.Value(
+                name=value.name,
+                type=ir.TensorType(dtype),
+                shape=shape,
+                const_value=ir.tensor(array, name=value.name),
+            )
+            initializers.append(clone)
+        else:
+            clone = ir.Value(name=value.name, type=ir.TensorType(dtype), shape=shape)
+            inputs.append(clone)
         copied[value.name] = clone
         node_inputs.append(clone)
-        if ir.convenience.get_const_tensor(clone) is None:
-            inputs.append(clone)
-        else:
-            initializers.append(clone)
     isolated = ir.Node(
         node.domain,
         node.op_type,
@@ -333,7 +350,12 @@ def _runtime_shapes(
     *,
     seed: int,
 ) -> dict[str, dict[str, object]]:
-    """Run ORT in a subprocess so an unsafe kernel becomes a coverage hole."""
+    """Run ORT in a subprocess so an unsafe kernel becomes a coverage hole.
+
+    Each returned fact carries the output ``dtype`` and ``shape`` and, when the
+    output is numeric, its actual runtime ``array`` so that the value can be fed
+    to downstream isolated nodes as ground truth.
+    """
     import onnx
 
     directory = Path.cwd() / ".fuzz-runtime"
@@ -342,6 +364,7 @@ def _runtime_shapes(
     model_path = directory / f"{stem}.onnx"
     feeds_path = directory / f"{stem}.npz"
     result_path = directory / f"{stem}.json"
+    arrays_path = directory / f"{stem}-out.npz"
     try:
         onnx.save(proto, model_path)
         np.savez(feeds_path, **feeds)
@@ -352,6 +375,7 @@ def _runtime_shapes(
                 str(model_path),
                 str(feeds_path),
                 str(result_path),
+                str(arrays_path),
             ],
             check=False,
             capture_output=True,
@@ -362,12 +386,27 @@ def _runtime_shapes(
             raise RuntimeError(
                 completed.stderr.strip() or f"runtime exited {completed.returncode}"
             )
-        return json.loads(result_path.read_text())
+        facts = json.loads(result_path.read_text())
+        if arrays_path.exists():
+            with np.load(arrays_path, allow_pickle=False) as archive:
+                for output_name in archive.files:
+                    if output_name in facts:
+                        facts[output_name]["array"] = archive[output_name]
+        return facts
     finally:
-        for path in (model_path, feeds_path, result_path):
+        for path in (model_path, feeds_path, result_path, arrays_path):
             path.unlink(missing_ok=True)
         with suppress(OSError):
             directory.rmdir()
+
+
+def _arrays_match(ours: np.ndarray, runtime: np.ndarray) -> bool:
+    """Compare a claimed constant value against the runtime array."""
+    if ours.shape != runtime.shape:
+        return False
+    if np.issubdtype(runtime.dtype, np.floating):
+        return bool(np.allclose(ours, runtime, rtol=1e-3, atol=1e-5, equal_nan=True))
+    return bool(np.array_equal(ours, runtime))
 
 
 class SoundnessOracle:
@@ -394,32 +433,71 @@ class SoundnessOracle:
         bindings = bind_symbols(case)
         try:
             concrete = materialize_model(case, bindings)
-            infer_symbolic_shapes(concrete)
         except Exception as error:
             return OracleResult.skipped(
                 self.name, f"cannot materialize graph: {type(error).__name__}: {error}"
             )
+
+        graph = concrete.graph
+        graph_input_names = {value.name for value in graph.inputs if value and value.name}
+        initializer_names = set(graph.initializers)
+
+        # Ground-truth arrays keyed by value name. Graph inputs get one random
+        # feed each, initializers their authored value, and every intermediate
+        # its ACTUAL upstream ONNX Runtime output — never our inferred value —
+        # so a wrong upstream value is caught rather than propagated to both
+        # sides.
+        value_arrays: dict[str, np.ndarray] = {}
+        rng = np.random.default_rng(case.seed)
+        for value in graph.inputs:
+            if value is None or not value.name:
+                continue
+            feed = _runtime_feed(value, rng)
+            if feed is not None:
+                value_arrays[value.name] = feed
+        for init_name, initializer in graph.initializers.items():
+            const = ir.convenience.get_const_tensor(initializer)
+            if const is None:
+                continue
+            with suppress(Exception):
+                value_arrays[init_name] = const.numpy()
+
         node_counts = {"pass": 0, "skip": 0}
         node_results: dict[str, dict[str, object]] = {}
-        rng = np.random.default_rng(case.seed)
-        for index, node in enumerate(concrete.graph):
+        for index, node in enumerate(graph):
             name = node.name or f"{node.op_type}_{index}"
+            input_names = [value.name for value in node.inputs if value is not None]
+            if any(value is None for value in node.inputs):
+                node_counts["skip"] += 1
+                node_results[name] = {"status": "SKIP", "reason": "optional input"}
+                continue
+            if any(input_name not in value_arrays for input_name in input_names):
+                node_counts["skip"] += 1
+                node_results[name] = {"status": "SKIP", "reason": "upstream unavailable"}
+                continue
+            bake_names: set[str] = set()
+            for input_name in input_names:
+                if input_name in graph_input_names:
+                    continue
+                array = value_arrays[input_name]
+                if input_name in initializer_names or (
+                    array.ndim <= 1 and np.issubdtype(array.dtype, np.integer)
+                ):
+                    bake_names.add(input_name)
             try:
-                model, inputs = _single_node_model(
+                model, feed_inputs = _single_node_model(
                     node,
                     opset_imports=case.opset_imports,
                     name=f"soundness_{case.seed}_{index}",
+                    value_arrays=value_arrays,
+                    bake_names=bake_names,
                 )
                 ours = copy.deepcopy(model)
                 infer_symbolic_shapes(ours)
                 expected_values = {
                     output.name: output for output in ours.graph.outputs if output.name
                 }
-                feeds = {value.name: _runtime_feed(value, rng) for value in inputs}
-                if any(value is None for value in feeds.values()):
-                    node_counts["skip"] += 1
-                    node_results[name] = {"status": "SKIP", "reason": "input is not concrete"}
-                    continue
+                feeds = {value.name: value_arrays[value.name] for value in feed_inputs}
                 runtime = _runtime_shapes(
                     ir.serde.serialize_model(model), feeds, seed=case.seed * 100 + index
                 )
@@ -427,10 +505,14 @@ class SoundnessOracle:
                 node_counts["skip"] += 1
                 node_results[name] = {"status": "SKIP", "reason": type(error).__name__}
                 continue
+            for output_name, fact in runtime.items():
+                array = fact.get("array")
+                if isinstance(array, np.ndarray):
+                    value_arrays[output_name] = array
             for output in node.outputs:
                 expected = expected_values.get(output.name)
                 actual = runtime.get(output.name)
-                if expected is None or expected.shape is None or actual is None:
+                if expected is None or actual is None:
                     continue
                 expected_dtype = (
                     _np_dtype(expected.dtype) if expected.dtype is not None else None
@@ -446,6 +528,8 @@ class SoundnessOracle:
                         actual=expected.dtype,
                         details={"nodes": node_counts, "node": name},
                     )
+                if expected.shape is None:
+                    continue
                 actual_shape = actual["shape"]
                 if expected.shape.rank() != len(actual_shape):
                     return OracleResult.failed(
@@ -476,6 +560,26 @@ class SoundnessOracle:
                                 "nodes": node_counts,
                                 "node": name,
                             },
+                        )
+                # A concrete value claimed by our data propagation must match
+                # the runtime array. This catches wrong sym_data at the node
+                # that produced it, instead of feeding it to a downstream node.
+                actual_array = actual.get("array")
+                if (
+                    output.name not in case.data_dependent_values
+                    and expected.const_value is not None
+                    and isinstance(actual_array, np.ndarray)
+                ):
+                    our_array = expected.const_value.numpy()
+                    if not _arrays_match(our_array, actual_array):
+                        return OracleResult.failed(
+                            self.name,
+                            "runtime value contradiction",
+                            value_name=output.name,
+                            kind="value",
+                            expected=actual_array.tolist(),
+                            actual=our_array.tolist(),
+                            details={"nodes": node_counts, "node": name},
                         )
             node_counts["pass"] += 1
             node_results[name] = {"status": "PASS"}

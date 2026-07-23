@@ -159,6 +159,68 @@ class SoundnessOracleTest(unittest.TestCase):
         self.assertEqual(result.status, "FAIL")
         self.assertEqual(result.kind, "dtype")
 
+    def test_wrong_propagated_value_is_caught_not_masked(self):
+        # Reviewer repro: a wrong data-propagated Shape value used to be baked
+        # into the downstream Reshape's isolated model, so ORT reproduced our
+        # wrong value and both sides agreed. The oracle now feeds Reshape the
+        # ACTUAL upstream ORT value and checks each node's claimed const_value
+        # against the runtime, so the bug is caught at the Shape node.
+        x = ir.Value(name="X", type=ir.TensorType(ir.DataType.FLOAT), shape=ir.Shape([2, 3]))
+        shape = ir.Node("", "Shape", [x], num_outputs=1)
+        shape.outputs[0].name = "shape_tensor"
+        reshape = ir.Node("", "Reshape", [x, shape.outputs[0]], num_outputs=1)
+        reshape.outputs[0].name = "Y"
+        model = ir.Model(
+            ir.Graph(
+                [x],
+                list(reshape.outputs),
+                nodes=[shape, reshape],
+                opset_imports={"": 21},
+                name="shape_reshape",
+            ),
+            ir_version=10,
+        )
+        case = FuzzCase(model=model, seed=0, opset_imports={"": 21})
+
+        def inject_wrong_shape_value(target):
+            infer_symbolic_shapes(target)
+            node = next(iter(target.graph), None)
+            if node is not None and node.op_type == "Shape":
+                output = next(iter(target.graph.outputs))
+                output.const_value = ir.tensor(
+                    [3, 2], dtype=ir.DataType.INT64, name=output.name
+                )
+
+        with mock.patch(
+            "tests.fuzz._oracles.infer_symbolic_shapes",
+            side_effect=inject_wrong_shape_value,
+        ):
+            result = SoundnessOracle().check(case)
+        self.assertEqual(result.status, "FAIL")
+        self.assertEqual(result.kind, "value")
+        self.assertEqual(result.value_name, "shape_tensor")
+
+    def test_correct_shape_reshape_chain_passes(self):
+        x = ir.Value(name="X", type=ir.TensorType(ir.DataType.FLOAT), shape=ir.Shape([2, 3]))
+        shape = ir.Node("", "Shape", [x], num_outputs=1)
+        shape.outputs[0].name = "shape_tensor"
+        reshape = ir.Node("", "Reshape", [x, shape.outputs[0]], num_outputs=1)
+        reshape.outputs[0].name = "Y"
+        model = ir.Model(
+            ir.Graph(
+                [x],
+                list(reshape.outputs),
+                nodes=[shape, reshape],
+                opset_imports={"": 21},
+                name="shape_reshape",
+            ),
+            ir_version=10,
+        )
+        case = FuzzCase(model=model, seed=0, opset_imports={"": 21})
+        result = SoundnessOracle().check(case)
+        self.assertEqual(result.status, "PASS")
+        self.assertEqual(result.details["nodes"], {"pass": 2, "skip": 0})
+
     def test_isolates_unsupported_node_failures(self):
         x = ir.Value(name="X", type=ir.TensorType(ir.DataType.FLOAT), shape=ir.Shape([2]))
         relu = ir.Node("", "Relu", [x], num_outputs=1)
