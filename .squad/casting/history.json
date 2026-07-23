@@ -1,0 +1,20 @@
+{
+  "universe_usage_history": [
+    {
+      "universe": "Alien",
+      "assigned_at": "2026-07-22T21:28:52Z",
+      "agent_count": 4
+    }
+  ],
+  "assignment_cast_snapshots": {
+    "2026-07-22T21:28:52Z": {
+      "universe": "Alien",
+      "agents": {
+        "ripley": "Lead / Shape-Inference Architect",
+        "dallas": "Op Implementation Dev",
+        "lambert": "Test & QA Engineer",
+        "parker": "Docs & DevRel"
+      }
+    }
+  }
+}

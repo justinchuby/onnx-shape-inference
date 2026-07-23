@@ -1,0 +1,40 @@
+{
+  "agents": {
+    "ripley": {
+      "name": "Ripley",
+      "universe": "Alien",
+      "role": "Lead / Shape-Inference Architect",
+      "charter": ".squad/agents/ripley/charter.md",
+      "status": "active",
+      "legacy_named": false,
+      "cast_at": "2026-07-22T21:28:52Z"
+    },
+    "dallas": {
+      "name": "Dallas",
+      "universe": "Alien",
+      "role": "Op Implementation Dev",
+      "charter": ".squad/agents/dallas/charter.md",
+      "status": "active",
+      "legacy_named": false,
+      "cast_at": "2026-07-22T21:28:52Z"
+    },
+    "lambert": {
+      "name": "Lambert",
+      "universe": "Alien",
+      "role": "Test & QA Engineer",
+      "charter": ".squad/agents/lambert/charter.md",
+      "status": "active",
+      "legacy_named": false,
+      "cast_at": "2026-07-22T21:28:52Z"
+    },
+    "parker": {
+      "name": "Parker",
+      "universe": "Alien",
+      "role": "Docs & DevRel",
+      "charter": ".squad/agents/parker/charter.md",
+      "status": "active",
+      "legacy_named": false,
+      "cast_at": "2026-07-22T21:28:52Z"
+    }
+  }
+}
