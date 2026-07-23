@@ -31,7 +31,11 @@ logger = logging.getLogger(__name__)
 # only this module-level assignment requires the TYPE_CHECKING guard.
 if TYPE_CHECKING:
     _FuncOutputCache = dict[
-        tuple, list[tuple[ir.Shape | None, ir.DataType | None, str | None]]
+        tuple,
+        tuple[
+            list[tuple[ir.Shape | None, ir.DataType | None, str | None]],
+            frozenset[str],
+        ],
     ]
 
 
@@ -331,6 +335,7 @@ def _warn_unresolved_ref_attrs(
 def _remint_cached_generated_symbols(
     ctx: _context.ShapeInferenceContext,
     cached_outputs: list[tuple[ir.Shape | None, ir.DataType | None, str | None]],
+    body_minted_symbols: frozenset[str],
 ) -> list[tuple[ir.Shape | None, ir.DataType | None, str | None]]:
     """Replace body-minted generated symbols in cached outputs with fresh ones.
 
@@ -340,22 +345,29 @@ def _remint_cached_generated_symbols(
     independent data-dependent dimensions share a single symbol, falsely
     asserting they are equal.
 
-    On a cache hit, every generated symbol (identified by
-    :meth:`ShapeInferenceContext.is_generated_symbol`) is remapped to a fresh
-    :meth:`ShapeInferenceContext.new_symbolic_dim`.  The remapping is consistent
-    within a single hit, so a body symbol appearing in several output dims stays
-    a single (fresh) symbol, while it differs across separate hits.  Concrete and
-    input-derived (non-generated) dims are reused unchanged, preserving genuine
-    dimension relationships.
+    On a cache hit, only symbols in *body_minted_symbols* — the anonymous dims
+    minted *during this function body's* inference — are remapped to a fresh
+    :meth:`ShapeInferenceContext.new_symbolic_dim`.  Input-derived symbols (even
+    when engine-generated upstream, e.g. an outer ``NonZero`` result passed in as
+    a function input) are reused verbatim: the cache hit is keyed on an identical
+    input signature, so those symbols carry genuine cross-call equalities that
+    must be preserved.  The remapping is consistent within a single hit, so a
+    body symbol appearing in several output dims stays a single (fresh) symbol,
+    while it differs across separate hits.  Concrete dims are reused unchanged.
 
     Args:
         ctx: The parent shape inference context minting the fresh symbols.
         cached_outputs: The cached ``(shape, dtype, sym_data)`` tuples.
+        body_minted_symbols: Names of anonymous dims minted while inferring the
+            cached function body (``generated after`` minus ``generated before``).
 
     Returns:
-        A new list of ``(shape, dtype, sym_data)`` tuples with generated symbols
-        re-minted.
+        A new list of ``(shape, dtype, sym_data)`` tuples with body-minted
+        symbols re-minted.
     """
+    if not body_minted_symbols:
+        return cached_outputs
+
     remap: dict[str, object] = {}
 
     def fresh_symbol_for(name: str):
@@ -371,7 +383,7 @@ def _remint_cached_generated_symbols(
         return {
             symbol: fresh_symbol_for(symbol.name)
             for symbol in expr.free_symbols
-            if ctx.is_generated_symbol(symbol.name)
+            if symbol.name in body_minted_symbols
         }
 
     def remap_dim(dim: int | ir.SymbolicDim) -> int | ir.SymbolicDim:
@@ -498,7 +510,10 @@ def infer_function_call_output_shapes(
     if inference_cache is not None:
         cache_key = (id(f), _make_input_signature(f, node), _make_attr_signature(node))
         if cache_key in inference_cache:
-            cached_outputs = _remint_cached_generated_symbols(ctx, inference_cache[cache_key])
+            cached_outputs, body_minted_symbols = inference_cache[cache_key]
+            cached_outputs = _remint_cached_generated_symbols(
+                ctx, cached_outputs, body_minted_symbols
+            )
             for n_out, (c_shape, c_dtype, c_sym_data) in zip(node.outputs, cached_outputs):
                 if n_out is None:
                     continue
@@ -528,6 +543,11 @@ def infer_function_call_output_shapes(
         resolved_attrs=resolved_attrs,
     )
 
+    # Snapshot the generated-symbol set so we can later isolate the symbols
+    # minted *during this body's* inference (data-dependent dims) from
+    # input-derived ones that merely flow through.
+    generated_before = ctx.generated_dim_names
+
     with _function_binding_scope(f, node):
         process_graph_fn(
             child_ctx,
@@ -553,9 +573,11 @@ def infer_function_call_output_shapes(
             if sym_data is not None:
                 n_out.metadata_props[_context.SYM_DATA_KEY] = sym_data
 
-        # Store in cache for subsequent identical calls
+        # Store in cache for subsequent identical calls, together with the set of
+        # symbols minted during this body so cache hits re-mint only those.
         if inference_cache is not None and cache_key is not None:
-            inference_cache[cache_key] = output_results
+            body_minted_symbols = ctx.generated_dim_names - generated_before
+            inference_cache[cache_key] = (output_results, body_minted_symbols)
 
 
 # Per-inference-run cache of materialized op-schema functions, keyed by

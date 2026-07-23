@@ -796,6 +796,33 @@ class TestFunctionOutputCacheReMinting(unittest.TestCase):
         self.assertEqual(out2.shape, ir.Shape(["N"]))
         self.assertEqual(out1.shape[0], out2.shape[0])
 
+    def test_input_derived_generated_symbol_shared_across_call_sites(self):
+        # An outer NonZero mints a data-dependent dim `_dN` on its output.  That
+        # value is passed into a passthrough (Identity-body) function at two call
+        # sites.  Because the symbol is input-derived (NOT minted by the function
+        # body), both calls must reuse it verbatim — the genuine equality across
+        # call sites must be preserved, not broken by re-minting.
+        func = _single_op_function("test", "MyIdentity", "Identity", opset=20)
+        x = _make_value("x", shape=[2, 5], dtype=FLOAT)
+        nz = _make_value("nz", shape=None, dtype=None)
+        non_zero = ir.Node("", "NonZero", inputs=[x], outputs=[nz], attributes={})
+        out1 = _make_value("out1", shape=None, dtype=None)
+        out2 = _make_value("out2", shape=None, dtype=None)
+        call1 = ir.Node("test", "MyIdentity", inputs=[nz], outputs=[out1], attributes={})
+        call2 = ir.Node("test", "MyIdentity", inputs=[nz], outputs=[out2], attributes={})
+        model = _make_model(
+            [non_zero, call1, call2], [x], [out1, out2], [func], extra_domain="test"
+        )
+
+        infer_symbolic_shapes(model, warn_on_missing=False)
+
+        self.assertIsNotNone(out1.shape)
+        self.assertIsNotNone(out2.shape)
+        # Both passthrough outputs equal the NonZero result and each other.
+        self.assertEqual(out1.shape, nz.shape)
+        self.assertEqual(out2.shape, nz.shape)
+        self.assertEqual(out1.shape[1], out2.shape[1])
+
 
 if __name__ == "__main__":
     unittest.main()

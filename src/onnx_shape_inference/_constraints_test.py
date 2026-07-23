@@ -190,30 +190,30 @@ class RecordReshapeNumelEqualitiesTest(unittest.TestCase):
         _constraints.propagate_symbolic_constraints(ctx, graph)
         self.assertEqual(flat.shape[-1], _sym("c"))
 
-    def test_divisibility_rewrite_scoped_to_reshape_numel(self):
-        # A reshape [a,b,c] -> [a,b,2,floor(c/2)] supplies the divisibility
-        # provenance for 2*floor(c/2) -> c.  It must collapse ONLY the value
-        # whose element count matches the reshape numel, not an unrelated value
-        # that carries a genuinely-rounding 2*floor(c/2) with a different numel.
+    def test_divisibility_rewrite_applies_wherever_symbol_appears(self):
+        # A reshape [a,b,c] -> [a,b,2,floor(c/2)] proves c is even, i.e.
+        # c == 2*floor(c/2).  That equality holds globally for the symbol c, so
+        # a *separate* value shaped [2*floor(c/2)] must ALSO simplify to [c],
+        # regardless of its total element count.
         graph, _node = self._reshape_graph(["a", "b", "c"], ["a", "b", 2, "floor(c/2)"])
-        # Inherited from the reshape: same numel (2*a*b*floor(c/2)) -> collapses.
+        # Inherited from the reshape (same numel form).
         inherited = ir.Value(
             name="inherited",
             type=ir.TensorType(ir.DataType.FLOAT),
             shape=ir.Shape(["a", "b", "2*floor(c/2)"]),
         )
-        # Unrelated genuine rounding: numel 2*floor(c/2) differs -> preserved.
-        genuine = ir.Value(
-            name="genuine",
+        # A separate value with a different numel but the same proven-even c.
+        separate = ir.Value(
+            name="separate",
             type=ir.TensorType(ir.DataType.FLOAT),
             shape=ir.Shape(["2*floor(c/2)"]),
         )
-        graph.outputs.extend([inherited, genuine])
+        graph.outputs.extend([inherited, separate])
         ctx = _context.ShapeInferenceContext()
         _constraints.record_reshape_numel_equalities(ctx, graph)
         _constraints.propagate_symbolic_constraints(ctx, graph)
         self.assertEqual(inherited.shape[-1], _sym("c"))
-        self.assertEqual(genuine.shape[0], _sym("2*floor(c/2)"))
+        self.assertEqual(separate.shape[0], _sym("c"))
 
 
 class LeafEqualityTest(unittest.TestCase):

@@ -290,41 +290,6 @@ def _shape_numel_expr(shape: ir.Shape | None) -> sympy.Expr | None:
     return sympy.expand(product)
 
 
-def _is_divisibility_source(source: sympy.Expr) -> bool:
-    """Return whether a compound rewrite source is a divisibility rewrite.
-
-    A source containing ``floor``/``ceiling`` (e.g. ``2*floor(c/2)``) is only
-    sound to collapse where a reshape's numel equality supplied the divisibility
-    provenance.  Compound sources without rounding (e.g. ``past_seq + seq``)
-    carry no such caveat and stay globally applicable.
-    """
-    return source.has(sympy.floor, sympy.ceiling)
-
-
-def _reshape_numel_expressions(graph: ir.Graph) -> list[sympy.Expr]:
-    """Collect the input/output numel expressions of every Reshape in *graph*.
-
-    These identify the values eligible for divisibility (floor/ceiling) compound
-    rewrites: only a value whose element count matches a reshape's numel may have
-    inherited that reshape's divisibility, so only such values are collapsed (see
-    :func:`propagate_symbolic_constraints`).
-    """
-    numels: list[sympy.Expr] = []
-    for node in _iter_nodes(graph):
-        if node.domain != "" or node.op_type != "Reshape":
-            continue
-        if not node.inputs or not node.outputs:
-            continue
-        data, out = node.inputs[0], node.outputs[0]
-        for value in (data, out):
-            if value is None:
-                continue
-            numel = _shape_numel_expr(value.shape)
-            if numel is not None:
-                numels.append(numel)
-    return numels
-
-
 def record_reshape_numel_equalities(
     ctx: _context.ShapeInferenceContext,
     graph: ir.Graph,
@@ -393,25 +358,6 @@ def propagate_symbolic_constraints(
     if not symbol_map and not compound:
         return False
 
-    # Divisibility (floor/ceiling) compound rewrites are only sound where a
-    # reshape's numel equality established the divisibility.  Restrict them to
-    # values whose element count matches a reshape numel, so an unrelated genuine
-    # ``2*floor(c/2)`` elsewhere is never collapsed.  Non-rounding compound
-    # rewrites (e.g. ``past_seq + seq -> total_seq``) remain globally applicable.
-    global_compound = [(s, t) for s, t in compound if not _is_divisibility_source(s)]
-    divisibility_compound = [(s, t) for s, t in compound if _is_divisibility_source(s)]
-    reshape_numels = _reshape_numel_expressions(graph) if divisibility_compound else []
-
-    def _applicable_compound(
-        value: ir.Value,
-    ) -> list[tuple[sympy.Expr, sympy.Symbol]]:
-        if not divisibility_compound:
-            return global_compound
-        numel = _shape_numel_expr(value.shape)
-        if numel is not None and any(numel == r for r in reshape_numels):
-            return global_compound + divisibility_compound
-        return global_compound
-
     values = _collect_values(graph)
     modified = False
 
@@ -421,11 +367,10 @@ def propagate_symbolic_constraints(
             shape = value.shape
             if shape is None:
                 continue
-            applicable_compound = _applicable_compound(value)
             new_dims: list[int | ir.SymbolicDim] = []
             dim_changed = False
             for dim in shape.dims:
-                rewritten = _rewrite_dim(dim, symbol_map, applicable_compound)
+                rewritten = _rewrite_dim(dim, symbol_map, compound)
                 if rewritten is None:
                     new_dims.append(dim)
                 else:
