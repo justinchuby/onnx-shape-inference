@@ -38,6 +38,8 @@ def infer_gather(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
         rank = data_shape.rank()
         axis = _shape_ops.normalize_axis(ctx, node, axis, rank)
         if axis is None:
+            if len(node.outputs) > 0:
+                ctx.set_shape_and_dtype(node.outputs[0], None, output_dtype)
             return
 
         output_dims: list[int | ir.SymbolicDim] = []

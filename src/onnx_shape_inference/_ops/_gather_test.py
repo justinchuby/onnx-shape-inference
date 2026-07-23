@@ -130,7 +130,7 @@ class GatherTest(unittest.TestCase):
             opset_version=17,
             policy="skip",
         )
-        self.assertEqual(actual, [ts()])
+        self.assertEqual(actual, [ts(FLOAT)])
 
 
 class GatherElementsTest(unittest.TestCase):

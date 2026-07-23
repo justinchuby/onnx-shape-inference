@@ -205,6 +205,17 @@ class FlattenTest(unittest.TestCase):
                 opset_version=17,
             )
 
+    def test_flatten_axis_out_of_range_sets_output_dtype(self):
+        actual = run_shape_inference(
+            "",
+            "Flatten",
+            [ts(FLOAT, [2, 3, 4])],
+            {"axis": ir.Attr("axis", ir.AttributeType.INT, 4)},
+            opset_version=17,
+            policy="skip",
+        )
+        self.assertEqual(actual, [ts(FLOAT)])
+
     def test_shape_no_inputs(self):
         with self.assertRaises(OpUsageError):
             run_shape_inference("", "Shape", [], opset_version=17)

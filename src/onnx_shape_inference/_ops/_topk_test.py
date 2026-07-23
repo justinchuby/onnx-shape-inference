@@ -9,7 +9,7 @@ import unittest
 import onnx_ir as ir
 import parameterized
 
-from onnx_shape_inference import OpUsageError
+from onnx_shape_inference import OpUsageError, ShapeInferenceError
 from onnx_shape_inference._ops._testing import (
     const_value,
     run_shape_inference,
@@ -76,6 +76,29 @@ class TopKTest(unittest.TestCase):
         )
         self.assertEqual(actual[0], ts(FLOAT))
         self.assertEqual(actual[1], ts(INT64))
+
+    def test_axis_out_of_range_records_error(self):
+        with self.assertRaises(ShapeInferenceError):
+            run_shape_inference(
+                "",
+                "TopK",
+                [ts(FLOAT, [3, 4]), ts(INT64, [1])],
+                {"axis": ir.Attr("axis", ir.AttributeType.INT, 5)},
+                opset_version=21,
+                num_outputs=2,
+            )
+
+    def test_axis_out_of_range_sets_output_dtypes(self):
+        actual = run_shape_inference(
+            "",
+            "TopK",
+            [ts(FLOAT, [3, 4]), ts(INT64, [1])],
+            {"axis": ir.Attr("axis", ir.AttributeType.INT, 5)},
+            opset_version=21,
+            num_outputs=2,
+            policy="skip",
+        )
+        self.assertEqual(actual, [ts(FLOAT), ts(INT64)])
 
     def test_none_input_raises(self):
         v = ir.Value(name="k", type=ir.TensorType(INT64), shape=ir.Shape([1]))
