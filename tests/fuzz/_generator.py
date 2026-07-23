@@ -666,22 +666,6 @@ def _plan_split(
     )
 
 
-def _plan_optional_get_element(
-    generator: _Generator,
-    schema: onnx.defs.OpSchema,
-    bindings: dict[str, ir.DataType],
-) -> _InputPlan:
-    # ``OptionalGetElement`` constrains the input element type (``O``) and the
-    # output element type (``V``) with *distinct* type parameters, so the
-    # default planner would pick them independently and can emit a model whose
-    # declared output dtype contradicts the input dtype. Per the ONNX spec the
-    # output element type must equal the input element type, so pre-bind ``V``
-    # and feed a plain tensor of that dtype (a spec-valid input for ``O``).
-    dtype = generator._dtype_for_type("V", schema, bindings)
-    data = generator._graph_input(dtype, generator._random_shape())
-    return _InputPlan([data], output_shapes=(data.shape,))
-
-
 _op_planners: dict[_OpKey, InputPlanner] = {
     ("", "ConstantOfShape"): _plan_constant_of_shape,
     ("", "Expand"): _plan_expand,
@@ -701,7 +685,6 @@ _op_planners: dict[_OpKey, InputPlanner] = {
     ("", "LayerNormalization"): _plan_layer_normalization,
     ("", "MatMul"): _plan_matmul,
     ("", "MaxPool"): _plan_pool,
-    ("", "OptionalGetElement"): _plan_optional_get_element,
     ("", "PRelu"): _plan_prelu,
     ("", "RMSNormalization"): _plan_rms_normalization,
     ("", "Split"): _plan_split,

@@ -262,9 +262,6 @@ class GeneratorTest(unittest.TestCase):
                     f"{secondary.shape} not broadcastable to {primary.shape}",
                 )
                 self.assertEqual(secondary.dtype, primary.dtype)
-        elif expected_op_type == "OptionalGetElement":
-            (data,) = node.inputs
-            self.assertEqual(data.dtype, node.outputs[0].dtype)
         else:
             self.fail(f"Missing planner assertion for {expected_op_type}")
 
@@ -409,22 +406,6 @@ class ExpandedCoverageTest(unittest.TestCase):
                     _is_unidirectional_broadcastable(secondary.shape, primary.shape),
                     f"seed {seed}: {secondary.shape} not broadcastable to {primary.shape}",
                 )
-
-    @parameterized.parameterized.expand([(18,), (23,)])
-    def test_optional_get_element_output_dtype_matches_input(self, opset):
-        # ``OptionalGetElement`` must declare an output element type equal to
-        # its input element type; the planner pre-binds the output type
-        # parameter so each emitted single-op model is spec-valid.
-        for seed in range(40):
-            proto, node = _isolated_planner_model("OptionalGetElement", opset, seed)
-            onnx.checker.check_model(proto, full_check=True)
-            (data,) = node.inputs
-            self.assertEqual(
-                data.dtype,
-                node.outputs[0].dtype,
-                f"seed {seed}: input dtype {data.dtype} != output "
-                f"dtype {node.outputs[0].dtype}",
-            )
 
     @parameterized.parameterized.expand(
         [
