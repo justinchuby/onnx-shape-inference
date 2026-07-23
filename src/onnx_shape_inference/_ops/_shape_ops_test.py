@@ -9,7 +9,7 @@ import unittest
 import onnx_ir as ir
 import parameterized
 
-from onnx_shape_inference import OpUsageError
+from onnx_shape_inference import OpUsageError, infer_symbolic_shapes
 from onnx_shape_inference._ops._testing import (
     run_shape_inference,
     run_shape_inference_with_values,
@@ -105,6 +105,36 @@ class ShapeOpTest(unittest.TestCase):
             opset_version=17,
         )
         self.assertEqual(actual, [ts(INT64, [3])])
+
+    def test_shape_constant_reaches_unique_on_first_pass(self):
+        data = ir.Value(name="data", type=ir.TensorType(INT64), shape=ir.Shape([2]))
+        shape_node = ir.Node("", "Shape", [data], num_outputs=1)
+        unique_node = ir.Node("", "Unique", [shape_node.outputs[0]], num_outputs=1)
+        model = ir.Model(
+            ir.Graph(
+                [data],
+                list(unique_node.outputs),
+                nodes=[shape_node, unique_node],
+                opset_imports={"": 21},
+            ),
+            ir_version=10,
+        )
+
+        infer_symbolic_shapes(model)
+
+        shape_const = ir.convenience.get_const_tensor(shape_node.outputs[0])
+        self.assertIsNotNone(shape_const)
+        self.assertEqual(shape_const.numpy().tolist(), [2])
+        self.assertEqual(
+            ir.TypeAndShape(unique_node.outputs[0].type, unique_node.outputs[0].shape),
+            ts(INT64, [1]),
+        )
+
+        infer_symbolic_shapes(model)
+        self.assertEqual(
+            ir.TypeAndShape(unique_node.outputs[0].type, unique_node.outputs[0].shape),
+            ts(INT64, [1]),
+        )
 
 
 class SizeTest(unittest.TestCase):
