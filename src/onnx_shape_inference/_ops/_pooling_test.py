@@ -83,6 +83,42 @@ class AveragePoolTest(unittest.TestCase):
         with self.assertRaises(OpUsageError):
             run_shape_inference_with_values("", "AveragePool", [None], opset_version=21)
 
+    @parameterized.parameterized.expand(
+        [
+            ("zero_stride", "AveragePool", {"kernel_shape": [3, 3], "strides": [0, 1]}),
+            ("short_kernel", "AveragePool", {"kernel_shape": [3]}),
+            ("short_pads", "AveragePool", {"kernel_shape": [3, 3], "pads": [0, 0]}),
+            ("short_dilations", "AveragePool", {"kernel_shape": [3, 3], "dilations": [1]}),
+            ("max_pool", "MaxPool", {"kernel_shape": [3, 3], "strides": [0, 1]}),
+            ("lp_pool", "LpPool", {"kernel_shape": [3, 3], "strides": [0, 1]}),
+        ]
+    )
+    def test_invalid_attrs_degrade_with_skip_policy(self, _name, op_type, attr_values):
+        attrs = {
+            name: ir.Attr(name, ir.AttributeType.INTS, value)
+            for name, value in attr_values.items()
+        }
+        actual = run_shape_inference(
+            "", op_type, [ts(FLOAT, [1, 1, 5, 5])], attrs, opset_version=21, policy="skip"
+        )
+        self.assertIsNone(actual[0].shape)
+
+    @parameterized.parameterized.expand([("AveragePool", 21), ("MaxPool", 21), ("LpPool", 21)])
+    def test_rank_two_input_raises_shape_error(self, op_type, opset_version):
+        attrs = {"kernel_shape": ir.Attr("kernel_shape", ir.AttributeType.INTS, [3])}
+        with self.assertRaises(ShapeInferenceError):
+            run_shape_inference(
+                "", op_type, [ts(FLOAT, [1, 1])], attrs, opset_version=opset_version
+            )
+
+    @parameterized.parameterized.expand([("AveragePool",), ("MaxPool",), ("LpPool",)])
+    def test_rank_two_input_degrades_with_skip_policy(self, op_type):
+        attrs = {"kernel_shape": ir.Attr("kernel_shape", ir.AttributeType.INTS, [3])}
+        actual = run_shape_inference(
+            "", op_type, [ts(FLOAT, [1, 1])], attrs, opset_version=21, policy="skip"
+        )
+        self.assertIsNone(actual[0].shape)
+
 
 class MaxPoolTest(unittest.TestCase):
     def test_opset_11(self):

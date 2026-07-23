@@ -56,6 +56,28 @@ class ConvTest(unittest.TestCase):
 
     @parameterized.parameterized.expand(
         [
+            ("weight_rank", [16, 3, 3], {}),
+            ("short_kernel", [16, 3, 3, 3], {"kernel_shape": [3]}),
+            ("zero_stride", [16, 3, 3, 3], {"strides": [0, 1]}),
+            ("short_dilations", [16, 3, 3, 3], {"dilations": [1]}),
+            ("short_pads", [16, 3, 3, 3], {"pads": [0, 0]}),
+        ]
+    )
+    def test_invalid_spatial_inputs_degrade_with_skip_policy(
+        self, _name, weight_shape, attr_values
+    ):
+        actual = run_shape_inference(
+            "",
+            "Conv",
+            [ts(FLOAT, [1, 3, 5, 5]), ts(FLOAT, weight_shape)],
+            _attrs(**attr_values),
+            opset_version=17,
+            policy="skip",
+        )
+        self.assertIsNone(actual[0].shape)
+
+    @parameterized.parameterized.expand(
+        [
             # Basic cases
             (
                 "basic_no_pad",

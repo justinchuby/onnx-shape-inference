@@ -76,6 +76,22 @@ class DepthSpaceTest(unittest.TestCase):
         with self.assertRaises(ShapeInferenceError):
             run_shape_inference("", op_type, [ts(FLOAT, shape)], attrs, opset_version=13)
 
+    @parameterized.parameterized.expand(
+        [
+            ("non_positive_blocksize", "DepthToSpace", [1, 4, 2, 2], 0),
+            ("non_positive_blocksize_space_to_depth", "SpaceToDepth", [1, 4, 2, 2], 0),
+            ("non_divisible_channels", "DepthToSpace", [1, 10, 2, 2], 3),
+            ("non_divisible_height", "SpaceToDepth", [1, 3, 5, 6], 3),
+            ("non_divisible_width", "SpaceToDepth", [1, 3, 6, 5], 3),
+        ]
+    )
+    def test_invalid_dims_degrade_with_skip_policy(self, _name, op_type, shape, blocksize):
+        attrs = {"blocksize": ir.Attr("blocksize", ir.AttributeType.INT, blocksize)}
+        actual = run_shape_inference(
+            "", op_type, [ts(FLOAT, shape)], attrs, opset_version=13, policy="skip"
+        )
+        self.assertEqual(actual, [ts(FLOAT)])
+
     @parameterized.parameterized.expand([("DepthToSpace", 1), ("SpaceToDepth", 1)])
     def test_opset_1(self, op_type, opset_version):
         attrs = {"blocksize": ir.Attr("blocksize", ir.AttributeType.INT, 2)}
