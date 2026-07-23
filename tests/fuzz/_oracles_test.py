@@ -127,6 +127,16 @@ class SoundnessOracleTest(unittest.TestCase):
         self.assertEqual(result.status, "FAIL")
         self.assertEqual(result.value_name, "Y")
 
+    def test_wrong_inferred_dtype_fails_against_runtime(self):
+        case = _case()
+        with mock.patch(
+            "tests.fuzz._oracles._runtime_shapes",
+            return_value={"Y": {"dtype": "int64", "shape": [2, 3]}},
+        ):
+            result = SoundnessOracle().check(case)
+        self.assertEqual(result.status, "FAIL")
+        self.assertEqual(result.kind, "dtype")
+
     def test_isolates_unsupported_node_failures(self):
         x = ir.Value(name="X", type=ir.TensorType(ir.DataType.FLOAT), shape=ir.Shape([2]))
         relu = ir.Node("", "Relu", [x], num_outputs=1)

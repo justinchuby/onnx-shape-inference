@@ -432,6 +432,18 @@ class SoundnessOracle:
                 actual = runtime.get(output.name)
                 if expected is None or expected.shape is None or actual is None:
                     continue
+                expected_dtype = _np_dtype(expected.dtype) if expected.dtype is not None else None
+                actual_dtype = np.dtype(actual["dtype"])
+                if expected_dtype is not None and expected_dtype != actual_dtype:
+                    return OracleResult.failed(
+                        self.name,
+                        "runtime dtype contradiction",
+                        value_name=output.name,
+                        kind="dtype",
+                        expected=actual_dtype,
+                        actual=expected.dtype,
+                        details={"nodes": node_counts, "node": name},
+                    )
                 actual_shape = actual["shape"]
                 if expected.shape.rank() != len(actual_shape):
                     return OracleResult.failed(
