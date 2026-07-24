@@ -213,7 +213,8 @@ FUZZ_SEED=<seed> python3 -m pytest tests/shape_inference_fuzz_test.py
 ```
 
 See [docs/fuzzing.md](docs/fuzzing.md) for how to turn a fuzzer finding into a
-regression test.
+regression test, and [docs/fuzzing-design.md](docs/fuzzing-design.md) for the
+fuzzer's design (generator, oracles, harness, and shrinking).
 
 ## License
 

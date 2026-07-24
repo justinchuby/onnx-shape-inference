@@ -1,5 +1,8 @@
 # Fuzzing regressions
 
+> For how the fuzzer is designed (generator, oracles, harness, shrinking), see
+> [fuzzing-design.md](fuzzing-design.md).
+
 The deterministic fast fuzzer runs `tests/shape_inference_fuzz_test.py`; replay a
 failure with its printed seed:
 
