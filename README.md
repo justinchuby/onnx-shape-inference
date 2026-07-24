@@ -218,4 +218,4 @@ fuzzer's design (generator, oracles, harness, and shrinking).
 
 ## License
 
-`onnx-shape-inference` is distributed under the terms of the [Apache-2.0](https://spdx.org/licenses/Apache-2.0.html) license.
+MIT
