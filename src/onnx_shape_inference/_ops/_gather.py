@@ -13,6 +13,7 @@ __all__ = [
 import onnx_ir as ir
 
 from onnx_shape_inference import _context, _registry
+from onnx_shape_inference._ops import _shape_ops
 
 
 @_registry.registry.register("", "Gather", since_version=1)
@@ -35,11 +36,10 @@ def infer_gather(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
         axis = axis_attr.as_int() if axis_attr is not None else 0
 
         rank = data_shape.rank()
-        if axis < 0:
-            axis += rank
-
-        if not 0 <= axis < rank:
-            ctx.record_error(node, f"axis={axis} is out of range for rank {rank}")
+        axis = _shape_ops.normalize_axis(ctx, node, axis, rank)
+        if axis is None:
+            if len(node.outputs) > 0:
+                ctx.set_shape_and_dtype(node.outputs[0], None, output_dtype)
             return
 
         output_dims: list[int | ir.SymbolicDim] = []
@@ -69,7 +69,7 @@ def infer_gather(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
                         ctx.set_symbolic_value(node.outputs[0], gathered)
 
 
-@_registry.registry.register("", "GatherElements", since_version=13)
+@_registry.registry.register("", "GatherElements", since_version=11)
 def infer_gather_elements(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
     """Infer shape and dtype for GatherElements operator.
 
@@ -81,7 +81,7 @@ def infer_gather_elements(ctx: _context.ShapeInferenceContext, node: ir.Node) ->
         ctx.set_shape_and_dtype(node.outputs[0], indices.shape, data.dtype)
 
 
-@_registry.registry.register("", "GatherND", since_version=12)
+@_registry.registry.register("", "GatherND", since_version=11)
 def infer_gather_nd(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
     """Infer shape and dtype for GatherND operator.
 
@@ -93,11 +93,36 @@ def infer_gather_nd(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
     if len(node.outputs) > 0:
         output_shape = None
         if data.shape is not None and indices.shape is not None:
-            batch_dims_attr = node.attributes.get("batch_dims")
-            batch_dims = batch_dims_attr.as_int() if batch_dims_attr is not None else 0
+            indices_rank = indices.shape.rank()
+            if indices_rank == 0:
+                ctx.record_error(node, "indices must have rank of at least 1")
+                ctx.set_shape_and_dtype(node.outputs[0], None, data.dtype)
+                return
+
+            if ctx.opset < 12:
+                batch_dims = 0
+            else:
+                batch_dims_attr = node.attributes.get("batch_dims")
+                batch_dims = batch_dims_attr.as_int() if batch_dims_attr is not None else 0
+            if batch_dims < 0 or batch_dims >= indices_rank or batch_dims > data.shape.rank():
+                ctx.record_error(
+                    node,
+                    f"batch_dims={batch_dims} is invalid for data rank {data.shape.rank()} "
+                    f"and indices rank {indices_rank}",
+                )
+                ctx.set_shape_and_dtype(node.outputs[0], None, data.dtype)
+                return
 
             last_idx_dim = indices.shape[-1]
             if isinstance(last_idx_dim, int):
+                if last_idx_dim > data.shape.rank() - batch_dims:
+                    ctx.record_error(
+                        node,
+                        f"index tuple length {last_idx_dim} exceeds data rank "
+                        f"{data.shape.rank()} minus batch_dims {batch_dims}",
+                    )
+                    ctx.set_shape_and_dtype(node.outputs[0], None, data.dtype)
+                    return
                 output_shape = ir.Shape(
                     [
                         *indices.shape[:-1],

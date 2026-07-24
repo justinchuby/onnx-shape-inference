@@ -6,6 +6,7 @@ from __future__ import annotations
 
 __all__ = [
     "infer_pad",
+    "infer_pad_v1",
     "infer_pad_v11",
 ]
 
@@ -49,22 +50,35 @@ def _apply_pads(
     return ir.Shape(new_dims)
 
 
-@_registry.registry.register("", "Pad", since_version=1)
-def infer_pad(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
-    """Infer shape and dtype for Pad operator (opset < 11).
-
-    In opset 1-10, ``pads`` is a required attribute.
-    """
+def _infer_pad_from_attribute(
+    ctx: _context.ShapeInferenceContext, node: ir.Node, attribute_name: str
+) -> None:
+    """Infer Pad shape from the pads attribute used by the selected opset."""
     (data,) = _context.check_inputs(node, "data")
 
     output_shape: ir.Shape | None = None
     if data.shape is not None:
-        pads_attr = _context.require_attr(node, "pads")
+        pads_attr = _context.require_attr(node, attribute_name)
         pads = [int(x) for x in pads_attr.as_ints()]
         output_shape = _apply_pads(ctx, data.shape, pads, axes=None)
 
     if len(node.outputs) > 0:
         ctx.set_shape_and_dtype(node.outputs[0], output_shape, data.dtype)
+
+
+@_registry.registry.register("", "Pad", since_version=1)
+def infer_pad_v1(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
+    """Infer shape and dtype for Pad operator version 1."""
+    _infer_pad_from_attribute(ctx, node, "paddings")
+
+
+@_registry.registry.register("", "Pad", since_version=2)
+def infer_pad(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
+    """Infer shape and dtype for Pad operator versions 2-10.
+
+    In opset 2-10, ``pads`` is a required attribute.
+    """
+    _infer_pad_from_attribute(ctx, node, "pads")
 
 
 @_registry.registry.register("", "Pad", since_version=11)

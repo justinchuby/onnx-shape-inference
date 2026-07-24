@@ -305,6 +305,82 @@ class MsAttentionTest(unittest.TestCase):
         )
         self.assertEqual(actual, [ts(FLOAT, [2, 8, 256])])
 
+    def test_present_appends_current_sequence(self):
+        actual = run_shape_inference(
+            MSFT,
+            "Attention",
+            [
+                ts(FLOAT, [2, 8, 192]),
+                ts(FLOAT, [192, 576]),
+                ts(FLOAT, [576]),
+                None,
+                ts(FLOAT, [2, 2, 4, 10, 48]),
+            ],
+            attributes={"num_heads": ir.Attr("num_heads", ir.AttributeType.INT, 4)},
+            opset_version=1,
+            num_outputs=2,
+        )
+        self.assertEqual(actual[1], ts(FLOAT, [2, 2, 4, 18, 48]))
+
+    def test_present_appends_symbolic_current_sequence(self):
+        actual = run_shape_inference(
+            MSFT,
+            "Attention",
+            [
+                ts(FLOAT, ["batch", "sequence", 192]),
+                ts(FLOAT, [192, 576]),
+                ts(FLOAT, [576]),
+                None,
+                ts(FLOAT, [2, "batch", 4, "past_sequence", 48]),
+            ],
+            attributes={"num_heads": ir.Attr("num_heads", ir.AttributeType.INT, 4)},
+            opset_version=1,
+            num_outputs=2,
+        )
+        self.assertEqual(actual[1], ts(FLOAT, [2, "batch", 4, "past_sequence + sequence", 48]))
+
+    def test_present_shared_buffer_keeps_buffer_length(self):
+        actual = run_shape_inference(
+            MSFT,
+            "Attention",
+            [
+                ts(FLOAT, [2, 8, 192]),
+                ts(FLOAT, [192, 576]),
+                ts(FLOAT, [576]),
+                None,
+                ts(FLOAT, [2, 2, 4, 128, 48]),
+            ],
+            attributes={
+                "num_heads": ir.Attr("num_heads", ir.AttributeType.INT, 4),
+                "past_present_share_buffer": ir.Attr(
+                    "past_present_share_buffer", ir.AttributeType.INT, 1
+                ),
+            },
+            opset_version=1,
+            num_outputs=2,
+        )
+        self.assertEqual(actual[1], ts(FLOAT, [2, 2, 4, 128, 48]))
+
+    def test_present_head_size_uses_projected_value_hidden_size(self):
+        actual = run_shape_inference(
+            MSFT,
+            "Attention",
+            [
+                ts(FLOAT, [2, 8, 512]),
+                ts(FLOAT, [512, 2304]),
+                ts(FLOAT, [2304]),
+            ],
+            attributes={
+                "num_heads": ir.Attr("num_heads", ir.AttributeType.INT, 12),
+                "qkv_hidden_sizes": ir.Attr(
+                    "qkv_hidden_sizes", ir.AttributeType.INTS, [768, 768, 768]
+                ),
+            },
+            opset_version=1,
+            num_outputs=2,
+        )
+        self.assertEqual(actual[1], ts(FLOAT, [2, 2, 12, 8, 64]))
+
 
 class MsMultiHeadAttentionTest(unittest.TestCase):
     def test_3d_query(self):
@@ -1188,8 +1264,7 @@ class AttentionPresentTest(unittest.TestCase):
             opset_version=1,
             num_outputs=2,
         )
-        # present copies past shape
-        self.assertEqual(actual[1].shape, ir.Shape([2, 2, 4, 10, 48]))
+        self.assertEqual(actual[1].shape, ir.Shape([2, 2, 4, 18, 48]))
 
 
 # ---------------------------------------------------------------------------
@@ -1353,27 +1428,93 @@ class QLinearConvTest(unittest.TestCase):
                 ts(FLOAT, []),  # x_scale
                 ts(INT8, []),  # x_zp
                 ts(INT8, [16, 3, 3, 3]),  # w
+                ts(FLOAT, []),  # w_scale
+                ts(INT8, []),  # w_zp
+                ts(FLOAT, []),  # y_scale
+                ts(INT8, []),  # y_zp
             ],
             opset_version=1,
         )
         self.assertEqual(actual[0].shape, ir.Shape([1, 16, 30, 30]))
         self.assertEqual(actual[0].type.dtype, INT8)
 
-    def test_dtype_from_zp(self):
-        """Dtype falls back to x_zp when x has no dtype."""
+    def test_dtype_from_y_zero_point(self):
         actual = run_shape_inference(
             MSFT,
             "QLinearConv",
             [
-                ts(None, [1, 3, 32, 32]),  # x (no dtype)
+                ts(ir.DataType.UINT8, [1, 3, 32, 32]),
                 ts(FLOAT, []),
-                ts(INT8, []),  # x_zp (INT8)
-                ts(None, [16, 3, 3, 3]),  # w
+                ts(ir.DataType.UINT8, []),
+                ts(INT8, [16, 3, 3, 3]),
+                ts(FLOAT, []),
+                ts(INT8, []),
+                ts(FLOAT, []),
+                ts(INT8, []),
             ],
             opset_version=1,
         )
         self.assertEqual(actual[0].shape, ir.Shape([1, 16, 30, 30]))
         self.assertEqual(actual[0].type.dtype, INT8)
+
+    def test_channels_last(self):
+        actual = run_shape_inference(
+            MSFT,
+            "QLinearConv",
+            [
+                ts(ir.DataType.UINT8, [1, 5, 5, 3]),
+                ts(FLOAT, []),
+                ts(ir.DataType.UINT8, []),
+                ts(INT8, [8, 3, 3, 3]),
+                ts(FLOAT, []),
+                ts(INT8, []),
+                ts(FLOAT, []),
+                ts(INT8, []),
+            ],
+            attributes={"channels_last": ir.Attr("channels_last", ir.AttributeType.INT, 1)},
+            opset_version=1,
+        )
+        self.assertEqual(actual, [ts(INT8, [1, 3, 3, 8])])
+
+    def test_channels_last_symbolic_spatial_dims(self):
+        actual = run_shape_inference(
+            MSFT,
+            "QLinearConv",
+            [
+                ts(ir.DataType.UINT8, ["batch", "height", "width", 3]),
+                ts(FLOAT, []),
+                ts(ir.DataType.UINT8, []),
+                ts(INT8, [8, 3, 3, 3]),
+                ts(FLOAT, []),
+                ts(INT8, []),
+                ts(FLOAT, []),
+                ts(INT8, []),
+            ],
+            attributes={"channels_last": ir.Attr("channels_last", ir.AttributeType.INT, 1)},
+            opset_version=1,
+        )
+        self.assertEqual(actual, [ts(INT8, ["batch", "height - 2", "width - 2", 8])])
+
+    def test_missing_required_input_raises(self):
+        with self.assertRaises(OpUsageError):
+            run_shape_inference(
+                MSFT,
+                "QLinearConv",
+                [
+                    ts(ir.DataType.UINT8, [1, 5, 5, 3]),
+                    ts(FLOAT, []),
+                    ts(ir.DataType.UINT8, []),
+                    ts(INT8, [8, 3, 3, 3]),
+                    None,
+                    ts(INT8, []),
+                    ts(FLOAT, []),
+                    ts(INT8, []),
+                ],
+                attributes={
+                    "channels_last": ir.Attr("channels_last", ir.AttributeType.INT, 1)
+                },
+                opset_version=1,
+            )
 
 
 # ---------------------------------------------------------------------------

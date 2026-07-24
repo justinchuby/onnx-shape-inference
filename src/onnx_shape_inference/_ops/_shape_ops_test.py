@@ -9,7 +9,7 @@ import unittest
 import onnx_ir as ir
 import parameterized
 
-from onnx_shape_inference import OpUsageError, infer_symbolic_shapes
+from onnx_shape_inference import OpUsageError, ShapeInferenceError, infer_symbolic_shapes
 from onnx_shape_inference._ops._testing import (
     run_shape_inference,
     run_shape_inference_with_values,
@@ -193,6 +193,28 @@ class FlattenTest(unittest.TestCase):
         )
         # Both output dims should be unknown (symbolic input)
         self.assertEqual(actual, [ts(FLOAT, ["2*N", 20])])
+
+    @parameterized.parameterized.expand([("too_negative", -4), ("too_large", 4)])
+    def test_flatten_axis_out_of_range_records_error(self, _name, axis):
+        with self.assertRaises(ShapeInferenceError):
+            run_shape_inference(
+                "",
+                "Flatten",
+                [ts(FLOAT, [2, 3, 4])],
+                {"axis": ir.Attr("axis", ir.AttributeType.INT, axis)},
+                opset_version=17,
+            )
+
+    def test_flatten_axis_out_of_range_sets_output_dtype(self):
+        actual = run_shape_inference(
+            "",
+            "Flatten",
+            [ts(FLOAT, [2, 3, 4])],
+            {"axis": ir.Attr("axis", ir.AttributeType.INT, 4)},
+            opset_version=17,
+            policy="skip",
+        )
+        self.assertEqual(actual, [ts(FLOAT)])
 
     def test_shape_no_inputs(self):
         with self.assertRaises(OpUsageError):

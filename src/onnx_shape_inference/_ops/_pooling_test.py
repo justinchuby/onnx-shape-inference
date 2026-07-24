@@ -9,7 +9,7 @@ import unittest
 import onnx_ir as ir
 import parameterized
 
-from onnx_shape_inference import OpUsageError
+from onnx_shape_inference import OpUsageError, ShapeInferenceError, _context, _registry
 from onnx_shape_inference._ops._testing import (
     run_shape_inference,
     run_shape_inference_with_values,
@@ -50,6 +50,13 @@ class GlobalMaxPoolTest(unittest.TestCase):
 
 
 class AveragePoolTest(unittest.TestCase):
+    def test_opset_1(self):
+        attrs = {"kernel_shape": ir.Attr("kernel_shape", ir.AttributeType.INTS, [3, 3])}
+        actual = run_shape_inference(
+            "", "AveragePool", [ts(FLOAT, [1, 1, 5, 5])], attrs, opset_version=1
+        )
+        self.assertEqual(actual, [ts(FLOAT, [1, 1, 3, 3])])
+
     def test_basic(self):
         attrs = {
             "kernel_shape": ir.Attr("kernel_shape", ir.AttributeType.INTS, [3, 3]),
@@ -76,8 +83,84 @@ class AveragePoolTest(unittest.TestCase):
         with self.assertRaises(OpUsageError):
             run_shape_inference_with_values("", "AveragePool", [None], opset_version=21)
 
+    @parameterized.parameterized.expand(
+        [
+            ("zero_stride", "AveragePool", {"kernel_shape": [3, 3], "strides": [0, 1]}),
+            ("short_kernel", "AveragePool", {"kernel_shape": [3]}),
+            ("short_pads", "AveragePool", {"kernel_shape": [3, 3], "pads": [0, 0]}),
+            ("short_dilations", "AveragePool", {"kernel_shape": [3, 3], "dilations": [1]}),
+            ("max_pool", "MaxPool", {"kernel_shape": [3, 3], "strides": [0, 1]}),
+            ("lp_pool", "LpPool", {"kernel_shape": [3, 3], "strides": [0, 1]}),
+        ]
+    )
+    def test_invalid_attrs_degrade_with_skip_policy(self, _name, op_type, attr_values):
+        attrs = {
+            name: ir.Attr(name, ir.AttributeType.INTS, value)
+            for name, value in attr_values.items()
+        }
+        actual = run_shape_inference(
+            "", op_type, [ts(FLOAT, [1, 1, 5, 5])], attrs, opset_version=21, policy="skip"
+        )
+        self.assertIsNone(actual[0].shape)
+
+    @parameterized.parameterized.expand([("AveragePool", 21), ("MaxPool", 21), ("LpPool", 21)])
+    def test_rank_two_input_raises_shape_error(self, op_type, opset_version):
+        attrs = {"kernel_shape": ir.Attr("kernel_shape", ir.AttributeType.INTS, [3])}
+        with self.assertRaises(ShapeInferenceError):
+            run_shape_inference(
+                "", op_type, [ts(FLOAT, [1, 1])], attrs, opset_version=opset_version
+            )
+
+    @parameterized.parameterized.expand([("AveragePool",), ("MaxPool",), ("LpPool",)])
+    def test_rank_two_input_degrades_with_skip_policy(self, op_type):
+        attrs = {"kernel_shape": ir.Attr("kernel_shape", ir.AttributeType.INTS, [3])}
+        actual = run_shape_inference(
+            "", op_type, [ts(FLOAT, [1, 1])], attrs, opset_version=21, policy="skip"
+        )
+        self.assertIsNone(actual[0].shape)
+
+    @parameterized.parameterized.expand(
+        [
+            ("average_pool", "AveragePool", 1, [FLOAT]),
+            ("max_pool", "MaxPool", 2, [FLOAT, ir.DataType.INT64]),
+            ("lp_pool", "LpPool", 1, [FLOAT]),
+        ]
+    )
+    def test_rank_two_input_records_error_and_preserves_output_dtypes(
+        self, _name, op_type, num_outputs, expected_dtypes
+    ):
+        input_value = ir.Value(name="input", type=ir.TensorType(FLOAT), shape=ir.Shape([1, 1]))
+        outputs = [ir.Value(name=f"output_{index}") for index in range(num_outputs)]
+        node = ir.Node("", op_type, inputs=[input_value], outputs=outputs)
+        ctx = _context.ShapeInferenceContext({"": 21}, policy="skip")
+        func = _registry.registry.get("", op_type, version=21)
+        self.assertIsNotNone(func)
+        func(ctx, node)
+
+        self.assertEqual(len(ctx.errors), 1)
+        for output, expected_dtype in zip(outputs, expected_dtypes, strict=True):
+            self.assertEqual(output.type, ir.TensorType(expected_dtype))
+            self.assertIsNone(output.shape)
+
 
 class MaxPoolTest(unittest.TestCase):
+    def test_opset_11(self):
+        attrs = {"kernel_shape": ir.Attr("kernel_shape", ir.AttributeType.INTS, [3, 3])}
+        actual = run_shape_inference(
+            "", "MaxPool", [ts(FLOAT, [1, 1, 5, 5])], attrs, opset_version=11
+        )
+        self.assertEqual(actual, [ts(FLOAT, [1, 1, 3, 3])])
+
+    def test_invalid_spatial_attributes_raise_shape_error(self):
+        attrs = {
+            "kernel_shape": ir.Attr("kernel_shape", ir.AttributeType.INTS, [3, 3]),
+            "strides": ir.Attr("strides", ir.AttributeType.INTS, [0, 1]),
+        }
+        with self.assertRaises(ShapeInferenceError):
+            run_shape_inference(
+                "", "MaxPool", [ts(FLOAT, [1, 1, 5, 5])], attrs, opset_version=21
+            )
+
     def test_basic(self):
         attrs = {
             "kernel_shape": ir.Attr("kernel_shape", ir.AttributeType.INTS, [3, 3]),
@@ -117,6 +200,13 @@ class MaxPoolTest(unittest.TestCase):
 
 
 class LpPoolTest(unittest.TestCase):
+    def test_opset_1(self):
+        attrs = {"kernel_shape": ir.Attr("kernel_shape", ir.AttributeType.INTS, [3, 3])}
+        actual = run_shape_inference(
+            "", "LpPool", [ts(FLOAT, [1, 1, 5, 5])], attrs, opset_version=1
+        )
+        self.assertEqual(actual, [ts(FLOAT, [1, 1, 3, 3])])
+
     def test_lp_pool_basic(self):
         attrs = {
             "kernel_shape": ir.Attr("kernel_shape", ir.AttributeType.INTS, [3, 3]),
@@ -156,6 +246,12 @@ class LpPoolTest(unittest.TestCase):
 
 
 class GlobalLpPoolTest(unittest.TestCase):
+    def test_opset_1(self):
+        actual = run_shape_inference(
+            "", "GlobalLpPool", [ts(FLOAT, [1, 3, 4, 5])], opset_version=1
+        )
+        self.assertEqual(actual, [ts(FLOAT, [1, 3, 1, 1])])
+
     def test_global_lp_pool_basic(self):
         actual = run_shape_inference(
             "", "GlobalLpPool", [ts(FLOAT, [1, 3, 4, 5])], opset_version=21

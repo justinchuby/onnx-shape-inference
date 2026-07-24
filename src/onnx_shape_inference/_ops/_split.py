@@ -11,7 +11,7 @@ __all__ = [
 import onnx_ir as ir
 
 from onnx_shape_inference import _context, _registry
-from onnx_shape_inference._ops import _utils
+from onnx_shape_inference._ops import _shape_ops, _utils
 
 
 @_registry.registry.register("", "Split", since_version=2)
@@ -35,8 +35,11 @@ def infer_split(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
     axis = axis_attr.as_int() if axis_attr is not None else 0
 
     rank = input_shape.rank()
-    if axis < 0:
-        axis += rank
+    axis = _shape_ops.normalize_axis(ctx, node, axis, rank)
+    if axis is None:
+        for out in node.outputs:
+            ctx.set_shape_and_dtype(out, None, input_dtype)
+        return
 
     # Read split sizes from input[1] (opset >= 13) or attribute
     split_sizes: list[int] | None = None

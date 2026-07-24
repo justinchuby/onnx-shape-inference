@@ -9,7 +9,7 @@ import unittest
 import onnx_ir as ir
 import parameterized
 
-from onnx_shape_inference import OpUsageError
+from onnx_shape_inference import OpUsageError, _context, _registry
 from onnx_shape_inference._ops._testing import (
     const_value,
     run_shape_inference,
@@ -22,6 +22,15 @@ INT64 = ir.DataType.INT64
 
 
 class GridSampleTest(unittest.TestCase):
+    def test_opset_16(self):
+        actual = run_shape_inference(
+            "",
+            "GridSample",
+            [ts(FLOAT, [1, 3, 4, 5]), ts(FLOAT, [1, 6, 7, 2])],
+            opset_version=16,
+        )
+        self.assertEqual(actual, [ts(FLOAT, [1, 3, 6, 7])])
+
     def test_basic(self):
         actual = run_shape_inference(
             "",
@@ -65,6 +74,15 @@ class GridSampleTest(unittest.TestCase):
 
 
 class RoiAlignTest(unittest.TestCase):
+    def test_opset_10(self):
+        actual = run_shape_inference(
+            "",
+            "RoiAlign",
+            [ts(FLOAT, [1, 3, 4, 5]), ts(FLOAT, [5, 4]), ts(INT64, [5])],
+            opset_version=10,
+        )
+        self.assertEqual(actual, [ts(FLOAT, [5, 3, 1, 1])])
+
     def test_basic(self):
         attrs = {
             "output_height": ir.Attr("output_height", ir.AttributeType.INT, 2),
@@ -286,6 +304,94 @@ class CenterCropPadTest(unittest.TestCase):
         )
         self.assertEqual(actual, [ts(FLOAT, ["_d0", "_d1", "_d2", "_d3"])])
 
+    def test_center_crop_pad_applies_shape_to_axes(self):
+        input_val = ir.Value(
+            name="input", type=ir.TensorType(FLOAT), shape=ir.Shape([1, 3, 32, 32])
+        )
+        attrs = {"axes": ir.Attr("axes", ir.AttributeType.INTS, [-2, -1])}
+        actual = run_shape_inference_with_values(
+            "", "CenterCropPad", [input_val, const_value([16, 16])], attrs, opset_version=18
+        )
+        self.assertEqual(actual, [ts(FLOAT, [1, 3, 16, 16])])
+
+    def test_center_crop_pad_unknown_shape_preserves_unaffected_dims(self):
+        input_val = ir.Value(
+            name="input", type=ir.TensorType(FLOAT), shape=ir.Shape(["N", "C", "H", "W"])
+        )
+        attrs = {"axes": ir.Attr("axes", ir.AttributeType.INTS, [2, 3])}
+        shape_val = ir.Value(name="shape", type=ir.TensorType(INT64), shape=ir.Shape([2]))
+        actual = run_shape_inference_with_values(
+            "", "CenterCropPad", [input_val, shape_val], attrs, opset_version=18
+        )
+        self.assertEqual(actual, [ts(FLOAT, ["N", "C", "_d0", "_d1"])])
+
+    @parameterized.parameterized.expand(
+        [
+            ("constant_shape", const_value([16]), [4]),
+            ("dynamic_shape", None, [4]),
+        ]
+    )
+    def test_center_crop_pad_invalid_negative_axis_degrades_with_skip_policy(
+        self, _name, shape_value, shape_shape
+    ):
+        input_val = ir.Value(
+            name="input", type=ir.TensorType(FLOAT), shape=ir.Shape([1, 3, 32, 32])
+        )
+        shape = (
+            shape_value
+            if shape_value is not None
+            else ir.Value(name="shape", type=ir.TensorType(INT64), shape=ir.Shape(shape_shape))
+        )
+        attrs = {"axes": ir.Attr("axes", ir.AttributeType.INTS, [-5])}
+        actual = run_shape_inference_with_values(
+            "", "CenterCropPad", [input_val, shape], attrs, opset_version=18, policy="skip"
+        )
+        self.assertIsNone(actual[0].shape)
+
+    def test_center_crop_pad_mismatched_axes_and_shape_degrades_with_skip_policy(self):
+        input_val = ir.Value(
+            name="input", type=ir.TensorType(FLOAT), shape=ir.Shape([1, 3, 32, 32])
+        )
+        attrs = {"axes": ir.Attr("axes", ir.AttributeType.INTS, [2])}
+        actual = run_shape_inference_with_values(
+            "",
+            "CenterCropPad",
+            [input_val, const_value([16, 16])],
+            attrs,
+            opset_version=18,
+            policy="skip",
+        )
+        self.assertIsNone(actual[0].shape)
+
+    @parameterized.parameterized.expand(
+        [
+            ("mismatched_axes_length", [2], [16, 16]),
+            ("out_of_range_axis", [4], [16]),
+        ]
+    )
+    def test_center_crop_pad_invalid_axes_record_error_and_set_dtype(
+        self, _name, axes, target_shape
+    ):
+        input_val = ir.Value(
+            name="input", type=ir.TensorType(FLOAT), shape=ir.Shape([1, 3, 32, 32])
+        )
+        output = ir.Value(name="output")
+        node = ir.Node(
+            "",
+            "CenterCropPad",
+            inputs=[input_val, const_value(target_shape)],
+            outputs=[output],
+            attributes={"axes": ir.Attr("axes", ir.AttributeType.INTS, axes)},
+        )
+        ctx = _context.ShapeInferenceContext({"": 18}, policy="skip")
+        func = _registry.registry.get("", "CenterCropPad", version=18)
+        self.assertIsNotNone(func)
+        func(ctx, node)
+
+        self.assertEqual(len(ctx.errors), 1)
+        self.assertEqual(output.type, ir.TensorType(FLOAT))
+        self.assertIsNone(output.shape)
+
     def test_center_crop_pad_missing_input_shape(self):
         input_val = ir.Value(name="input", type=ir.TensorType(FLOAT))
         shape_val = ir.Value(name="shape", type=ir.TensorType(INT64), shape=ir.Shape([4]))
@@ -296,6 +402,15 @@ class CenterCropPadTest(unittest.TestCase):
 
 
 class MaxUnpoolTest(unittest.TestCase):
+    def test_max_unpool_opset_9(self):
+        actual = run_shape_inference(
+            "",
+            "MaxUnpool",
+            [ts(FLOAT, [1, 1, 2, 2]), ts(INT64, [1, 1, 2, 2])],
+            opset_version=9,
+        )
+        self.assertEqual(actual, [ts(FLOAT, [1, 1, "_d0", "_d1"])])
+
     def test_max_unpool_basic(self):
         actual = run_shape_inference(
             "",
@@ -325,6 +440,34 @@ class MaxUnpoolTest(unittest.TestCase):
 
 
 class DeformConvTest(unittest.TestCase):
+    def test_invalid_input_rank_degrades_with_skip_policy(self):
+        actual = run_shape_inference(
+            "",
+            "DeformConv",
+            [ts(FLOAT, [1, 3]), ts(FLOAT, [16, 3, 3, 3]), ts(FLOAT, [1])],
+            opset_version=19,
+            policy="skip",
+        )
+        self.assertIsNone(actual[0].shape)
+
+    def test_low_rank_weight_degrades(self):
+        actual = run_shape_inference(
+            "",
+            "DeformConv",
+            [ts(FLOAT, [1, 3, 5, 5]), ts(FLOAT, [16, 3]), ts(FLOAT, [1])],
+            opset_version=19,
+        )
+        self.assertEqual(actual, [ts(FLOAT)])
+
+    def test_symbolic_kernel_dim_creates_unknown_output_dim(self):
+        actual = run_shape_inference(
+            "",
+            "DeformConv",
+            [ts(FLOAT, [1, 3, 5, 5]), ts(FLOAT, [16, 3, "K", 3]), ts(FLOAT, [1])],
+            opset_version=19,
+        )
+        self.assertEqual(actual, [ts(FLOAT, [1, 16, "_d0", 3])])
+
     def test_deform_conv_basic(self):
         actual = run_shape_inference(
             "",

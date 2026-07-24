@@ -107,6 +107,51 @@ class GemmTest(unittest.TestCase):
                 opset_version=17,
             )
 
+    @parameterized.parameterized.expand(
+        [
+            ("none", [2, 3], [5, 4], 0, 0),
+            ("trans_a", [3, 2], [5, 4], 1, 0),
+            ("trans_b", [2, 3], [4, 5], 0, 1),
+            ("both", [3, 2], [4, 5], 1, 1),
+        ]
+    )
+    def test_contraction_dimension_mismatch_records_error(
+        self, _name, shape_a, shape_b, trans_a, trans_b
+    ):
+        attributes = {
+            "transA": ir.AttrInt64("transA", trans_a),
+            "transB": ir.AttrInt64("transB", trans_b),
+        }
+        with self.assertRaisesRegex(ShapeInferenceError, "contraction dimensions: 3 vs 5"):
+            run_shape_inference(
+                "",
+                "Gemm",
+                [ts(FLOAT, shape_a), ts(FLOAT, shape_b)],
+                attributes,
+                opset_version=17,
+            )
+
+    def test_contraction_dimension_mismatch_preserves_best_effort_shape(self):
+        actual = run_shape_inference(
+            "",
+            "Gemm",
+            [ts(FLOAT, [2, 3]), ts(FLOAT, [5, 4])],
+            opset_version=17,
+            policy="skip",
+        )
+
+        self.assertEqual(actual, [ts(FLOAT, [2, 4])])
+
+    def test_symbolic_contraction_dimensions_are_not_rejected(self):
+        actual = run_shape_inference(
+            "",
+            "Gemm",
+            [ts(FLOAT, [2, "K1"]), ts(FLOAT, ["K2", 4])],
+            opset_version=17,
+        )
+
+        self.assertEqual(actual, [ts(FLOAT, [2, 4])])
+
 
 if __name__ == "__main__":
     unittest.main()

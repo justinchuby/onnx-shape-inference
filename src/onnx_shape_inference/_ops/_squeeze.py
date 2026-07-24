@@ -12,6 +12,7 @@ __all__ = [
 import onnx_ir as ir
 
 from onnx_shape_inference import _context, _registry
+from onnx_shape_inference._ops import _shape_ops
 
 
 def _read_axes_from_input_or_attr(node: ir.Node) -> list[int] | None:
@@ -44,7 +45,29 @@ def infer_squeeze(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
         axes = _read_axes_from_input_or_attr(node)
 
         if axes is not None:
-            normalized = {(a + rank if a < 0 else a) for a in axes}
+            normalized_axes = [
+                _shape_ops.normalize_axis(ctx, node, axis, rank) for axis in axes
+            ]
+            if any(axis is None for axis in normalized_axes):
+                if len(node.outputs) > 0:
+                    ctx.set_shape_and_dtype(node.outputs[0], None, input_dtype)
+                return
+            normalized = {axis for axis in normalized_axes if axis is not None}
+            if len(normalized) != len(axes):
+                ctx.record_error(node, f"axes contains duplicates: {axes}")
+                if len(node.outputs) > 0:
+                    ctx.set_shape_and_dtype(node.outputs[0], None, input_dtype)
+                return
+            for axis in normalized:
+                dimension = input_shape[axis]
+                if isinstance(dimension, int) and dimension != 1:
+                    ctx.record_error(
+                        node,
+                        f"cannot squeeze axis {axis} with dimension {dimension}; expected 1",
+                    )
+                    if len(node.outputs) > 0:
+                        ctx.set_shape_and_dtype(node.outputs[0], None, input_dtype)
+                    return
             new_dims = [input_shape[i] for i in range(rank) if i not in normalized]
             output_shape = ir.Shape(new_dims)
         else:
@@ -78,8 +101,19 @@ def infer_unsqueeze(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
         if axes is not None:
             rank = input_shape.rank()
             output_rank = rank + len(axes)
-            # Normalize axes to output rank
-            normalized = sorted((a + output_rank if a < 0 else a) for a in axes)
+            normalized_axes = [
+                _shape_ops.normalize_axis(ctx, node, axis, output_rank) for axis in axes
+            ]
+            if any(axis is None for axis in normalized_axes):
+                if len(node.outputs) > 0:
+                    ctx.set_shape_and_dtype(node.outputs[0], None, input_dtype)
+                return
+            normalized = sorted(axis for axis in normalized_axes if axis is not None)
+            if len(set(normalized)) != len(axes):
+                ctx.record_error(node, f"axes contains duplicates: {axes}")
+                if len(node.outputs) > 0:
+                    ctx.set_shape_and_dtype(node.outputs[0], None, input_dtype)
+                return
 
             new_dims: list[int | ir.SymbolicDim] = list(input_shape.dims)
             for a in normalized:

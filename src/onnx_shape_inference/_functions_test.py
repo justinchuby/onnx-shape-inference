@@ -742,5 +742,149 @@ class TestChildContextAnchorAdoption(unittest.TestCase):
         self.assertNotEqual(str(minted), "_d0")
 
 
+class TestFunctionOutputCacheReMinting(unittest.TestCase):
+    """Regression tests for re-minting cached data-dependent symbols.
+
+    The per-run output cache stores a function body's result shapes.  A
+    data-dependent body (e.g. ``NonZero``) mints anonymous symbols; two call
+    sites with identical input signatures must not share the same symbol, or two
+    genuinely independent data-dependent dimensions would be asserted equal.
+    """
+
+    def test_data_dependent_body_distinct_dims_across_call_sites(self):
+        # F(x) = NonZero(x). Called twice on inputs of identical shape [N] the
+        # cache would otherwise hand both call sites the same minted `_dN`.
+        func = _single_op_function("test", "MyNonZero", "NonZero", opset=20)
+        x1 = _make_value("x1", shape=["N"], dtype=INT64)
+        x2 = _make_value("x2", shape=["N"], dtype=INT64)
+        out1 = _make_value("out1", shape=None, dtype=None)
+        out2 = _make_value("out2", shape=None, dtype=None)
+        call1 = ir.Node("test", "MyNonZero", inputs=[x1], outputs=[out1], attributes={})
+        call2 = ir.Node("test", "MyNonZero", inputs=[x2], outputs=[out2], attributes={})
+        model = _make_model(
+            [call1, call2], [x1, x2], [out1, out2], [func], extra_domain="test"
+        )
+
+        infer_symbolic_shapes(model, warn_on_missing=False)
+
+        # Both outputs are [rank(=1), num_nonzero]; the num_nonzero dims are
+        # independent data-dependent quantities and must be distinct symbols.
+        self.assertIsNotNone(out1.shape)
+        self.assertIsNotNone(out2.shape)
+        self.assertEqual(out1.shape[0], 1)
+        self.assertEqual(out2.shape[0], 1)
+        self.assertNotEqual(out1.shape[1], out2.shape[1])
+
+    def test_data_independent_body_shares_input_derived_dims(self):
+        # F(x) = Identity(x). The output dim is input-derived (the declared
+        # symbol N), not engine-minted, so re-minting must NOT touch it: both
+        # call sites keep the exact input symbol N.
+        func = _single_op_function("test", "MyIdentity", "Identity", opset=20)
+        x1 = _make_value("x1", shape=["N"], dtype=FLOAT)
+        x2 = _make_value("x2", shape=["N"], dtype=FLOAT)
+        out1 = _make_value("out1", shape=None, dtype=None)
+        out2 = _make_value("out2", shape=None, dtype=None)
+        call1 = ir.Node("test", "MyIdentity", inputs=[x1], outputs=[out1], attributes={})
+        call2 = ir.Node("test", "MyIdentity", inputs=[x2], outputs=[out2], attributes={})
+        model = _make_model(
+            [call1, call2], [x1, x2], [out1, out2], [func], extra_domain="test"
+        )
+
+        infer_symbolic_shapes(model, warn_on_missing=False)
+
+        self.assertEqual(out1.shape, ir.Shape(["N"]))
+        self.assertEqual(out2.shape, ir.Shape(["N"]))
+        self.assertEqual(out1.shape[0], out2.shape[0])
+
+    def test_input_derived_generated_symbol_shared_across_call_sites(self):
+        # An outer NonZero mints a data-dependent dim `_dN` on its output.  That
+        # value is passed into a passthrough (Identity-body) function at two call
+        # sites.  Because the symbol is input-derived (NOT minted by the function
+        # body), both calls must reuse it verbatim — the genuine equality across
+        # call sites must be preserved, not broken by re-minting.
+        func = _single_op_function("test", "MyIdentity", "Identity", opset=20)
+        x = _make_value("x", shape=[2, 5], dtype=FLOAT)
+        nz = _make_value("nz", shape=None, dtype=None)
+        non_zero = ir.Node("", "NonZero", inputs=[x], outputs=[nz], attributes={})
+        out1 = _make_value("out1", shape=None, dtype=None)
+        out2 = _make_value("out2", shape=None, dtype=None)
+        call1 = ir.Node("test", "MyIdentity", inputs=[nz], outputs=[out1], attributes={})
+        call2 = ir.Node("test", "MyIdentity", inputs=[nz], outputs=[out2], attributes={})
+        model = _make_model(
+            [non_zero, call1, call2], [x], [out1, out2], [func], extra_domain="test"
+        )
+
+        infer_symbolic_shapes(model, warn_on_missing=False)
+
+        self.assertIsNotNone(out1.shape)
+        self.assertIsNotNone(out2.shape)
+        # Both passthrough outputs equal the NonZero result and each other.
+        self.assertEqual(out1.shape, nz.shape)
+        self.assertEqual(out2.shape, nz.shape)
+        self.assertEqual(out1.shape[1], out2.shape[1])
+
+    def test_body_minted_sym_data_distinct_across_call_sites(self):
+        # F(x) = (Shape(NonZero(x)), Shape(x)).  The first output's sym_data
+        # carries the body-minted NonZero dim `_dN` (e.g. ["2", "_d0"]); the
+        # second output's sym_data is purely input-derived/concrete (["2", "5"]).
+        # Called twice with identical input signature the cache HIT must:
+        #   * re-mint the body-minted symbol inside the first output's sym_data
+        #     so the two call sites carry DISTINCT data-dependent symbols, and
+        #   * leave the second output's sym_data unchanged (no body-minted
+        #     symbol present) — exercising both branches of remap_sym_data.
+        f_in = ir.Value(name="xf")
+        non_zero = ir.Node("", "NonZero", inputs=[f_in], outputs=[ir.Value(name="zf")])
+        shape_nz = ir.Node(
+            "", "Shape", inputs=[non_zero.outputs[0]], outputs=[ir.Value(name="sf")]
+        )
+        shape_in = ir.Node("", "Shape", inputs=[f_in], outputs=[ir.Value(name="sin")])
+        body = ir.Graph(
+            inputs=[f_in],
+            outputs=[shape_nz.outputs[0], shape_in.outputs[0]],
+            nodes=[non_zero, shape_nz, shape_in],
+            opset_imports={"": 20},
+            name="ShapeOfNonZero_body",
+        )
+        func = ir.Function("test", "MyShapeOfNonZero", "", graph=body, attributes=[])
+
+        x1 = _make_value("x1", shape=[2, 5], dtype=FLOAT)
+        x2 = _make_value("x2", shape=[2, 5], dtype=FLOAT)
+        out1a = _make_value("out1a", shape=None, dtype=None)
+        out1b = _make_value("out1b", shape=None, dtype=None)
+        out2a = _make_value("out2a", shape=None, dtype=None)
+        out2b = _make_value("out2b", shape=None, dtype=None)
+        call1 = ir.Node(
+            "test", "MyShapeOfNonZero", inputs=[x1], outputs=[out1a, out1b], attributes={}
+        )
+        call2 = ir.Node(
+            "test", "MyShapeOfNonZero", inputs=[x2], outputs=[out2a, out2b], attributes={}
+        )
+        model = _make_model(
+            [call1, call2],
+            [x1, x2],
+            [out1a, out1b, out2a, out2b],
+            [func],
+            extra_domain="test",
+        )
+
+        infer_symbolic_shapes(model, warn_on_missing=False)
+
+        sym_data1 = out1a.metadata_props.get(_context.SYM_DATA_KEY)
+        sym_data2 = out2a.metadata_props.get(_context.SYM_DATA_KEY)
+        self.assertIsNotNone(sym_data1)
+        self.assertIsNotNone(sym_data2)
+        elements1 = json.loads(sym_data1)
+        elements2 = json.loads(sym_data2)
+        # First element is the concrete rank (2); the second is the re-minted
+        # data-dependent NonZero count, which must differ between call sites.
+        self.assertEqual(elements1[0], elements2[0])
+        self.assertNotEqual(elements1[1], elements2[1])
+        # The input-derived sym_data output stays identical across call sites.
+        self.assertEqual(
+            out1b.metadata_props.get(_context.SYM_DATA_KEY),
+            out2b.metadata_props.get(_context.SYM_DATA_KEY),
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

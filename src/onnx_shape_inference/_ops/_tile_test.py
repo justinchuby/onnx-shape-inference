@@ -30,6 +30,17 @@ class TileTest(unittest.TestCase):
         )
         self.assertEqual(actual, [ts(FLOAT, [4, 9])])
 
+    def test_opset_6(self):
+        data = ir.Value(name="data", type=ir.TensorType(FLOAT), shape=ir.Shape([2, 3]))
+        repeats = const_value([2, 3], name="repeats")
+        actual = run_shape_inference_with_values(
+            "",
+            "Tile",
+            [data, repeats],
+            opset_version=6,
+        )
+        self.assertEqual(actual, [ts(FLOAT, [4, 9])])
+
     def test_unknown_repeats(self):
         data = ir.Value(name="data", type=ir.TensorType(FLOAT), shape=ir.Shape([2, 3]))
         repeats = ir.Value(

@@ -9,7 +9,7 @@ import unittest
 import onnx_ir as ir
 import parameterized
 
-from onnx_shape_inference import OpUsageError, _context, _registry
+from onnx_shape_inference import OpUsageError, ShapeInferenceError, _context, _registry
 from onnx_shape_inference._ops._testing import (
     run_shape_inference,
     run_shape_inference_with_values,
@@ -174,10 +174,52 @@ class MatMulTest(unittest.TestCase):
         )
         self.assertEqual(actual, [ts(FLOAT, [5])])
 
+    def test_contraction_dimension_mismatch_records_error(self):
+        with self.assertRaisesRegex(ShapeInferenceError, "contraction dimensions: 3 vs 5"):
+            run_shape_inference(
+                "",
+                "MatMul",
+                [ts(FLOAT, [2, 3]), ts(FLOAT, [5, 4])],
+                opset_version=17,
+            )
+
+    def test_contraction_dimension_mismatch_preserves_best_effort_shape(self):
+        actual = run_shape_inference(
+            "",
+            "MatMul",
+            [ts(FLOAT, [2, 3]), ts(FLOAT, [5, 4])],
+            opset_version=17,
+            policy="skip",
+        )
+
+        self.assertEqual(actual, [ts(FLOAT, [2, 4])])
+
+    def test_symbolic_contraction_dimensions_are_not_rejected(self):
+        actual = run_shape_inference(
+            "",
+            "MatMul",
+            [ts(FLOAT, [2, "K1"]), ts(FLOAT, ["K2", 4])],
+            opset_version=17,
+        )
+
+        self.assertEqual(actual, [ts(FLOAT, [2, 4])])
+
+    def test_control_flow_output_contraction_dimension_is_conservative(self):
+        input_a = ir.Value(name="a", type=ir.TensorType(FLOAT), shape=ir.Shape([2, 3]))
+        ir.Node("", "If", inputs=[], outputs=[input_a], attributes={})
+        input_b = ir.Value(name="b", type=ir.TensorType(FLOAT), shape=ir.Shape([5, 4]))
+
+        actual = run_shape_inference_with_values(
+            "",
+            "MatMul",
+            [input_a, input_b],
+            opset_version=17,
+        )
+
+        self.assertEqual(actual, [ts(FLOAT, [2, 4])])
+
     def test_matmul_incompatible_batch_raises(self):
         """Incompatible batch dims [2, ...] vs [3, ...] should raise."""
-        from onnx_shape_inference import ShapeInferenceError
-
         with self.assertRaises(ShapeInferenceError):
             run_shape_inference(
                 "",

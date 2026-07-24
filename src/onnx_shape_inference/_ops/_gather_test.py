@@ -121,6 +121,17 @@ class GatherTest(unittest.TestCase):
                 opset_version=17,
             )
 
+    def test_gather_axis_out_of_range_gracefully_degrades(self):
+        actual = run_shape_inference(
+            "",
+            "Gather",
+            [ts(FLOAT, [5, 4]), ts(INT64, [3])],
+            {"axis": ir.Attr("axis", ir.AttributeType.INT, 5)},
+            opset_version=17,
+            policy="skip",
+        )
+        self.assertEqual(actual, [ts(FLOAT)])
+
 
 class GatherElementsTest(unittest.TestCase):
     @parameterized.parameterized.expand(
@@ -144,6 +155,15 @@ class GatherElementsTest(unittest.TestCase):
         )
         self.assertEqual(actual, [ts(FLOAT, expected_shape)])
 
+    def test_opset_11(self):
+        actual = run_shape_inference(
+            "",
+            "GatherElements",
+            [ts(FLOAT, [3, 4]), ts(INT64, [3, 2])],
+            opset_version=11,
+        )
+        self.assertEqual(actual, [ts(FLOAT, [3, 2])])
+
 
 class GatherNDTest(unittest.TestCase):
     def test_basic(self):
@@ -163,6 +183,57 @@ class GatherNDTest(unittest.TestCase):
             opset_version=17,
         )
         self.assertEqual(actual, [ts(FLOAT, ["K", "M", 3])])
+
+    def test_scalar_indices_records_error(self):
+        from onnx_shape_inference import ShapeInferenceError
+
+        with self.assertRaises(ShapeInferenceError):
+            run_shape_inference(
+                "",
+                "GatherND",
+                [ts(FLOAT, [5, 4, 3]), ts(INT64, [])],
+                opset_version=17,
+            )
+
+    def test_scalar_indices_gracefully_degrade(self):
+        actual = run_shape_inference(
+            "",
+            "GatherND",
+            [ts(FLOAT, [5, 4, 3]), ts(INT64, [])],
+            opset_version=17,
+            policy="skip",
+        )
+        self.assertEqual(actual, [ts(FLOAT)])
+
+    def test_invalid_batch_dims_gracefully_degrade(self):
+        actual = run_shape_inference(
+            "",
+            "GatherND",
+            [ts(FLOAT, [5, 4, 3]), ts(INT64, [2, 1])],
+            {"batch_dims": ir.Attr("batch_dims", ir.AttributeType.INT, 2)},
+            opset_version=17,
+            policy="skip",
+        )
+        self.assertEqual(actual, [ts(FLOAT)])
+
+    def test_index_tuple_too_long_gracefully_degrades(self):
+        actual = run_shape_inference(
+            "",
+            "GatherND",
+            [ts(FLOAT, [5, 4, 3]), ts(INT64, [2, 4])],
+            opset_version=17,
+            policy="skip",
+        )
+        self.assertEqual(actual, [ts(FLOAT)])
+
+    def test_opset_11_uses_zero_batch_dims(self):
+        actual = run_shape_inference(
+            "",
+            "GatherND",
+            [ts(FLOAT, [5, 4, 3]), ts(INT64, [2, 2])],
+            opset_version=11,
+        )
+        self.assertEqual(actual, [ts(FLOAT, [2, 3])])
 
 
 if __name__ == "__main__":

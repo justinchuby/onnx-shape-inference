@@ -14,9 +14,10 @@ import numpy as np
 import onnx_ir as ir
 
 from onnx_shape_inference import _context, _registry
+from onnx_shape_inference._ops import _shape_ops
 
 
-@_registry.registry.register("", "NonZero", since_version=13)
+@_registry.registry.register("", "NonZero", since_version=9)
 def infer_non_zero(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
     """Infer shape and dtype for NonZero operator.
 
@@ -39,7 +40,7 @@ def infer_non_zero(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
         ctx.set_shape_and_dtype(node.outputs[0], output_shape, ir.DataType.INT64)
 
 
-@_registry.registry.register("", "Compress", since_version=11)
+@_registry.registry.register("", "Compress", since_version=9)
 def infer_compress(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
     """Infer shape and dtype for Compress operator.
 
@@ -59,8 +60,10 @@ def infer_compress(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
         if axis_attr is not None and x.shape is not None:
             axis = axis_attr.as_int()
             rank = x.shape.rank()
-            if axis < 0:
-                axis += rank
+            axis = _shape_ops.normalize_axis(ctx, node, axis, rank)
+            if axis is None:
+                ctx.set_shape_and_dtype(node.outputs[0], None, x.dtype)
+                return
             dims: list[int | ir.SymbolicDim] = list(x.shape.dims)
             dims[axis] = true_count if true_count is not None else ctx.new_symbolic_dim()
             output_shape = ir.Shape(dims)

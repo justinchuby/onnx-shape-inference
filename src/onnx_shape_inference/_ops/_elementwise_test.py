@@ -9,7 +9,7 @@ import unittest
 import onnx_ir as ir
 import parameterized
 
-from onnx_shape_inference import OpUsageError
+from onnx_shape_inference import OpUsageError, _context, _registry
 from onnx_shape_inference._ops._testing import (
     run_shape_inference,
     run_shape_inference_with_values,
@@ -24,6 +24,28 @@ INT64 = ir.DataType.INT64
 _ARITHMETIC_OPS = ["Add", "Sub", "Mul", "Div", "Pow"]
 _COMPARISON_OPS = ["Equal", "Less", "Greater", "LessOrEqual", "GreaterOrEqual"]
 _LOGICAL_OPS = ["And", "Or", "Xor"]
+
+
+def _infer_symbolic_values(
+    op_type: str,
+    *symbolic_values: list[int | ir.SymbolicDim],
+) -> tuple[ir.Value, list[int | ir.SymbolicDim] | None]:
+    inputs = [
+        ir.Value(
+            name=f"input_{index}",
+            type=ir.TensorType(INT64),
+            shape=ir.Shape([len(values)]),
+        )
+        for index, values in enumerate(symbolic_values)
+    ]
+    output = ir.Value(name="output")
+    node = ir.Node("", op_type, inputs=inputs, outputs=[output], attributes={})
+    ctx = _context.ShapeInferenceContext({"": 17})
+    for input_value, values in zip(inputs, symbolic_values):
+        ctx.set_symbolic_value(input_value, values)
+    func = _registry.registry.get("", op_type, version=17)
+    func(ctx, node)
+    return output, ctx.get_symbolic_value(output)
 
 
 class BinaryElementwiseTest(unittest.TestCase):
@@ -122,6 +144,20 @@ class BinaryElementwiseTest(unittest.TestCase):
                 opset_version=17,
             )
 
+    def test_integer_division_truncates_toward_zero(self):
+        output, symbolic_value = _infer_symbolic_values("Div", [-7], [2])
+
+        self.assertEqual(ir.TypeAndShape(output.type, output.shape), ts(INT64, [1]))
+        self.assertEqual(symbolic_value, [-3])
+
+    def test_integer_division_with_symbolic_operand_skips_propagation(self):
+        output, symbolic_value = _infer_symbolic_values(
+            "Div", [ir.SymbolicDim("dividend")], [2]
+        )
+
+        self.assertEqual(ir.TypeAndShape(output.type, output.shape), ts(INT64, [1]))
+        self.assertIsNone(symbolic_value)
+
 
 class VariadicElementwiseTest(unittest.TestCase):
     """Tests for variadic element-wise ops (Max, Min, Mean, Sum)."""
@@ -155,6 +191,29 @@ class VariadicElementwiseTest(unittest.TestCase):
             opset_version=17,
         )
         self.assertEqual(actual, [ts(FLOAT, [3, 4])])
+
+    @parameterized.parameterized.expand(
+        [
+            ("Max", [3, -2], [1, 4], [3, 4]),
+            ("Min", [3, -2], [1, 4], [1, -2]),
+        ]
+    )
+    def test_max_min_propagate_concrete_values(self, op, values_a, values_b, expected):
+        output, symbolic_value = _infer_symbolic_values(op, values_a, values_b)
+
+        self.assertEqual(ir.TypeAndShape(output.type, output.shape), ts(INT64, [2]))
+        self.assertEqual(symbolic_value, expected)
+
+    @parameterized.parameterized.expand([("Max",), ("Min",)])
+    def test_max_min_symbolic_values_skip_propagation(self, op):
+        output, symbolic_value = _infer_symbolic_values(
+            op,
+            [ir.SymbolicDim("a")],
+            [ir.SymbolicDim("b")],
+        )
+
+        self.assertEqual(ir.TypeAndShape(output.type, output.shape), ts(INT64, [1]))
+        self.assertIsNone(symbolic_value)
 
 
 if __name__ == "__main__":

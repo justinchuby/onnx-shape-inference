@@ -6,6 +6,7 @@ from __future__ import annotations
 
 __all__ = [
     "infer_scatter",
+    "infer_tensor_scatter",
 ]
 
 import onnx_ir as ir
@@ -16,9 +17,8 @@ from onnx_shape_inference import _context, _registry
 @_registry.registry.register("", "Scatter", since_version=9)
 @_registry.registry.register("", "ScatterElements", since_version=11)
 @_registry.registry.register("", "ScatterND", since_version=11)
-@_registry.registry.register("", "TensorScatter", since_version=24)
 def infer_scatter(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
-    """Infer shape and dtype for Scatter, ScatterElements, ScatterND, and TensorScatter.
+    """Infer shape and dtype for Scatter, ScatterElements, and ScatterND.
 
     Output shape and dtype match the data (first) input.
     """
@@ -26,3 +26,12 @@ def infer_scatter(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
 
     if len(node.outputs) > 0:
         ctx.set_shape_and_dtype(node.outputs[0], data.shape, data.dtype)
+
+
+@_registry.registry.register("", "TensorScatter", since_version=24)
+def infer_tensor_scatter(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
+    """Infer shape and dtype for TensorScatter."""
+    (past_cache, _update) = _context.check_inputs(node, "past_cache", "update")
+
+    if len(node.outputs) > 0:
+        ctx.set_shape_and_dtype(node.outputs[0], past_cache.shape, past_cache.dtype)

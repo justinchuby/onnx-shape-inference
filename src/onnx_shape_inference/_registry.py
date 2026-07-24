@@ -197,7 +197,7 @@ class OpShapeInferenceRegistry:
 
     def has(self, domain: str, op_type: str) -> bool:
         """Check if any shape inference function is registered for an operator."""
-        key = (domain, op_type)
+        key = (_normalize_domain(domain), op_type)
         return key in self._registrations and len(self._registrations[key]) > 0
 
     def version_boundaries(self, domain: str, op_type: str) -> tuple[int, ...]:

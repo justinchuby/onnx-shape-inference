@@ -9,7 +9,7 @@ import unittest
 import onnx_ir as ir
 import parameterized
 
-from onnx_shape_inference import OpUsageError
+from onnx_shape_inference import OpUsageError, ShapeInferenceError
 from onnx_shape_inference._ops._testing import (
     const_value,
     run_shape_inference,
@@ -90,6 +90,69 @@ class SqueezeTest(unittest.TestCase):
             opset_version=13,
         )
         self.assertEqual(actual, [ts(FLOAT, [3, 2])])
+
+    def test_axis_out_of_range_records_error(self):
+        with self.assertRaises(ShapeInferenceError):
+            run_shape_inference(
+                "",
+                "Squeeze",
+                [ts(FLOAT, [1, 3, 1])],
+                {"axes": ir.Attr("axes", ir.AttributeType.INTS, [5])},
+                opset_version=11,
+            )
+
+    def test_axis_out_of_range_gracefully_degrades(self):
+        actual = run_shape_inference(
+            "",
+            "Squeeze",
+            [ts(FLOAT, [1, 3, 1])],
+            {"axes": ir.Attr("axes", ir.AttributeType.INTS, [5])},
+            opset_version=11,
+            policy="skip",
+        )
+        self.assertEqual(actual, [ts(FLOAT)])
+
+    def test_known_non_unit_axis_records_error(self):
+        with self.assertRaises(ShapeInferenceError):
+            run_shape_inference(
+                "",
+                "Squeeze",
+                [ts(FLOAT, [1, 3, 1])],
+                {"axes": ir.Attr("axes", ir.AttributeType.INTS, [1])},
+                opset_version=11,
+            )
+
+    def test_known_non_unit_axis_gracefully_degrades(self):
+        actual = run_shape_inference(
+            "",
+            "Squeeze",
+            [ts(FLOAT, [1, 3, 1])],
+            {"axes": ir.Attr("axes", ir.AttributeType.INTS, [1])},
+            opset_version=11,
+            policy="skip",
+        )
+        self.assertEqual(actual, [ts(FLOAT)])
+
+    def test_duplicate_axes_gracefully_degrade(self):
+        actual = run_shape_inference(
+            "",
+            "Squeeze",
+            [ts(FLOAT, [1, 3, 1])],
+            {"axes": ir.Attr("axes", ir.AttributeType.INTS, [0, 0])},
+            opset_version=11,
+            policy="skip",
+        )
+        self.assertEqual(actual, [ts(FLOAT)])
+
+    def test_symbolic_axis_can_be_squeezed(self):
+        actual = run_shape_inference(
+            "",
+            "Squeeze",
+            [ts(FLOAT, [1, "N", 3])],
+            {"axes": ir.Attr("axes", ir.AttributeType.INTS, [1])},
+            opset_version=11,
+        )
+        self.assertEqual(actual, [ts(FLOAT, [1, 3])])
 
 
 class UnsqueezeTest(unittest.TestCase):
@@ -186,6 +249,38 @@ class UnsqueezeTest(unittest.TestCase):
             opset_version=13,
         )
         self.assertEqual(actual, [ts(FLOAT, [1, 3, 4, 5, 1])])
+
+    def test_unsqueeze_axis_out_of_range_records_error(self):
+        with self.assertRaises(ShapeInferenceError):
+            run_shape_inference(
+                "",
+                "Unsqueeze",
+                [ts(FLOAT, [3, 4])],
+                {"axes": ir.Attr("axes", ir.AttributeType.INTS, [4])},
+                opset_version=11,
+            )
+
+    def test_unsqueeze_axis_out_of_range_gracefully_degrades(self):
+        actual = run_shape_inference(
+            "",
+            "Unsqueeze",
+            [ts(FLOAT, [3, 4])],
+            {"axes": ir.Attr("axes", ir.AttributeType.INTS, [4])},
+            opset_version=11,
+            policy="skip",
+        )
+        self.assertEqual(actual, [ts(FLOAT)])
+
+    def test_unsqueeze_duplicate_axes_gracefully_degrade(self):
+        actual = run_shape_inference(
+            "",
+            "Unsqueeze",
+            [ts(FLOAT, [3, 4])],
+            {"axes": ir.Attr("axes", ir.AttributeType.INTS, [0, 0])},
+            opset_version=11,
+            policy="skip",
+        )
+        self.assertEqual(actual, [ts(FLOAT)])
 
     def test_squeeze_no_inputs(self):
         with self.assertRaises(OpUsageError):

@@ -11,13 +11,13 @@ __all__ = [
 import onnx_ir as ir
 
 from onnx_shape_inference import _context, _registry
-from onnx_shape_inference._ops._utils import normalize_axis
+from onnx_shape_inference._ops import _shape_ops
 
 _reg = _registry.registry.register
 
 
-@_reg("", "ArgMax", since_version=13)
-@_reg("", "ArgMin", since_version=13)
+@_reg("", "ArgMax", since_version=1)
+@_reg("", "ArgMin", since_version=1)
 def infer_argmax_argmin(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
     """Infer shape and dtype for ArgMax/ArgMin operator."""
     (data,) = _context.check_inputs(node, "data")
@@ -31,7 +31,11 @@ def infer_argmax_argmin(ctx: _context.ShapeInferenceContext, node: ir.Node) -> N
     output_shape: ir.Shape | None = None
     if data.shape is not None:
         rank = data.shape.rank()
-        axis = normalize_axis(axis, rank)
+        axis = _shape_ops.normalize_axis(ctx, node, axis, rank)
+        if axis is None:
+            if len(node.outputs) > 0:
+                ctx.set_shape_and_dtype(node.outputs[0], None, ir.DataType.INT64)
+            return
 
         new_dims: list[int | ir.SymbolicDim] = []
         for i in range(rank):

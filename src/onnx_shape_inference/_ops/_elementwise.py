@@ -19,7 +19,7 @@ from onnx_shape_inference import _broadcast, _context, _registry
 
 _reg = _registry.registry.register
 
-_BinOp = Callable[[object, object], object]
+_BinOp = Callable[[object, object], object | None]
 
 
 def _broadcast_symbolic_values(
@@ -44,7 +44,23 @@ def _broadcast_symbolic_values(
         pairs = ((a, val_b[0]) for a in val_a)
     else:
         return None
-    return [op_func(a, b) for a, b in pairs]  # type: ignore[misc]
+    result: list[int | ir.SymbolicDim] = []
+    for a, b in pairs:
+        value = op_func(a, b)
+        if value is None:
+            return None
+        result.append(value)  # type: ignore[arg-type]
+    return result
+
+
+def _truncate_integer_division(
+    dividend: object, divisor: object
+) -> int | ir.SymbolicDim | None:
+    """Divide concrete integers with ONNX's truncation-toward-zero semantics."""
+    if not isinstance(dividend, int) or not isinstance(divisor, int) or divisor == 0:
+        return None
+    quotient = abs(dividend) // abs(divisor)
+    return -quotient if (dividend < 0) != (divisor < 0) else quotient
 
 
 def infer_binary_elementwise(
@@ -72,7 +88,7 @@ _ARITH_OPS: dict[str, _BinOp] = {
     "Add": _operator.add,
     "Sub": _operator.sub,
     "Mul": _operator.mul,
-    "Div": _operator.floordiv,
+    "Div": _truncate_integer_division,
 }
 
 
@@ -175,5 +191,10 @@ def _infer_variadic_elementwise(ctx: _context.ShapeInferenceContext, node: ir.No
             if len(set(lengths)) == 1:
                 result = list(sym_vals[0])  # type: ignore[arg-type]
                 for sv in sym_vals[1:]:
+                    if node.op_type in {"Max", "Min"} and any(
+                        not isinstance(value, int)
+                        for value in [*result, *sv]  # type: ignore[misc]
+                    ):
+                        return
                     result = [op_func(a, b) for a, b in zip(result, sv)]  # type: ignore[arg-type]
-                ctx.set_symbolic_value(node.outputs[0], result)
+                ctx.set_symbolic_value(node.outputs[0], result)  # type: ignore[arg-type]

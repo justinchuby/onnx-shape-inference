@@ -190,6 +190,31 @@ class RecordReshapeNumelEqualitiesTest(unittest.TestCase):
         _constraints.propagate_symbolic_constraints(ctx, graph)
         self.assertEqual(flat.shape[-1], _sym("c"))
 
+    def test_divisibility_rewrite_applies_wherever_symbol_appears(self):
+        # A reshape [a,b,c] -> [a,b,2,floor(c/2)] proves c is even, i.e.
+        # c == 2*floor(c/2).  That equality holds globally for the symbol c, so
+        # a *separate* value shaped [2*floor(c/2)] must ALSO simplify to [c],
+        # regardless of its total element count.
+        graph, _node = self._reshape_graph(["a", "b", "c"], ["a", "b", 2, "floor(c/2)"])
+        # Inherited from the reshape (same numel form).
+        inherited = ir.Value(
+            name="inherited",
+            type=ir.TensorType(ir.DataType.FLOAT),
+            shape=ir.Shape(["a", "b", "2*floor(c/2)"]),
+        )
+        # A separate value with a different numel but the same proven-even c.
+        separate = ir.Value(
+            name="separate",
+            type=ir.TensorType(ir.DataType.FLOAT),
+            shape=ir.Shape(["2*floor(c/2)"]),
+        )
+        graph.outputs.extend([inherited, separate])
+        ctx = _context.ShapeInferenceContext()
+        _constraints.record_reshape_numel_equalities(ctx, graph)
+        _constraints.propagate_symbolic_constraints(ctx, graph)
+        self.assertEqual(inherited.shape[-1], _sym("c"))
+        self.assertEqual(separate.shape[0], _sym("c"))
+
 
 class LeafEqualityTest(unittest.TestCase):
     """Direct tests for the reusable _leaf_equality helper."""

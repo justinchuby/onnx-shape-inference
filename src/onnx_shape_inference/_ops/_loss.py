@@ -16,7 +16,7 @@ from onnx_shape_inference import _context, _registry
 _reg = _registry.registry.register
 
 
-@_reg("", "NegativeLogLikelihoodLoss", since_version=13)
+@_reg("", "NegativeLogLikelihoodLoss", since_version=12)
 def infer_negative_log_likelihood_loss(
     ctx: _context.ShapeInferenceContext, node: ir.Node
 ) -> None:
@@ -40,7 +40,7 @@ def infer_negative_log_likelihood_loss(
         ctx.set_shape_and_dtype(node.outputs[0], output_shape, output_dtype)
 
 
-@_reg("", "SoftmaxCrossEntropyLoss", since_version=13)
+@_reg("", "SoftmaxCrossEntropyLoss", since_version=12)
 def infer_softmax_cross_entropy_loss(
     ctx: _context.ShapeInferenceContext, node: ir.Node
 ) -> None:

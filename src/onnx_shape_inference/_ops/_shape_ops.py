@@ -9,6 +9,7 @@ __all__ = [
     "infer_flatten",
     "infer_shape",
     "infer_size",
+    "normalize_axis",
 ]
 
 import functools
@@ -17,6 +18,27 @@ import operator
 import onnx_ir as ir
 
 from onnx_shape_inference import _context, _registry
+
+
+def normalize_axis(
+    ctx: _context.ShapeInferenceContext,
+    node: ir.Node,
+    axis: int,
+    rank: int,
+    *,
+    allow_end: bool = False,
+    allow_negative: bool = True,
+) -> int | None:
+    """Validate and normalize an axis, recording semantic errors."""
+    minimum = -rank if allow_negative else 0
+    maximum = rank if allow_end else rank - 1
+    if axis < minimum or axis > maximum:
+        ctx.record_error(
+            node,
+            f"axis={axis} is out of range [{minimum}, {maximum}] for rank {rank}",
+        )
+        return None
+    return axis + rank if axis < 0 else axis
 
 
 @_registry.registry.register("", "Shape", since_version=1)
@@ -99,8 +121,17 @@ def infer_flatten(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
         axis = axis_attr.as_int() if axis_attr is not None else 1
 
         rank = input_shape.rank()
-        if axis < 0:
-            axis += rank
+        axis = normalize_axis(
+            ctx,
+            node,
+            axis,
+            rank,
+            allow_end=True,
+        )
+        if axis is None:
+            if len(node.outputs) > 0:
+                ctx.set_shape_and_dtype(node.outputs[0], None, input_dtype)
+            return
 
         left: int | ir.SymbolicDim = functools.reduce(operator.mul, input_shape.dims[:axis], 1)
         right: int | ir.SymbolicDim = functools.reduce(

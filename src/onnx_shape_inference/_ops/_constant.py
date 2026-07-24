@@ -30,6 +30,14 @@ def infer_constant(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
         ctx.set_shape_and_dtype(output, tensor.shape, tensor.dtype)  # type: ignore[arg-type]
         return
 
+    sparse_value_attr = node.attributes.get("sparse_value")
+    if sparse_value_attr is not None:
+        sparse_tensor = sparse_value_attr.value
+        ctx.set_shape_and_dtype(
+            output, ir.Shape(list(sparse_tensor.dims)), sparse_tensor.values.dtype
+        )
+        return
+
     # Handle scalar constant attributes
     value_float = node.attributes.get("value_float")
     if value_float is not None:

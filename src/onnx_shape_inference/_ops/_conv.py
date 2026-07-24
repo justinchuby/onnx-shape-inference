@@ -82,6 +82,7 @@ def _compute_conv_shape(
 
     x_rank = x_shape.rank()
     if x_rank < 3:
+        ctx.record_error(node, f"Conv input must be at least rank 3, got {x_rank}")
         return None
 
     n_spatial = x_rank - 2
@@ -89,12 +90,15 @@ def _compute_conv_shape(
     kernel_shape_attr = node.attributes.get("kernel_shape")
     if kernel_shape_attr is not None:
         kernel_shape: list[int | None] = list(kernel_shape_attr.as_ints())
-    elif w_shape.rank() > 2:
+    elif w_shape.rank() == x_rank:
         kernel_shape = [
             w_shape[i + 2] if isinstance(w_shape[i + 2], int) else None  # type: ignore[misc]
             for i in range(n_spatial)
         ]
     else:
+        ctx.record_error(
+            node, f"Conv weight rank {w_shape.rank()} does not match input rank {x_rank}"
+        )
         return None
 
     strides_attr = node.attributes.get("strides")
@@ -116,6 +120,28 @@ def _compute_conv_shape(
             pads = [0] * (2 * n_spatial)
     else:
         pads = None
+
+    if len(kernel_shape) != n_spatial:
+        ctx.record_error(
+            node,
+            f"Conv kernel_shape length {len(kernel_shape)} does not match spatial rank {n_spatial}",
+        )
+        return None
+    if len(strides) != n_spatial or any(stride <= 0 for stride in strides):
+        ctx.record_error(
+            node, "Conv strides must contain one positive value per spatial dimension"
+        )
+        return None
+    if len(dilations) != n_spatial or any(dilation <= 0 for dilation in dilations):
+        ctx.record_error(
+            node, "Conv dilations must contain one positive value per spatial dimension"
+        )
+        return None
+    if pads is not None and len(pads) != 2 * n_spatial:
+        ctx.record_error(
+            node, f"Conv pads length {len(pads)} does not match spatial rank {n_spatial}"
+        )
+        return None
 
     batch_dim = x_shape[0]
     out_channels = w_shape[0]

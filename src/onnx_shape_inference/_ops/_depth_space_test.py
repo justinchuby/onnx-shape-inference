@@ -9,7 +9,7 @@ import unittest
 import onnx_ir as ir
 import parameterized
 
-from onnx_shape_inference import OpUsageError
+from onnx_shape_inference import OpUsageError, ShapeInferenceError
 from onnx_shape_inference._ops._testing import (
     run_shape_inference,
     run_shape_inference_with_values,
@@ -64,6 +64,41 @@ class DepthSpaceTest(unittest.TestCase):
         attrs = {"blocksize": ir.Attr("blocksize", ir.AttributeType.INT, 2)}
         with self.assertRaises(OpUsageError):
             run_shape_inference_with_values("", op_type, [None], attrs, opset_version=13)
+
+    @parameterized.parameterized.expand(
+        [
+            ("depth_to_space", "DepthToSpace", [1, 10, 2, 2]),
+            ("space_to_depth", "SpaceToDepth", [1, 3, 5, 6]),
+        ]
+    )
+    def test_concrete_non_divisible_dims_raise(self, _name, op_type, shape):
+        attrs = {"blocksize": ir.Attr("blocksize", ir.AttributeType.INT, 3)}
+        with self.assertRaises(ShapeInferenceError):
+            run_shape_inference("", op_type, [ts(FLOAT, shape)], attrs, opset_version=13)
+
+    @parameterized.parameterized.expand(
+        [
+            ("non_positive_blocksize", "DepthToSpace", [1, 4, 2, 2], 0),
+            ("non_positive_blocksize_space_to_depth", "SpaceToDepth", [1, 4, 2, 2], 0),
+            ("non_divisible_channels", "DepthToSpace", [1, 10, 2, 2], 3),
+            ("non_divisible_height", "SpaceToDepth", [1, 3, 5, 6], 3),
+            ("non_divisible_width", "SpaceToDepth", [1, 3, 6, 5], 3),
+        ]
+    )
+    def test_invalid_dims_degrade_with_skip_policy(self, _name, op_type, shape, blocksize):
+        attrs = {"blocksize": ir.Attr("blocksize", ir.AttributeType.INT, blocksize)}
+        actual = run_shape_inference(
+            "", op_type, [ts(FLOAT, shape)], attrs, opset_version=13, policy="skip"
+        )
+        self.assertEqual(actual, [ts(FLOAT)])
+
+    @parameterized.parameterized.expand([("DepthToSpace", 1), ("SpaceToDepth", 1)])
+    def test_opset_1(self, op_type, opset_version):
+        attrs = {"blocksize": ir.Attr("blocksize", ir.AttributeType.INT, 2)}
+        actual = run_shape_inference(
+            "", op_type, [ts(FLOAT, [1, 12, 4, 6])], attrs, opset_version=opset_version
+        )
+        self.assertIsNotNone(actual[0].shape)
 
 
 if __name__ == "__main__":

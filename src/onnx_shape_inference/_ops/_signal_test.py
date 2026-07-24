@@ -10,6 +10,7 @@ import onnx_ir as ir
 
 from onnx_shape_inference import OpUsageError
 from onnx_shape_inference._ops._testing import (
+    const_value,
     run_shape_inference,
     run_shape_inference_with_values,
     ts,
@@ -49,6 +50,122 @@ class DFTTest(unittest.TestCase):
                 [None],
                 opset_version=20,
             )
+
+    def test_opset_17_default_axis(self):
+        actual = run_shape_inference_with_values(
+            "",
+            "DFT",
+            [
+                ir.Value(
+                    name="input",
+                    type=ir.TensorType(FLOAT),
+                    shape=ir.Shape([2, 3, 16, 2]),
+                ),
+                const_value(8),
+            ],
+            opset_version=17,
+        )
+        self.assertEqual(actual, [ts(FLOAT, [2, 8, 16, 2])])
+
+    def test_opset_20_default_axis(self):
+        actual = run_shape_inference_with_values(
+            "",
+            "DFT",
+            [
+                ir.Value(
+                    name="input",
+                    type=ir.TensorType(FLOAT),
+                    shape=ir.Shape([2, 3, 16, 2]),
+                ),
+                const_value(8),
+            ],
+            opset_version=20,
+        )
+        self.assertEqual(actual, [ts(FLOAT, [2, 3, 8, 2])])
+
+    def test_opset_20_axis_input(self):
+        actual = run_shape_inference_with_values(
+            "",
+            "DFT",
+            [
+                ir.Value(
+                    name="input",
+                    type=ir.TensorType(FLOAT),
+                    shape=ir.Shape([2, 3, 16, 2]),
+                ),
+                const_value(8),
+                const_value(1),
+            ],
+            opset_version=20,
+        )
+        self.assertEqual(actual, [ts(FLOAT, [2, 8, 16, 2])])
+
+    def test_opset_20_dynamic_axis_makes_signal_dims_unknown(self):
+        actual = run_shape_inference_with_values(
+            "",
+            "DFT",
+            [
+                ir.Value(
+                    name="input",
+                    type=ir.TensorType(FLOAT),
+                    shape=ir.Shape([2, 3, 5, 1]),
+                ),
+                None,
+                ir.Value(
+                    name="axis",
+                    type=ir.TensorType(ir.DataType.INT64),
+                    shape=ir.Shape([]),
+                ),
+            ],
+            attributes={"onesided": ir.Attr("onesided", ir.AttributeType.INT, 1)},
+            opset_version=20,
+        )
+        self.assertEqual(actual, [ts(FLOAT, ["_d0", "_d1", "_d2", 2])])
+
+    def test_opset_20_dynamic_dft_length_makes_axis_dim_unknown(self):
+        for onesided in (0, 1):
+            with self.subTest(onesided=onesided):
+                actual = run_shape_inference_with_values(
+                    "",
+                    "DFT",
+                    [
+                        ir.Value(
+                            name="input",
+                            type=ir.TensorType(FLOAT),
+                            shape=ir.Shape([2, 10, 1]),
+                        ),
+                        ir.Value(
+                            name="dft_length",
+                            type=ir.TensorType(ir.DataType.INT64),
+                            shape=ir.Shape([]),
+                        ),
+                    ],
+                    attributes={
+                        "onesided": ir.Attr("onesided", ir.AttributeType.INT, onesided)
+                    },
+                    opset_version=20,
+                )
+                self.assertEqual(actual, [ts(FLOAT, [2, "_d0", 2])])
+
+    def test_inverse_onesided_dft_length_is_output_length(self):
+        actual = run_shape_inference_with_values(
+            "",
+            "DFT",
+            [
+                ir.Value(
+                    name="input",
+                    type=ir.TensorType(FLOAT),
+                    shape=ir.Shape([2, 3, 5, 2]),
+                ),
+                const_value(8),
+            ],
+            attributes={
+                "inverse": ir.Attr("inverse", ir.AttributeType.INT, 1),
+                "onesided": ir.Attr("onesided", ir.AttributeType.INT, 1),
+            },
+            opset_version=20,
+        )
+        self.assertEqual(actual, [ts(FLOAT, [2, 3, 8, 1])])
 
 
 class STFTTest(unittest.TestCase):
@@ -93,6 +210,16 @@ class DFTSymbolicDimsTest(unittest.TestCase):
             opset_version=20,
         )
         self.assertEqual(actual, [ts(FLOAT, ["N", "L", 2])])
+
+    def test_onesided_symbolic_axis(self):
+        actual = run_shape_inference(
+            "",
+            "DFT",
+            [ts(FLOAT, ["batch", "length", 2])],
+            {"onesided": ir.Attr("onesided", ir.AttributeType.INT, 1)},
+            opset_version=20,
+        )
+        self.assertEqual(actual, [ts(FLOAT, ["batch", "floor(length/2) + 1", 2])])
 
 
 class STFTSymbolicDimsTest(unittest.TestCase):
