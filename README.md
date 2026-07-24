@@ -12,8 +12,10 @@ Experimental symbolic shape inference for ONNX models. Built on top of [ONNX IR]
 
 - **Symbolic shape inference** — propagates shapes through the graph using SymPy expressions for symbolic dimensions
 - **Shape data propagation** — tracks known element values of shape tensors (e.g. through `Shape → Slice → Concat → Reshape` chains) to resolve concrete output shapes that standard shape inference cannot
+- **Broad operator coverage** — built-in inference for standard ONNX (`ai.onnx`) operators plus `com.microsoft` contrib ops, with version-aware dispatch across opset history
+- **Symbolic constraint resolution** — reconciles engine-generated dimension names with the symbolic names an author declares on graph outputs / `value_info`, renaming anonymous dims (including compound expressions like `2*_d0` or `past_seq + seq`) to the declared names
 - **Extensible registry** — register custom shape inference functions for custom operators
-- **Merge policies** — choose between strict and permissive shape merging strategies
+- **Merge policies** — control how newly inferred shapes are merged with existing ones: `refine` (default), `strict`, `override`, and `skip`
 
 ## Installation
 
@@ -167,13 +169,52 @@ When all elements are concrete integers the value is also stored as a constant
 tensor, so downstream consumers that read constants directly can access it
 without parsing `metadata_props`.
 
+### Adopting declared symbolic names (constraint resolution)
+
+Per-operator inference names data-dependent dimensions with anonymous symbols
+(`_d0`, `_d1`, …). Model authors, however, usually declare meaningful symbolic
+names on graph outputs and `value_info` (e.g. `Y: [batch, seq]`). After the main
+inference pass, a constraint-resolution pass records equalities between inferred
+and declared shapes and **renames** the anonymous symbols to the author's
+declared names — including compound occurrences such as `2*_d0 → 2*batch` and
+`past_seq + seq → total_seq`. Only anonymous `_dN` symbols are renamed; declared
+names are treated as authoritative.
+
+This is enabled by default. Pass `adopt_declared_symbols=False` to keep the raw
+engine-generated symbols instead:
+
+```python
+model = infer_symbolic_shapes(model, adopt_declared_symbols=False)
+```
+
 ## Development
 
 ```console
-pip install pytest parameterized
+pip install -r requirements/ci/requirements.txt
 pip install -e .
 pytest
 ```
+
+Lint and format with [lintrunner](https://github.com/suo/lintrunner):
+
+```console
+pip install -r requirements/lintrunner/requirements.txt
+lintrunner -a
+```
+
+### Fuzzing
+
+A deterministic, seeded fuzzer stress-tests shape inference against ONNX
+reference inference and ONNX Runtime. A fast tier runs as part of the normal
+test suite; replay a failing seed with:
+
+```console
+FUZZ_SEED=<seed> python3 -m pytest tests/shape_inference_fuzz_test.py
+```
+
+See [docs/fuzzing.md](docs/fuzzing.md) for how to turn a fuzzer finding into a
+regression test, and [docs/fuzzing-design.md](docs/fuzzing-design.md) for the
+fuzzer's design (generator, oracles, harness, and shrinking).
 
 ## License
 
