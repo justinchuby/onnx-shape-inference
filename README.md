@@ -12,8 +12,9 @@ Experimental symbolic shape inference for ONNX models. Built on top of [ONNX IR]
 
 - **Symbolic shape inference** — propagates shapes through the graph using SymPy expressions for symbolic dimensions
 - **Shape data propagation** — tracks known element values of shape tensors (e.g. through `Shape → Slice → Concat → Reshape` chains) to resolve concrete output shapes that standard shape inference cannot
+- **Broad operator coverage** — built-in inference for standard ONNX (`ai.onnx`) operators plus `com.microsoft` contrib ops, with version-aware dispatch across opset history
 - **Extensible registry** — register custom shape inference functions for custom operators
-- **Merge policies** — choose between strict and permissive shape merging strategies
+- **Merge policies** — control how newly inferred shapes are merged with existing ones: `refine` (default), `strict`, `override`, and `skip`
 
 ## Installation
 
@@ -170,9 +171,16 @@ without parsing `metadata_props`.
 ## Development
 
 ```console
-pip install pytest parameterized
+pip install -r requirements/ci/requirements.txt
 pip install -e .
 pytest
+```
+
+Lint and format with [lintrunner](https://github.com/suo/lintrunner):
+
+```console
+pip install -r requirements/lintrunner/requirements.txt
+lintrunner -a
 ```
 
 ## License
