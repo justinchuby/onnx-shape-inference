@@ -80,6 +80,16 @@ def infer_slice(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
             return
 
         sentinels = {2**63 - 1, -(2**63), 2**31 - 1, -(2**31)}
+        positive_sentinels = {2**63 - 1, 2**31 - 1}
+        # A positive-step slice with a sentinel ``end`` (e.g. ``INT64_MAX``)
+        # means "slice to the far end" of this axis, i.e. the dim length.
+        # Normalize it to ``dim`` now so the extent math below is correct for
+        # any positive step — including a strided downsample such as
+        # ``mask[:, ::2]`` — instead of treating ``INT64_MAX`` as a literal
+        # bound and computing ``INT64_MAX // step`` (~2**62), which then
+        # overflows a downstream Reshape's product at model load.
+        if step > 0 and isinstance(end, int) and end in positive_sentinels:
+            end = dim
         if start == 0 and step == 1 and isinstance(end, int) and end in sentinels:
             output_dims[axis] = dim
         elif step == -1 and start in sentinels and end in sentinels:
