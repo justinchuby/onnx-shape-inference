@@ -124,6 +124,27 @@ class SliceTest(unittest.TestCase):
         actual = self._run(ts(FLOAT, ["N", 10]), [0], [2**31 - 1], [0], [1])
         self.assertEqual(actual, [ts(FLOAT, ["N", 10])])
 
+    def test_symbolic_dim_sentinel_end_strided_downsample(self):
+        """start=0, step=2, end=INT_MAX on symbolic dim → ceil(N/2), not INT_MAX//2."""
+        actual = self._run(ts(FLOAT, ["N", 10]), [0], [2**63 - 1], [0], [2])
+        self.assertEqual(actual, [ts(FLOAT, ["-floor(-N/2)", 10])])
+
+    def test_symbolic_dim_sentinel_end_strided_int32_max(self):
+        """start=0, step=2, end=INT32_MAX on symbolic dim → ceil(N/2)."""
+        actual = self._run(ts(FLOAT, ["N"]), [0], [2**31 - 1], [0], [2])
+        self.assertEqual(actual, [ts(FLOAT, ["-floor(-N/2)"])])
+
+    @parameterized.parameterized.expand(
+        [
+            ("even_dim", [10, 4], 5),
+            ("odd_dim", [11, 4], 6),
+        ]
+    )
+    def test_concrete_dim_sentinel_end_strided_downsample(self, _name, shape, expected):
+        """start=0, step=2, end=INT_MAX on a concrete dim → ceil(dim/2)."""
+        actual = self._run(ts(FLOAT, shape), [0], [2**63 - 1], [0], [2])
+        self.assertEqual(actual, [ts(FLOAT, [expected, shape[1]])])
+
     def test_symbolic_dim_sentinel_reverse_preserves_dim(self):
         """Full reverse: start=INT_MAX, end=INT_MIN, step=-1 → preserves dim."""
         actual = self._run(ts(FLOAT, ["N", 10]), [2**63 - 1], [-(2**63)], [0], [-1])
