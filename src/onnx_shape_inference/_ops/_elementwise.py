@@ -156,6 +156,52 @@ _VARIADIC_OPS: dict[str, Callable[..., object]] = {
     "Min": min,
     "Sum": _operator.add,
 }
+# ``Mean`` is intentionally absent: averaging is not an integer operation, so
+# folding it over shape-tensor elements would not produce faithful values.
+
+
+def _fold_variadic_element(
+    ctx: _context.ShapeInferenceContext,
+    op_type: str,
+    op_func: Callable[..., object],
+    a: int | ir.SymbolicDim,
+    b: int | ir.SymbolicDim,
+) -> int | ir.SymbolicDim:
+    """Fold one element pair of a variadic op, degrading to an unknown dim.
+
+    Concrete integer pairs are folded exactly.  Anything that cannot be folded
+    soundly yields a fresh symbolic dim from ``ctx``, so a single unfoldable
+    element degrades only itself instead of discarding the whole value.  This
+    supersedes the previous early return, which abandoned propagation for every
+    element as soon as one of them was symbolic.
+    """
+    if isinstance(a, int) and isinstance(b, int):
+        return op_func(a, b)  # type: ignore[return-value]
+
+    if op_type in ("Max", "Min"):
+        # The ordering of a symbolic dim relative to anything else is unknown
+        # (and builtin max/min would compare with > / <, which SymbolicDim does
+        # not implement). The one sound refinement is max(d, d) == min(d, d) ==
+        # d. Anonymous dims compare equal without denoting the same symbol, so
+        # exclude them.
+        if (
+            isinstance(a, ir.SymbolicDim)
+            and isinstance(b, ir.SymbolicDim)
+            and a.value is not None
+            and a == b
+        ):
+            return a
+        return ctx.new_symbolic_dim()
+
+    # Sum: SymbolicDim implements arithmetic, but stay defensive so that an
+    # unexpected operand type degrades to "unknown" instead of raising.
+    try:
+        folded = op_func(a, b)
+    except Exception:
+        return ctx.new_symbolic_dim()
+    if isinstance(folded, (int, ir.SymbolicDim)):
+        return folded
+    return ctx.new_symbolic_dim()
 
 
 @_reg("", "Max", since_version=8)
@@ -184,17 +230,19 @@ def _infer_variadic_elementwise(ctx: _context.ShapeInferenceContext, node: ir.No
 
     # Propagate symbolic values for Max/Min/Sum on shape tensors
     op_func = _VARIADIC_OPS.get(node.op_type)
-    if op_func is not None and len(node.outputs) > 0 and len(inputs) >= 2:
-        sym_vals = [ctx.get_symbolic_value(v) for v in inputs]
-        if all(sv is not None for sv in sym_vals):
-            lengths = [len(sv) for sv in sym_vals]  # type: ignore[arg-type]
-            if len(set(lengths)) == 1:
-                result = list(sym_vals[0])  # type: ignore[arg-type]
-                for sv in sym_vals[1:]:
-                    if node.op_type in {"Max", "Min"} and any(
-                        not isinstance(value, int)
-                        for value in [*result, *sv]  # type: ignore[misc]
-                    ):
-                        return
-                    result = [op_func(a, b) for a, b in zip(result, sv)]  # type: ignore[arg-type]
-                ctx.set_symbolic_value(node.outputs[0], result)  # type: ignore[arg-type]
+    if op_func is None or not node.outputs or len(inputs) < 2:
+        return
+
+    sym_vals = [ctx.get_symbolic_value(v) for v in inputs]
+    if any(sv is None for sv in sym_vals):
+        return
+    if len({len(sv) for sv in sym_vals}) != 1:  # type: ignore[arg-type]
+        return
+
+    result: list[int | ir.SymbolicDim] = list(sym_vals[0])  # type: ignore[arg-type]
+    for sv in sym_vals[1:]:
+        result = [
+            _fold_variadic_element(ctx, node.op_type, op_func, a, b)
+            for a, b in zip(result, sv)  # type: ignore[arg-type]
+        ]
+    ctx.set_symbolic_value(node.outputs[0], result)
