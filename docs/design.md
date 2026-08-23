@@ -408,6 +408,13 @@ infer_func(ctx, node)
     └─ _check_no_anonymous_dims(shape)     ◄── rejects SymbolicDim(None) in outputs
 ```
 
+Shapes that originate *outside* the engine (e.g. `value_info` on an input model,
+which may legally contain a `dim` with neither `dim_value` nor `dim_param`) must
+be normalized with `ctx.name_anonymous_dims_in_shape(shape)` — or
+`ctx.name_anonymous_dims(value)` — before being passed to `set_shape`. The
+`_check_no_anonymous_dims` guard exists to catch genuine internal bugs and is
+never relaxed; normalization happens at the boundary instead.
+
 **Convenience function:**
 
 ```python

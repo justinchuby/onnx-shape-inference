@@ -321,6 +321,205 @@ class RefineBodyInputTest(unittest.TestCase):
         self.assertEqual(str(body.shape[0]), "D")
 
 
+class AnonymousCallSiteDimsTest(unittest.TestCase):
+    """Anonymous dims on an *intermediate* call-site value must be normalized.
+
+    ``SymbolicDim(None)`` (a ``dim`` with neither ``dim_value`` nor
+    ``dim_param``) is legal ONNX and real producers emit it.  When such a shape
+    is pushed into a Scan/Loop body input it must be given unique names rather
+    than tripping the engine's internal no-anonymous-dims invariant.
+    """
+
+    OPSET = 18
+
+    @staticmethod
+    def _assert_uniquely_named(shape: ir.Shape) -> None:
+        symbolic = [d for d in shape.dims if isinstance(d, ir.SymbolicDim)]
+        for dim in symbolic:
+            assert dim.value is not None, f"anonymous dim left in {shape}"
+        names = [d.value for d in symbolic]
+        assert len(names) == len(set(names)), f"duplicate symbolic names in {shape}"
+
+    def _anonymous_intermediate(
+        self, graph_inputs: list[ir.Value], nodes: list[ir.Node], rank: int, name: str
+    ) -> ir.Value:
+        """Append a ConstantOfShape whose output carries `rank` anonymous dims."""
+        shp = ir.Value(
+            name=f"{name}_shape",
+            type=ir.TensorType(ir.DataType.INT64),
+            shape=ir.Shape([rank]),
+        )
+        graph_inputs.append(shp)
+        node = ir.Node("", "ConstantOfShape", inputs=[shp], num_outputs=1)
+        node.outputs[0].name = name
+        node.outputs[0].type = ir.TensorType(ir.DataType.FLOAT)
+        node.outputs[0].shape = ir.Shape([ir.SymbolicDim(None)] * rank)
+        nodes.append(node)
+        return node.outputs[0]
+
+    def _scan_body(self) -> ir.Graph:
+        state_in = ir.Value(name="state_in", type=ir.TensorType(ir.DataType.FLOAT))
+        x_t = ir.Value(name="x_t", type=ir.TensorType(ir.DataType.FLOAT))
+        add = ir.Node("", "Add", inputs=[state_in, x_t], num_outputs=1)
+        add.outputs[0].name = "state_out"
+        return ir.Graph(
+            inputs=[state_in, x_t],
+            outputs=[add.outputs[0]],
+            nodes=[add],
+            opset_imports={"": self.OPSET},
+            name="scan_body",
+        )
+
+    def test_scan_carried_state_from_intermediate(self):
+        body = self._scan_body()
+        graph_inputs: list[ir.Value] = []
+        nodes: list[ir.Node] = []
+        state = self._anonymous_intermediate(graph_inputs, nodes, 2, "state0")
+
+        x = ir.Value(
+            name="X", type=ir.TensorType(ir.DataType.FLOAT), shape=ir.Shape([5, 2, 3])
+        )
+        graph_inputs.append(x)
+        scan = ir.Node(
+            "",
+            "Scan",
+            inputs=[state, x],
+            num_outputs=1,
+            attributes={
+                "body": ir.Attr("body", ir.AttributeType.GRAPH, body),
+                "num_scan_inputs": ir.Attr("num_scan_inputs", ir.AttributeType.INT, 1),
+            },
+        )
+        scan.outputs[0].name = "state_final"
+        nodes.append(scan)
+        graph = ir.Graph(
+            inputs=graph_inputs,
+            outputs=list(scan.outputs),
+            nodes=nodes,
+            opset_imports={"": self.OPSET},
+            name="g",
+        )
+
+        _engine.infer_symbolic_shapes(ir.Model(graph, ir_version=10), policy="refine")
+
+        self.assertIsNotNone(body.inputs[0].shape)
+        self.assertEqual(body.inputs[0].shape.rank(), 2)
+        self._assert_uniquely_named(body.inputs[0].shape)
+        # The scan slice drops the scanned axis of [5, 2, 3].
+        self.assertEqual(body.inputs[1].shape, ir.Shape([2, 3]))
+
+    def test_scan_scan_input_from_intermediate(self):
+        body = self._scan_body()
+        graph_inputs: list[ir.Value] = []
+        nodes: list[ir.Node] = []
+        # Scanned input is the intermediate with anonymous dims: [?, ?, ?].
+        scanned = self._anonymous_intermediate(graph_inputs, nodes, 3, "scanned")
+
+        state = ir.Value(
+            name="state0", type=ir.TensorType(ir.DataType.FLOAT), shape=ir.Shape([2, 3])
+        )
+        graph_inputs.append(state)
+        scan = ir.Node(
+            "",
+            "Scan",
+            inputs=[state, scanned],
+            num_outputs=1,
+            attributes={
+                "body": ir.Attr("body", ir.AttributeType.GRAPH, body),
+                "num_scan_inputs": ir.Attr("num_scan_inputs", ir.AttributeType.INT, 1),
+            },
+        )
+        scan.outputs[0].name = "state_final"
+        nodes.append(scan)
+        graph = ir.Graph(
+            inputs=graph_inputs,
+            outputs=list(scan.outputs),
+            nodes=nodes,
+            opset_imports={"": self.OPSET},
+            name="g",
+        )
+
+        _engine.infer_symbolic_shapes(ir.Model(graph, ir_version=10), policy="refine")
+
+        self.assertEqual(body.inputs[0].shape, ir.Shape([2, 3]))
+        self.assertIsNotNone(body.inputs[1].shape)
+        self.assertEqual(body.inputs[1].shape.rank(), 2)
+        self._assert_uniquely_named(body.inputs[1].shape)
+
+    def test_loop_carried_input_from_intermediate(self):
+        iter_num = ir.Value(name="i", type=ir.TensorType(ir.DataType.INT64))
+        cond_in = ir.Value(name="cond_in", type=ir.TensorType(ir.DataType.BOOL))
+        v_in = ir.Value(name="v_in", type=ir.TensorType(ir.DataType.FLOAT))
+        ident_cond = ir.Node("", "Identity", inputs=[cond_in], num_outputs=1)
+        ident_cond.outputs[0].name = "cond_out"
+        ident_v = ir.Node("", "Identity", inputs=[v_in], num_outputs=1)
+        ident_v.outputs[0].name = "v_out"
+        body = ir.Graph(
+            inputs=[iter_num, cond_in, v_in],
+            outputs=[ident_cond.outputs[0], ident_v.outputs[0]],
+            nodes=[ident_cond, ident_v],
+            opset_imports={"": self.OPSET},
+            name="loop_body",
+        )
+
+        graph_inputs: list[ir.Value] = []
+        nodes: list[ir.Node] = []
+        v_init = self._anonymous_intermediate(graph_inputs, nodes, 2, "v_init")
+
+        trip = ir.Value(name="M", type=ir.TensorType(ir.DataType.INT64), shape=ir.Shape([]))
+        cond = ir.Value(name="cond", type=ir.TensorType(ir.DataType.BOOL), shape=ir.Shape([]))
+        graph_inputs.extend([trip, cond])
+        loop = ir.Node(
+            "",
+            "Loop",
+            inputs=[trip, cond, v_init],
+            num_outputs=1,
+            attributes={"body": ir.Attr("body", ir.AttributeType.GRAPH, body)},
+        )
+        loop.outputs[0].name = "v_final"
+        nodes.append(loop)
+        graph = ir.Graph(
+            inputs=graph_inputs,
+            outputs=list(loop.outputs),
+            nodes=nodes,
+            opset_imports={"": self.OPSET},
+            name="g",
+        )
+
+        _engine.infer_symbolic_shapes(ir.Model(graph, ir_version=10), policy="refine")
+
+        self.assertIsNotNone(body.inputs[2].shape)
+        self.assertEqual(body.inputs[2].shape.rank(), 2)
+        self._assert_uniquely_named(body.inputs[2].shape)
+
+    def test_refine_body_input_names_anonymous_actual_dims(self):
+        ctx = _context.ShapeInferenceContext({"": self.OPSET}, policy="override")
+        body_inp = ir.Value(name="b", type=ir.TensorType(ir.DataType.FLOAT))
+        _engine._refine_body_input(
+            ctx,
+            body_inp,
+            ir.Shape([ir.SymbolicDim(None), ir.SymbolicDim(None)]),
+            ir.DataType.FLOAT,
+        )
+        self._assert_uniquely_named(body_inp.shape)
+
+    def test_refine_body_input_merge_fallback_names_anonymous_actual_dims(self):
+        ctx = _context.ShapeInferenceContext({"": self.OPSET}, policy="override")
+        # Same rank, so the merge loop runs and falls through to the actual dim.
+        body_inp = ir.Value(
+            name="b",
+            shape=ir.Shape([ir.SymbolicDim(None), ir.SymbolicDim(None)]),
+            type=ir.TensorType(ir.DataType.FLOAT),
+        )
+        _engine._refine_body_input(
+            ctx,
+            body_inp,
+            ir.Shape([ir.SymbolicDim(None), ir.SymbolicDim(None)]),
+            ir.DataType.FLOAT,
+        )
+        self._assert_uniquely_named(body_inp.shape)
+
+
 class ScanNegativeAxisTest(unittest.TestCase):
     """Scan with a negative scan_input_axes exercises the axis-normalization path."""
 

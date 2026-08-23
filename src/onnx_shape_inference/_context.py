@@ -455,6 +455,40 @@ class ShapeInferenceContext:
         """All recorded symbolic-dimension upper-bound constraints."""
         return self._symbolic_upper_bounds
 
+    def name_anonymous_dims_in_shape(self, shape: ir.Shape) -> ir.Shape:
+        """Return *shape* with every anonymous (``None``) dim given a unique name.
+
+        A ``dim`` carrying neither ``dim_value`` nor ``dim_param`` is legal ONNX
+        and is represented by ``onnx_ir`` as ``ir.SymbolicDim(None)``.  Such
+        shapes may legitimately appear on values of an input model, but the
+        engine requires every unknown dim to be uniquely named so that
+        downstream inference can relate dimensions.  Use this to normalize a
+        shape coming from outside the engine before handing it to
+        :meth:`set_shape`.
+
+        Each anonymous dim gets its **own** fresh name, so unrelated unknown
+        dimensions are never unified.
+
+        Args:
+            shape: The shape to normalize.
+
+        Returns:
+            *shape* itself when it has no anonymous dims, else a new
+            :class:`ir.Shape`.
+        """
+        new_dims: list[int | ir.SymbolicDim] = []
+        changed = False
+        for dim in shape.dims:
+            if isinstance(dim, ir.SymbolicDim) and dim.value is None:
+                new_dims.append(self.new_symbolic_dim())
+                changed = True
+            else:
+                new_dims.append(dim)
+
+        if not changed:
+            return shape
+        return ir.Shape(new_dims)
+
     def name_anonymous_dims(self, value: ir.Value) -> bool:
         """Replace anonymous (``None``) symbolic dims on *value* with unique names.
 
@@ -468,18 +502,12 @@ class ShapeInferenceContext:
         if shape is None:
             return False
 
-        new_dims: list[int | ir.SymbolicDim] = []
-        changed = False
-        for dim in shape.dims:
-            if isinstance(dim, ir.SymbolicDim) and dim.value is None:
-                new_dims.append(self.new_symbolic_dim())
-                changed = True
-            else:
-                new_dims.append(dim)
+        named = self.name_anonymous_dims_in_shape(shape)
+        if named is shape:
+            return False
 
-        if changed:
-            value.shape = ir.Shape(new_dims)
-        return changed
+        value.shape = named
+        return True
 
     def record_error(self, node: ir.Node, message: str) -> None:
         """Record a shape inference error for a node.

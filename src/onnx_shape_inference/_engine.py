@@ -142,6 +142,10 @@ def _refine_body_input(
 
     if actual_shape is None:
         return
+    # The call-site shape comes from the input model and may legally contain
+    # anonymous dims (a `dim` with neither dim_value nor dim_param).  Normalize
+    # them to uniquely named dims before they reach ``ctx.set_shape``.
+    actual_shape = ctx.name_anonymous_dims_in_shape(actual_shape)
     body_shape = body_inp.shape
     if body_shape is None or body_shape.rank() != actual_shape.rank():
         ctx.set_shape(body_inp, actual_shape)
@@ -196,7 +200,7 @@ def _propagate_types_to_subgraph_inputs(
             if init_val is not None and body_inp.dtype is None and init_val.dtype is not None:
                 ctx.set_dtype(body_inp, init_val.dtype)
             if init_val is not None and body_inp.shape is None and init_val.shape is not None:
-                ctx.set_shape(body_inp, init_val.shape)
+                ctx.set_shape(body_inp, ctx.name_anonymous_dims_in_shape(init_val.shape))
     elif node.op_type == "Scan":
         _propagate_types_to_scan_body(ctx, node)
 
