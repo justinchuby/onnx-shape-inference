@@ -8,7 +8,7 @@ import unittest
 
 import onnx_ir as ir
 
-from onnx_shape_inference import OpUsageError
+from onnx_shape_inference import OpUsageError, ShapeInferenceError
 from onnx_shape_inference._ops._testing import (
     run_shape_inference,
     run_shape_inference_with_values,
@@ -1988,6 +1988,39 @@ class LatestOnnxRuntimeOpsTest(unittest.TestCase):
         self.assertEqual(actual[0], ts(FLOAT16, [2, 4, 8, 16]))
         self.assertEqual(actual[1], ts(FLOAT, [2, 8, 16, 16]))
 
+    def test_state_window_out_of_range(self):
+        cases = [
+            (
+                "LinearAttention",
+                [ts(FLOAT, [2, 4, 16])] * 3,
+                {
+                    "q_num_heads": ir.Attr("q_num_heads", ir.AttributeType.INT, 2),
+                    "kv_num_heads": ir.Attr("kv_num_heads", ir.AttributeType.INT, 2),
+                },
+            ),
+            (
+                "CausalConvWithState",
+                [ts(FLOAT, [2, 4, 8]), ts(FLOAT, [4, 1, 3])],
+                {},
+            ),
+        ]
+        for op_type, inputs, attributes in cases:
+            for state_window in (-1, 9):
+                with self.assertRaises(ShapeInferenceError):
+                    run_shape_inference(
+                        MSFT,
+                        op_type,
+                        inputs,
+                        attributes={
+                            **attributes,
+                            "state_window": ir.Attr(
+                                "state_window", ir.AttributeType.INT, state_window
+                            ),
+                        },
+                        opset_version=1,
+                        num_outputs=2,
+                    )
+
     def test_causal_conv_with_state_window(self):
         actual = run_shape_inference(
             MSFT,
@@ -2051,6 +2084,31 @@ class LatestOnnxRuntimeOpsTest(unittest.TestCase):
             [ts(FLOAT16, [2, 4, 8]), ts(FLOAT16, [2, 4, 8])],
         )
 
+    def test_linear_attention_gate_beta_requires_b(self):
+        with self.assertRaises(OpUsageError):
+            run_shape_inference(
+                MSFT,
+                "LinearAttentionGate",
+                [ts(FLOAT16, [2, 4, 8]), ts(FLOAT, [8]), ts(FLOAT, [8])],
+                opset_version=1,
+                num_outputs=2,
+            )
+
+    def test_linear_attention_gate_unknown_b_shape(self):
+        actual = run_shape_inference(
+            MSFT,
+            "LinearAttentionGate",
+            [
+                ts(FLOAT16, [2, 4, 8]),
+                ts(FLOAT, [8]),
+                ts(FLOAT, [8]),
+                ts(FLOAT16, None),
+            ],
+            opset_version=1,
+            num_outputs=2,
+        )
+        self.assertEqual(actual[1], ts(FLOAT16, [2, 4, 8]))
+
     def test_block_quantized_matmuls(self):
         fp4 = run_shape_inference(
             MSFT,
@@ -2059,6 +2117,7 @@ class LatestOnnxRuntimeOpsTest(unittest.TestCase):
                 ts(FLOAT16, [2, 4, 64]),
                 ts(ir.DataType.UINT8, [128, 32]),
                 ts(ir.DataType.UINT8, [128, 4]),
+                ts(FLOAT, []),
             ],
             opset_version=1,
         )
@@ -2085,6 +2144,9 @@ class LatestOnnxRuntimeOpsTest(unittest.TestCase):
                 ts(FLOAT16, [7, 32]),
                 ts(INT8, [64, 16, 2, 16]),
                 ts(INT8, [64, 16, 2, 16]),
+                ts(INT32, [3]),
+                ts(INT32, [2]),
+                ts(INT32, [2, 8]),
             ],
             attributes={
                 "num_heads": ir.Attr("num_heads", ir.AttributeType.INT, 8),
@@ -2107,6 +2169,9 @@ class LatestOnnxRuntimeOpsTest(unittest.TestCase):
                 None,
                 ts(FLOAT16, [64, 16, 2, 16]),
                 ts(FLOAT16, [64, 16, 2, 16]),
+                ts(INT32, [3]),
+                ts(INT32, [2]),
+                ts(INT32, [2, 8]),
             ],
             attributes={
                 "num_heads": ir.Attr("num_heads", ir.AttributeType.INT, 8),
@@ -2126,6 +2191,9 @@ class LatestOnnxRuntimeOpsTest(unittest.TestCase):
                 None,
                 ts(FLOAT16, [64, 16, 1, 576]),
                 None,
+                ts(INT32, [3]),
+                ts(INT32, [2]),
+                ts(INT32, [2, 8]),
             ],
             attributes={
                 "num_heads": ir.Attr("num_heads", ir.AttributeType.INT, 8),
@@ -2140,6 +2208,31 @@ class LatestOnnxRuntimeOpsTest(unittest.TestCase):
         )
         self.assertEqual(actual[0], ts(FLOAT16, [7, 512]))
         self.assertEqual(actual[1], ts(FLOAT16, [64, 16, 1, 576]))
+
+    def test_paged_attention_rejects_invalid_layout(self):
+        with self.assertRaises(ShapeInferenceError):
+            run_shape_inference(
+                MSFT,
+                "PagedAttention",
+                [
+                    ts(FLOAT16, [7, 128]),
+                    ts(FLOAT16, [7, 32]),
+                    ts(FLOAT16, [7, 32]),
+                    ts(FLOAT16, [64, 16, 2, 16]),
+                    ts(FLOAT16, [64, 16, 2, 16]),
+                    ts(INT32, [3]),
+                    ts(INT32, [2]),
+                    ts(INT32, [2, 8]),
+                ],
+                attributes={
+                    "num_heads": ir.Attr("num_heads", ir.AttributeType.INT, 8),
+                    "kv_num_heads": ir.Attr("kv_num_heads", ir.AttributeType.INT, 2),
+                    "kv_cache_layout": ir.Attr(
+                        "kv_cache_layout", ir.AttributeType.STRING, "INVALID"
+                    ),
+                },
+                opset_version=1,
+            )
 
 
 if __name__ == "__main__":

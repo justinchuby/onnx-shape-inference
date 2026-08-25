@@ -56,8 +56,11 @@ def infer_linear_attention_gate(ctx: _context.ShapeInferenceContext, node: ir.No
         ctx.set_shape_and_dtype(node.outputs[0], a.shape, a.dtype)
 
     if len(node.outputs) > 1 and node.outputs[1] is not None:
-        beta = node.inputs[3] if len(node.inputs) > 3 and node.inputs[3] is not None else a
-        ctx.set_shape_and_dtype(node.outputs[1], beta.shape, beta.dtype)
+        if len(node.inputs) <= 3 or node.inputs[3] is None:
+            raise _context.OpUsageError(node, "Input 'b' is required for the beta output")
+        beta = node.inputs[3]
+        beta_shape = beta.shape if beta.shape is not None else a.shape
+        ctx.set_shape_and_dtype(node.outputs[1], beta_shape, a.dtype)
 
 
 # ---------------------------------------------------------------------------
@@ -75,6 +78,9 @@ def infer_linear_attention(ctx: _context.ShapeInferenceContext, node: ir.Node) -
     kv_num_heads = kv_num_heads_attr.as_int() if kv_num_heads_attr is not None else None
     state_window_attr = node.attributes.get("state_window")
     state_window = state_window_attr.as_int() if state_window_attr is not None else 0
+    if not 0 <= state_window <= 8:
+        ctx.record_error(node, "LinearAttention: state_window must be in [0, 8]")
+        return
 
     output_shape = query.shape
     state_shape: ir.Shape | None = None
@@ -134,6 +140,11 @@ def infer_linear_attention(ctx: _context.ShapeInferenceContext, node: ir.Node) -
 def infer_causal_conv_with_state(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
     """Infer output and generalized carry state for contrib CausalConvWithState."""
     (inp, weight) = _context.check_inputs(node, "input", "weight")
+    state_window_attr = node.attributes.get("state_window")
+    state_window = state_window_attr.as_int() if state_window_attr is not None else 0
+    if not 0 <= state_window <= 8:
+        ctx.record_error(node, "CausalConvWithState: state_window must be in [0, 8]")
+        return
 
     if len(node.outputs) > 0:
         ctx.set_shape_and_dtype(node.outputs[0], inp.shape, inp.dtype)
@@ -161,8 +172,6 @@ def infer_causal_conv_with_state(ctx: _context.ShapeInferenceContext, node: ir.N
             *inp.shape.dims[2 : 1 + ndim],
             state_length,
         ]
-        state_window_attr = node.attributes.get("state_window")
-        state_window = state_window_attr.as_int() if state_window_attr is not None else 0
         if state_window > 0:
             state_dims.insert(0, state_window)
         state_shape = ir.Shape(state_dims)
@@ -866,38 +875,91 @@ def infer_group_query_attention(ctx: _context.ShapeInferenceContext, node: ir.No
 @_reg(_MSFT, "PagedAttention", since_version=1)
 def infer_paged_attention(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
     """Infer packed-token output and aliased cache outputs for PagedAttention."""
-    if len(node.inputs) <= 3 or node.inputs[0] is None or node.inputs[3] is None:
-        raise _context.OpUsageError(node, "Expected inputs query and key_cache")
+    required = (
+        (0, "query"),
+        (3, "key_cache"),
+        (5, "cumulative_sequence_length"),
+        (6, "past_seqlens"),
+        (7, "block_table"),
+    )
+    for index, name in required:
+        if len(node.inputs) <= index or node.inputs[index] is None:
+            raise _context.OpUsageError(node, f"Required input '{name}' (#{index}) is missing")
     query = node.inputs[0]
     key_cache = node.inputs[3]
     value = node.inputs[2] if len(node.inputs) > 2 else None
+    value_cache = node.inputs[4] if len(node.inputs) > 4 else None
+    num_heads = _context.require_attr(node, "num_heads").as_int()
+    kv_num_heads = _context.require_attr(node, "kv_num_heads").as_int()
+    layout_attr = node.attributes.get("kv_cache_layout")
+    layout = layout_attr.as_string() if layout_attr is not None else "SEPARATE"
+    if layout not in {"SEPARATE", "LATENT"}:
+        ctx.record_error(node, "PagedAttention: kv_cache_layout must be SEPARATE or LATENT")
+        return
+    if query.shape is not None and query.shape.rank() != 2:
+        ctx.record_error(node, "PagedAttention: query must have rank 2")
+        return
+
+    if len(node.outputs) > 1:
+        if key_cache.shape is not None and key_cache.shape.rank() != 4:
+            ctx.record_error(node, "PagedAttention: key_cache must have rank 4")
+            return
+        if layout == "LATENT" and len(node.outputs) > 2:
+            ctx.record_error(node, "PagedAttention: LATENT layout has no value_cache_out")
+            return
+        if layout == "SEPARATE" and len(node.outputs) != 3:
+            ctx.record_error(node, "PagedAttention: cache outputs must be provided as a pair")
+            return
+        if layout == "SEPARATE" and value_cache is None:
+            ctx.record_error(node, "PagedAttention: value_cache is required for cache outputs")
+            return
+        if (
+            value_cache is not None
+            and value_cache.shape is not None
+            and value_cache.shape.rank() != 4
+        ):
+            ctx.record_error(node, "PagedAttention: value_cache must have rank 4")
+            return
 
     output_shape: ir.Shape | None = None
     if query.shape is not None and query.shape.rank() == 2:
-        layout_attr = node.attributes.get("kv_cache_layout")
-        layout = layout_attr.as_string() if layout_attr is not None else "SEPARATE"
         if layout == "LATENT":
             v_head_size_attr = node.attributes.get("v_head_size")
             v_head_size = v_head_size_attr.as_int() if v_head_size_attr is not None else 0
             if v_head_size == 0:
                 output_shape = query.shape
             else:
-                num_heads = _context.require_attr(node, "num_heads").as_int()
-                output_shape = ir.Shape([query.shape[0], num_heads * v_head_size])
+                query_hidden = query.shape[1]
+                if num_heads <= 0:
+                    ctx.record_error(node, "PagedAttention: num_heads must be positive")
+                    return
+                if isinstance(query_hidden, int):
+                    if query_hidden % num_heads != 0:
+                        ctx.record_error(
+                            node, "PagedAttention: query hidden size must divide num_heads"
+                        )
+                        return
+                    if v_head_size > query_hidden // num_heads:
+                        ctx.record_error(
+                            node, "PagedAttention: v_head_size exceeds query head size"
+                        )
+                        return
+                    output_hidden: int | ir.SymbolicDim = num_heads * v_head_size
+                else:
+                    output_hidden = ctx.new_symbolic_dim()
+                output_shape = ir.Shape([query.shape[0], output_hidden])
         elif value is not None:
             output_shape = query.shape
         else:
-            num_heads = _context.require_attr(node, "num_heads").as_int()
-            kv_num_heads = _context.require_attr(node, "kv_num_heads").as_int()
             packed_hidden = query.shape[1]
-            if (
-                isinstance(packed_hidden, int)
-                and num_heads > 0
-                and kv_num_heads >= 0
-                and packed_hidden % (num_heads + 2 * kv_num_heads) == 0
-            ):
-                head_size = packed_hidden // (num_heads + 2 * kv_num_heads)
-                output_hidden: int | ir.SymbolicDim = num_heads * head_size
+            head_count = num_heads + 2 * kv_num_heads
+            if isinstance(packed_hidden, int) and num_heads > 0 and head_count > 0:
+                if packed_hidden % head_count != 0:
+                    ctx.record_error(
+                        node, "PagedAttention: packed hidden size must divide total heads"
+                    )
+                    return
+                output_hidden = num_heads * (packed_hidden // head_count)
             else:
                 output_hidden = ctx.new_symbolic_dim()
             output_shape = ir.Shape([query.shape[0], output_hidden])
@@ -907,7 +969,6 @@ def infer_paged_attention(ctx: _context.ShapeInferenceContext, node: ir.Node) ->
     if len(node.outputs) > 1 and node.outputs[1] is not None:
         ctx.set_shape_and_dtype(node.outputs[1], key_cache.shape, key_cache.dtype)
     if len(node.outputs) > 2 and node.outputs[2] is not None:
-        value_cache = node.inputs[4] if len(node.inputs) > 4 else None
         if value_cache is not None:
             ctx.set_shape_and_dtype(node.outputs[2], value_cache.shape, value_cache.dtype)
 
@@ -955,14 +1016,34 @@ def infer_matmul_nbits(ctx: _context.ShapeInferenceContext, node: ir.Node) -> No
 def infer_matmul_block_quantized(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
     """Infer [..., K] @ [N, K] as [..., N] for block-quantized weights."""
     (a, b, _scale) = _context.check_inputs(node, "A", "B", "weight_scale")
+    if node.op_type == "MatMulBlockQuantizedFp4Weight":
+        if len(node.inputs) <= 3 or node.inputs[3] is None:
+            raise _context.OpUsageError(
+                node, "Required input 'weight_scale_2' (#3) is missing"
+            )
+        packed_factor = 2
+    else:
+        packed_factor = 1
 
     output_shape: ir.Shape | None = None
+    if b.shape is not None and b.shape.rank() != 2:
+        ctx.record_error(node, f"{node.op_type}: B must have rank 2")
+        return
     if (
         a.shape is not None
         and a.shape.rank() >= 1
         and b.shape is not None
-        and b.shape.rank() >= 1
+        and b.shape.rank() == 2
     ):
+        contraction = a.shape[-1]
+        packed_contraction = b.shape[1]
+        if (
+            isinstance(contraction, int)
+            and isinstance(packed_contraction, int)
+            and contraction != packed_factor * packed_contraction
+        ):
+            ctx.record_error(node, f"{node.op_type}: incompatible contraction dimensions")
+            return
         output_shape = ir.Shape([*a.shape.dims[:-1], b.shape[0]])
 
     if len(node.outputs) > 0:
