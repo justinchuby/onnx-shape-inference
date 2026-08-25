@@ -69,19 +69,23 @@ def infer_linear_attention_gate(ctx: _context.ShapeInferenceContext, node: ir.No
 def infer_linear_attention(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
     """Infer packed output and recurrent state for contrib LinearAttention."""
     (query, _key, value) = _context.check_inputs(node, "query", "key", "value")
-    q_num_heads = _context.require_attr(node, "q_num_heads").as_int()
-    kv_num_heads = _context.require_attr(node, "kv_num_heads").as_int()
+    q_num_heads_attr = node.attributes.get("q_num_heads")
+    kv_num_heads_attr = node.attributes.get("kv_num_heads")
+    q_num_heads = q_num_heads_attr.as_int() if q_num_heads_attr is not None else None
+    kv_num_heads = kv_num_heads_attr.as_int() if kv_num_heads_attr is not None else None
     state_window_attr = node.attributes.get("state_window")
     state_window = state_window_attr.as_int() if state_window_attr is not None else 0
 
-    output_shape: ir.Shape | None = None
+    output_shape = query.shape
     state_shape: ir.Shape | None = None
     if (
         query.shape is not None
         and query.shape.rank() >= 3
         and value.shape is not None
         and value.shape.rank() >= 3
+        and q_num_heads is not None
         and q_num_heads > 0
+        and kv_num_heads is not None
         and kv_num_heads > 0
     ):
         value_hidden = value.shape[2]
@@ -111,13 +115,19 @@ def infer_linear_attention(ctx: _context.ShapeInferenceContext, node: ir.Node) -
         if state_window > 0:
             state_dims.insert(0, state_window)
         state_shape = ir.Shape(state_dims)
-    elif len(node.inputs) > 3 and node.inputs[3] is not None:
-        state_shape = node.inputs[3].shape
+    past_state = node.inputs[3] if len(node.inputs) > 3 else None
+    if state_shape is None and past_state is not None:
+        state_shape = past_state.shape
+    state_dtype = (
+        past_state.dtype
+        if past_state is not None and past_state.dtype is not None
+        else query.dtype
+    )
 
     if len(node.outputs) > 0:
         ctx.set_shape_and_dtype(node.outputs[0], output_shape, query.dtype)
     if len(node.outputs) > 1 and node.outputs[1] is not None:
-        ctx.set_shape_and_dtype(node.outputs[1], state_shape, query.dtype)
+        ctx.set_shape_and_dtype(node.outputs[1], state_shape, state_dtype)
 
 
 @_reg(_MSFT, "CausalConvWithState", since_version=1)

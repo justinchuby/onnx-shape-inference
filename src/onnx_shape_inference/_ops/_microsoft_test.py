@@ -1972,6 +1972,22 @@ class LatestOnnxRuntimeOpsTest(unittest.TestCase):
         self.assertEqual(actual[0], ts(FLOAT16, [2, 4, 48]))
         self.assertEqual(actual[1], ts(FLOAT16, [3, 2, 6, 16, 8]))
 
+    def test_linear_attention_legacy_fallback(self):
+        actual = run_shape_inference(
+            MSFT,
+            "LinearAttention",
+            [
+                ts(FLOAT16, [2, 4, 8, 16]),
+                ts(FLOAT16, [2, 4, 8, 16]),
+                ts(FLOAT16, [2, 4, 8, 16]),
+                ts(FLOAT, [2, 8, 16, 16]),
+            ],
+            opset_version=1,
+            num_outputs=2,
+        )
+        self.assertEqual(actual[0], ts(FLOAT16, [2, 4, 8, 16]))
+        self.assertEqual(actual[1], ts(FLOAT, [2, 8, 16, 16]))
+
     def test_causal_conv_with_state_window(self):
         actual = run_shape_inference(
             MSFT,
