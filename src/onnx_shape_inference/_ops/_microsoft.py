@@ -940,28 +940,58 @@ def infer_paged_attention(ctx: _context.ShapeInferenceContext, node: ir.Node) ->
         if layout == "LATENT":
             v_head_size_attr = node.attributes.get("v_head_size")
             v_head_size = v_head_size_attr.as_int() if v_head_size_attr is not None else 0
-            if v_head_size == 0:
-                output_shape = query.shape
-            else:
-                query_hidden = query.shape[1]
-                if num_heads <= 0:
-                    ctx.record_error(node, "PagedAttention: num_heads must be positive")
+            query_hidden = query.shape[1]
+            if num_heads <= 0:
+                ctx.record_error(node, "PagedAttention: num_heads must be positive")
+                return
+            if isinstance(query_hidden, int):
+                if query_hidden % num_heads != 0:
+                    ctx.record_error(
+                        node, "PagedAttention: query hidden size must divide num_heads"
+                    )
                     return
-                if isinstance(query_hidden, int):
-                    if query_hidden % num_heads != 0:
-                        ctx.record_error(
-                            node, "PagedAttention: query hidden size must divide num_heads"
+                head_size = query_hidden // num_heads
+                if (
+                    key is not None
+                    and key.shape is not None
+                    and key.shape.rank() == 2
+                    and isinstance(key.shape[1], int)
+                    and key.shape[1] != head_size
+                ):
+                    ctx.record_error(
+                        node, "PagedAttention: latent key width must equal query head size"
+                    )
+                    return
+                if (
+                    key_cache.shape is not None
+                    and key_cache.shape.rank() == 4
+                    and (
+                        (isinstance(key_cache.shape[2], int) and key_cache.shape[2] != 1)
+                        or (
+                            isinstance(key_cache.shape[3], int)
+                            and key_cache.shape[3] != head_size
                         )
-                        return
-                    if v_head_size > query_hidden // num_heads:
-                        ctx.record_error(
-                            node, "PagedAttention: v_head_size exceeds query head size"
-                        )
-                        return
-                    output_hidden: int | ir.SymbolicDim = num_heads * v_head_size
-                else:
-                    output_hidden = ctx.new_symbolic_dim()
-                output_shape = ir.Shape([query.shape[0], output_hidden])
+                    )
+                ):
+                    ctx.record_error(
+                        node, "PagedAttention: latent cache geometry is incompatible"
+                    )
+                    return
+                effective_v_head_size = v_head_size or head_size
+                if effective_v_head_size > head_size:
+                    ctx.record_error(
+                        node, "PagedAttention: v_head_size exceeds query head size"
+                    )
+                    return
+                if effective_v_head_size != head_size and "scale" not in node.attributes:
+                    ctx.record_error(
+                        node, "PagedAttention: scale is required for a narrower value head"
+                    )
+                    return
+                output_hidden: int | ir.SymbolicDim = num_heads * effective_v_head_size
+            else:
+                output_hidden = query_hidden if v_head_size == 0 else ctx.new_symbolic_dim()
+            output_shape = ir.Shape([query.shape[0], output_hidden])
         elif value is not None:
             output_shape = query.shape
         else:

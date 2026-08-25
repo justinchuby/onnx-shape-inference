@@ -2186,7 +2186,7 @@ class LatestOnnxRuntimeOpsTest(unittest.TestCase):
             MSFT,
             "PagedAttention",
             [
-                ts(FLOAT16, [7, 576]),
+                ts(FLOAT16, [7, 4608]),
                 ts(FLOAT16, [7, 576]),
                 None,
                 ts(FLOAT16, [64, 16, 1, 576]),
@@ -2199,6 +2199,7 @@ class LatestOnnxRuntimeOpsTest(unittest.TestCase):
                 "num_heads": ir.Attr("num_heads", ir.AttributeType.INT, 8),
                 "kv_num_heads": ir.Attr("kv_num_heads", ir.AttributeType.INT, 1),
                 "v_head_size": ir.Attr("v_head_size", ir.AttributeType.INT, 64),
+                "scale": ir.Attr("scale", ir.AttributeType.FLOAT, 0.125),
                 "kv_cache_layout": ir.Attr(
                     "kv_cache_layout", ir.AttributeType.STRING, "LATENT"
                 ),
@@ -2208,6 +2209,32 @@ class LatestOnnxRuntimeOpsTest(unittest.TestCase):
         )
         self.assertEqual(actual[0], ts(FLOAT16, [7, 512]))
         self.assertEqual(actual[1], ts(FLOAT16, [64, 16, 1, 576]))
+
+    def test_paged_attention_latent_narrow_value_requires_scale(self):
+        with self.assertRaises(ShapeInferenceError):
+            run_shape_inference(
+                MSFT,
+                "PagedAttention",
+                [
+                    ts(FLOAT16, [7, 4608]),
+                    ts(FLOAT16, [7, 576]),
+                    None,
+                    ts(FLOAT16, [64, 16, 1, 576]),
+                    None,
+                    ts(INT32, [3]),
+                    ts(INT32, [2]),
+                    ts(INT32, [2, 8]),
+                ],
+                attributes={
+                    "num_heads": ir.Attr("num_heads", ir.AttributeType.INT, 8),
+                    "kv_num_heads": ir.Attr("kv_num_heads", ir.AttributeType.INT, 1),
+                    "v_head_size": ir.Attr("v_head_size", ir.AttributeType.INT, 64),
+                    "kv_cache_layout": ir.Attr(
+                        "kv_cache_layout", ir.AttributeType.STRING, "LATENT"
+                    ),
+                },
+                opset_version=1,
+            )
 
     def test_paged_attention_rejects_invalid_layout(self):
         with self.assertRaises(ShapeInferenceError):
