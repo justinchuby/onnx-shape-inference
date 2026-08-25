@@ -887,6 +887,7 @@ def infer_paged_attention(ctx: _context.ShapeInferenceContext, node: ir.Node) ->
             raise _context.OpUsageError(node, f"Required input '{name}' (#{index}) is missing")
     query = node.inputs[0]
     key_cache = node.inputs[3]
+    key = node.inputs[1] if len(node.inputs) > 1 else None
     value = node.inputs[2] if len(node.inputs) > 2 else None
     value_cache = node.inputs[4] if len(node.inputs) > 4 else None
     num_heads = _context.require_attr(node, "num_heads").as_int()
@@ -895,6 +896,19 @@ def infer_paged_attention(ctx: _context.ShapeInferenceContext, node: ir.Node) ->
     layout = layout_attr.as_string() if layout_attr is not None else "SEPARATE"
     if layout not in {"SEPARATE", "LATENT"}:
         ctx.record_error(node, "PagedAttention: kv_cache_layout must be SEPARATE or LATENT")
+        return
+    if layout == "LATENT":
+        if key is None or value is not None or value_cache is not None or kv_num_heads != 1:
+            ctx.record_error(
+                node,
+                "PagedAttention: LATENT layout requires key, one KV head, and no value cache",
+            )
+            return
+    elif value_cache is None or (key is None) != (value is None):
+        ctx.record_error(
+            node,
+            "PagedAttention: SEPARATE layout requires a value cache and matched key/value inputs",
+        )
         return
     if query.shape is not None and query.shape.rank() != 2:
         ctx.record_error(node, "PagedAttention: query must have rank 2")
@@ -1026,6 +1040,9 @@ def infer_matmul_block_quantized(ctx: _context.ShapeInferenceContext, node: ir.N
         packed_factor = 1
 
     output_shape: ir.Shape | None = None
+    if a.shape is not None and a.shape.rank() < 1:
+        ctx.record_error(node, f"{node.op_type}: A must have rank >= 1")
+        return
     if b.shape is not None and b.shape.rank() != 2:
         ctx.record_error(node, f"{node.op_type}: B must have rank 2")
         return

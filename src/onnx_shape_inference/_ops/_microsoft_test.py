@@ -2187,7 +2187,7 @@ class LatestOnnxRuntimeOpsTest(unittest.TestCase):
             "PagedAttention",
             [
                 ts(FLOAT16, [7, 576]),
-                None,
+                ts(FLOAT16, [7, 576]),
                 None,
                 ts(FLOAT16, [64, 16, 1, 576]),
                 None,
@@ -2231,6 +2231,61 @@ class LatestOnnxRuntimeOpsTest(unittest.TestCase):
                         "kv_cache_layout", ir.AttributeType.STRING, "INVALID"
                     ),
                 },
+                opset_version=1,
+            )
+
+    def test_paged_attention_rejects_invalid_input_combinations(self):
+        cases = [
+            (
+                [ts(FLOAT16, [7, 576]), None, None, ts(FLOAT16, [64, 16, 1, 576]), None],
+                "LATENT",
+                1,
+            ),
+            (
+                [
+                    ts(FLOAT16, [7, 128]),
+                    ts(FLOAT16, [7, 32]),
+                    None,
+                    ts(FLOAT16, [64, 16, 2, 16]),
+                    ts(FLOAT16, [64, 16, 2, 16]),
+                ],
+                "SEPARATE",
+                2,
+            ),
+        ]
+        for inputs, layout, kv_num_heads in cases:
+            with self.assertRaises(ShapeInferenceError):
+                run_shape_inference(
+                    MSFT,
+                    "PagedAttention",
+                    [
+                        *inputs,
+                        ts(INT32, [3]),
+                        ts(INT32, [2]),
+                        ts(INT32, [2, 8]),
+                    ],
+                    attributes={
+                        "num_heads": ir.Attr("num_heads", ir.AttributeType.INT, 8),
+                        "kv_num_heads": ir.Attr(
+                            "kv_num_heads", ir.AttributeType.INT, kv_num_heads
+                        ),
+                        "kv_cache_layout": ir.Attr(
+                            "kv_cache_layout", ir.AttributeType.STRING, layout
+                        ),
+                    },
+                    opset_version=1,
+                )
+
+    def test_block_quantized_matmul_rejects_scalar_activation(self):
+        with self.assertRaises(ShapeInferenceError):
+            run_shape_inference(
+                MSFT,
+                "MatMulBlockQuantizedFp8Weight",
+                [
+                    ts(FLOAT16, []),
+                    ts(ir.DataType.FLOAT8E4M3FN, [128, 64]),
+                    ts(FLOAT, [128, 1]),
+                ],
                 opset_version=1,
             )
 
