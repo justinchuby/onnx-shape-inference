@@ -1058,7 +1058,7 @@ def infer_matmul_nbits(ctx: _context.ShapeInferenceContext, node: ir.Node) -> No
 @_reg(_MSFT, "MatMulBlockQuantizedFp4Weight", since_version=1)
 @_reg(_MSFT, "MatMulBlockQuantizedFp8Weight", since_version=1)
 def infer_matmul_block_quantized(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
-    """Infer [..., K] @ [N, K] as [..., N] for block-quantized weights."""
+    """Infer [..., K] @ [N, K] as [..., N], with FP4 B physically packed as [N, K/2]."""
     (a, b, _scale) = _context.check_inputs(node, "A", "B", "weight_scale")
     if node.op_type == "MatMulBlockQuantizedFp4Weight":
         if len(node.inputs) <= 3 or node.inputs[3] is None:
