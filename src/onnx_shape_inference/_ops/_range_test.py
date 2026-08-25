@@ -11,7 +11,7 @@ import onnx_ir as ir
 import parameterized
 
 import onnx_shape_inference
-from onnx_shape_inference import OpUsageError
+from onnx_shape_inference import OpUsageError, _registry
 from onnx_shape_inference._ops._testing import (
     const_value,
     run_shape_inference,
@@ -20,6 +20,9 @@ from onnx_shape_inference._ops._testing import (
 )
 
 FLOAT = ir.DataType.FLOAT
+FLOAT16 = ir.DataType.FLOAT16
+BFLOAT16 = ir.DataType.BFLOAT16
+INT16 = ir.DataType.INT16
 INT64 = ir.DataType.INT64
 
 
@@ -35,6 +38,25 @@ class RangeTest(unittest.TestCase):
             "", "Range", [ts(dtype, []), ts(dtype, []), ts(dtype, [])], opset_version=21
         )
         self.assertEqual(actual, [ts(dtype, ["_d0"])])
+
+    @parameterized.parameterized.expand(
+        [
+            ("float16", FLOAT16),
+            ("bfloat16", BFLOAT16),
+            ("int16", INT16),
+        ]
+    )
+    def test_opset_27_types(self, _name, dtype):
+        actual = run_shape_inference(
+            "",
+            "Range",
+            [ts(dtype, []), ts(dtype, []), ts(dtype, [])],
+            opset_version=27,
+        )
+        self.assertEqual(actual, [ts(dtype, ["_d0"])])
+
+    def test_opset_27_registry_boundary(self):
+        self.assertEqual(_registry.registry.version_boundaries("", "Range"), (11, 27))
 
     def test_none_input_raises(self):
         v1 = ir.Value(name="limit", type=ir.TensorType(FLOAT), shape=ir.Shape([]))

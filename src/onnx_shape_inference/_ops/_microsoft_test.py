@@ -1951,5 +1951,180 @@ class QLinearConcatSymbolicTest(unittest.TestCase):
         self.assertEqual(actual[0].shape.rank(), 2)
 
 
+class LatestOnnxRuntimeOpsTest(unittest.TestCase):
+    def test_linear_attention_with_state_window(self):
+        actual = run_shape_inference(
+            MSFT,
+            "LinearAttention",
+            [
+                ts(FLOAT16, [2, 4, 64]),
+                ts(FLOAT16, [2, 4, 96]),
+                ts(FLOAT16, [2, 4, 48]),
+            ],
+            attributes={
+                "q_num_heads": ir.Attr("q_num_heads", ir.AttributeType.INT, 4),
+                "kv_num_heads": ir.Attr("kv_num_heads", ir.AttributeType.INT, 6),
+                "state_window": ir.Attr("state_window", ir.AttributeType.INT, 3),
+            },
+            opset_version=1,
+            num_outputs=2,
+        )
+        self.assertEqual(actual[0], ts(FLOAT16, [2, 4, 48]))
+        self.assertEqual(actual[1], ts(FLOAT16, [3, 2, 6, 16, 8]))
+
+    def test_causal_conv_with_state_window(self):
+        actual = run_shape_inference(
+            MSFT,
+            "CausalConvWithState",
+            [ts(FLOAT16, [2, 16, 7, 12]), ts(FLOAT16, [16, 1, 3, 5])],
+            attributes={
+                "ndim": ir.Attr("ndim", ir.AttributeType.INT, 2),
+                "state_window": ir.Attr("state_window", ir.AttributeType.INT, 3),
+            },
+            opset_version=1,
+            num_outputs=2,
+        )
+        self.assertEqual(actual[0], ts(FLOAT16, [2, 16, 7, 12]))
+        self.assertEqual(actual[1], ts(FLOAT16, [3, 2, 16, 7, 4]))
+
+    def test_mrotary_embedding(self):
+        actual = run_shape_inference(
+            MSFT,
+            "MRotaryEmbedding",
+            [
+                ts(FLOAT16, [2, 8, 4, 16]),
+                ts(INT64, [3, 2, 4]),
+                ts(FLOAT16, [128, 8]),
+                ts(FLOAT16, [128, 8]),
+            ],
+            opset_version=1,
+        )
+        self.assertEqual(actual, [ts(FLOAT16, [2, 8, 4, 16])])
+
+    def test_gated_ops(self):
+        rms_norm = run_shape_inference(
+            MSFT,
+            "GatedRMSNorm",
+            [ts(FLOAT16, [2, 4, 128]), ts(FLOAT16, [32]), ts(FLOAT16, [2, 4, 128])],
+            opset_version=1,
+        )
+        gated_add = run_shape_inference(
+            MSFT,
+            "GatedAdd",
+            [ts(FLOAT16, [2, 4, 128]), ts(FLOAT16, [2, 4, 128]), ts(FLOAT16, [2, 4, 1])],
+            opset_version=1,
+        )
+        self.assertEqual(rms_norm, [ts(FLOAT16, [2, 4, 128])])
+        self.assertEqual(gated_add, [ts(FLOAT16, [2, 4, 128])])
+
+    def test_linear_attention_gate(self):
+        actual = run_shape_inference(
+            MSFT,
+            "LinearAttentionGate",
+            [
+                ts(FLOAT16, [2, 4, 8]),
+                ts(FLOAT, [8]),
+                ts(FLOAT, [8]),
+                ts(FLOAT16, [2, 4, 8]),
+            ],
+            opset_version=1,
+            num_outputs=2,
+        )
+        self.assertEqual(
+            actual,
+            [ts(FLOAT16, [2, 4, 8]), ts(FLOAT16, [2, 4, 8])],
+        )
+
+    def test_block_quantized_matmuls(self):
+        fp4 = run_shape_inference(
+            MSFT,
+            "MatMulBlockQuantizedFp4Weight",
+            [
+                ts(FLOAT16, [2, 4, 64]),
+                ts(ir.DataType.UINT8, [128, 32]),
+                ts(ir.DataType.UINT8, [128, 4]),
+            ],
+            opset_version=1,
+        )
+        fp8 = run_shape_inference(
+            MSFT,
+            "MatMulBlockQuantizedFp8Weight",
+            [
+                ts(FLOAT16, [2, 64]),
+                ts(ir.DataType.FLOAT8E4M3FN, [128, 64]),
+                ts(FLOAT, [128, 1]),
+            ],
+            opset_version=1,
+        )
+        self.assertEqual(fp4, [ts(FLOAT16, [2, 4, 128])])
+        self.assertEqual(fp8, [ts(FLOAT16, [2, 128])])
+
+    def test_paged_attention_unpacked_with_cache_outputs(self):
+        actual = run_shape_inference(
+            MSFT,
+            "PagedAttention",
+            [
+                ts(FLOAT16, [7, 128]),
+                ts(FLOAT16, [7, 32]),
+                ts(FLOAT16, [7, 32]),
+                ts(INT8, [64, 16, 2, 16]),
+                ts(INT8, [64, 16, 2, 16]),
+            ],
+            attributes={
+                "num_heads": ir.Attr("num_heads", ir.AttributeType.INT, 8),
+                "kv_num_heads": ir.Attr("kv_num_heads", ir.AttributeType.INT, 2),
+            },
+            opset_version=1,
+            num_outputs=3,
+        )
+        self.assertEqual(actual[0], ts(FLOAT16, [7, 128]))
+        self.assertEqual(actual[1], ts(INT8, [64, 16, 2, 16]))
+        self.assertEqual(actual[2], ts(INT8, [64, 16, 2, 16]))
+
+    def test_paged_attention_packed(self):
+        actual = run_shape_inference(
+            MSFT,
+            "PagedAttention",
+            [
+                ts(FLOAT16, [7, 192]),
+                None,
+                None,
+                ts(FLOAT16, [64, 16, 2, 16]),
+                ts(FLOAT16, [64, 16, 2, 16]),
+            ],
+            attributes={
+                "num_heads": ir.Attr("num_heads", ir.AttributeType.INT, 8),
+                "kv_num_heads": ir.Attr("kv_num_heads", ir.AttributeType.INT, 2),
+            },
+            opset_version=1,
+        )
+        self.assertEqual(actual, [ts(FLOAT16, [7, 128])])
+
+    def test_paged_attention_latent(self):
+        actual = run_shape_inference(
+            MSFT,
+            "PagedAttention",
+            [
+                ts(FLOAT16, [7, 576]),
+                None,
+                None,
+                ts(FLOAT16, [64, 16, 1, 576]),
+                None,
+            ],
+            attributes={
+                "num_heads": ir.Attr("num_heads", ir.AttributeType.INT, 8),
+                "kv_num_heads": ir.Attr("kv_num_heads", ir.AttributeType.INT, 1),
+                "v_head_size": ir.Attr("v_head_size", ir.AttributeType.INT, 64),
+                "kv_cache_layout": ir.Attr(
+                    "kv_cache_layout", ir.AttributeType.STRING, "LATENT"
+                ),
+            },
+            opset_version=1,
+            num_outputs=2,
+        )
+        self.assertEqual(actual[0], ts(FLOAT16, [7, 512]))
+        self.assertEqual(actual[1], ts(FLOAT16, [64, 16, 1, 576]))
+
+
 if __name__ == "__main__":
     unittest.main()

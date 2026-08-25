@@ -30,6 +30,9 @@ _reg = _registry.registry.register
 @_reg(_MSFT, "BiasAdd", since_version=1)
 @_reg(_MSFT, "LongformerAttention", since_version=1)
 @_reg(_MSFT, "GroupNorm", since_version=1)
+@_reg(_MSFT, "MRotaryEmbedding", since_version=1)
+@_reg(_MSFT, "GatedRMSNorm", since_version=1)
+@_reg(_MSFT, "GatedAdd", since_version=1)
 def _infer_passthrough(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
     """Output shape and dtype are identical to the first input."""
     if not node.inputs or node.inputs[0] is None:
@@ -37,6 +40,123 @@ def _infer_passthrough(ctx: _context.ShapeInferenceContext, node: ir.Node) -> No
     x = node.inputs[0]
     if len(node.outputs) > 0:
         ctx.set_shape_and_dtype(node.outputs[0], x.shape, x.dtype)
+
+
+# ---------------------------------------------------------------------------
+# LinearAttentionGate (com.microsoft)
+# ---------------------------------------------------------------------------
+
+
+@_reg(_MSFT, "LinearAttentionGate", since_version=1)
+def infer_linear_attention_gate(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
+    """Infer decay and optional beta outputs for LinearAttentionGate."""
+    (a, _dt_bias, _decay_scale) = _context.check_inputs(node, "a", "dt_bias", "decay_scale")
+
+    if len(node.outputs) > 0:
+        ctx.set_shape_and_dtype(node.outputs[0], a.shape, a.dtype)
+
+    if len(node.outputs) > 1 and node.outputs[1] is not None:
+        beta = node.inputs[3] if len(node.inputs) > 3 and node.inputs[3] is not None else a
+        ctx.set_shape_and_dtype(node.outputs[1], beta.shape, beta.dtype)
+
+
+# ---------------------------------------------------------------------------
+# Stateful sequence operators (com.microsoft)
+# ---------------------------------------------------------------------------
+
+
+@_reg(_MSFT, "LinearAttention", since_version=1)
+def infer_linear_attention(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
+    """Infer packed output and recurrent state for contrib LinearAttention."""
+    (query, _key, value) = _context.check_inputs(node, "query", "key", "value")
+    q_num_heads = _context.require_attr(node, "q_num_heads").as_int()
+    kv_num_heads = _context.require_attr(node, "kv_num_heads").as_int()
+    state_window_attr = node.attributes.get("state_window")
+    state_window = state_window_attr.as_int() if state_window_attr is not None else 0
+
+    output_shape: ir.Shape | None = None
+    state_shape: ir.Shape | None = None
+    if (
+        query.shape is not None
+        and query.shape.rank() >= 3
+        and value.shape is not None
+        and value.shape.rank() >= 3
+        and q_num_heads > 0
+        and kv_num_heads > 0
+    ):
+        value_hidden = value.shape[2]
+        if isinstance(value_hidden, int):
+            value_head_size: int | ir.SymbolicDim = value_hidden // kv_num_heads
+        else:
+            value_head_size = ctx.new_symbolic_dim()
+        output_shape = ir.Shape(
+            [
+                query.shape[0],
+                query.shape[1],
+                max(q_num_heads, kv_num_heads) * value_head_size,
+            ]
+        )
+
+        query_hidden = query.shape[2]
+        if isinstance(query_hidden, int):
+            key_head_size: int | ir.SymbolicDim = query_hidden // q_num_heads
+        else:
+            key_head_size = ctx.new_symbolic_dim()
+        state_dims: list[int | ir.SymbolicDim] = [
+            query.shape[0],
+            kv_num_heads,
+            key_head_size,
+            value_head_size,
+        ]
+        if state_window > 0:
+            state_dims.insert(0, state_window)
+        state_shape = ir.Shape(state_dims)
+    elif len(node.inputs) > 3 and node.inputs[3] is not None:
+        state_shape = node.inputs[3].shape
+
+    if len(node.outputs) > 0:
+        ctx.set_shape_and_dtype(node.outputs[0], output_shape, query.dtype)
+    if len(node.outputs) > 1 and node.outputs[1] is not None:
+        ctx.set_shape_and_dtype(node.outputs[1], state_shape, query.dtype)
+
+
+@_reg(_MSFT, "CausalConvWithState", since_version=1)
+def infer_causal_conv_with_state(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
+    """Infer output and generalized carry state for contrib CausalConvWithState."""
+    (inp, weight) = _context.check_inputs(node, "input", "weight")
+
+    if len(node.outputs) > 0:
+        ctx.set_shape_and_dtype(node.outputs[0], inp.shape, inp.dtype)
+
+    if len(node.outputs) <= 1 or node.outputs[1] is None:
+        return
+
+    state_shape: ir.Shape | None = None
+    ndim_attr = node.attributes.get("ndim")
+    ndim = ndim_attr.as_int() if ndim_attr is not None else 1
+    if (
+        inp.shape is not None
+        and inp.shape.rank() >= 1 + ndim
+        and weight.shape is not None
+        and weight.shape.rank() >= 2
+    ):
+        kernel = weight.shape[-1]
+        if isinstance(kernel, int):
+            state_length: int | ir.SymbolicDim = max(kernel - 1, 0)
+        else:
+            state_length = kernel - 1
+        state_dims: list[int | ir.SymbolicDim] = [
+            inp.shape[0],
+            inp.shape[1],
+            *inp.shape.dims[2 : 1 + ndim],
+            state_length,
+        ]
+        state_window_attr = node.attributes.get("state_window")
+        state_window = state_window_attr.as_int() if state_window_attr is not None else 0
+        if state_window > 0:
+            state_dims.insert(0, state_window)
+        state_shape = ir.Shape(state_dims)
+    ctx.set_shape_and_dtype(node.outputs[1], state_shape, inp.dtype)
 
 
 # ---------------------------------------------------------------------------
@@ -729,6 +849,60 @@ def infer_group_query_attention(ctx: _context.ShapeInferenceContext, node: ir.No
 
 
 # ---------------------------------------------------------------------------
+# PagedAttention (com.microsoft)
+# ---------------------------------------------------------------------------
+
+
+@_reg(_MSFT, "PagedAttention", since_version=1)
+def infer_paged_attention(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
+    """Infer packed-token output and aliased cache outputs for PagedAttention."""
+    if len(node.inputs) <= 3 or node.inputs[0] is None or node.inputs[3] is None:
+        raise _context.OpUsageError(node, "Expected inputs query and key_cache")
+    query = node.inputs[0]
+    key_cache = node.inputs[3]
+    value = node.inputs[2] if len(node.inputs) > 2 else None
+
+    output_shape: ir.Shape | None = None
+    if query.shape is not None and query.shape.rank() == 2:
+        layout_attr = node.attributes.get("kv_cache_layout")
+        layout = layout_attr.as_string() if layout_attr is not None else "SEPARATE"
+        if layout == "LATENT":
+            v_head_size_attr = node.attributes.get("v_head_size")
+            v_head_size = v_head_size_attr.as_int() if v_head_size_attr is not None else 0
+            if v_head_size == 0:
+                output_shape = query.shape
+            else:
+                num_heads = _context.require_attr(node, "num_heads").as_int()
+                output_shape = ir.Shape([query.shape[0], num_heads * v_head_size])
+        elif value is not None:
+            output_shape = query.shape
+        else:
+            num_heads = _context.require_attr(node, "num_heads").as_int()
+            kv_num_heads = _context.require_attr(node, "kv_num_heads").as_int()
+            packed_hidden = query.shape[1]
+            if (
+                isinstance(packed_hidden, int)
+                and num_heads > 0
+                and kv_num_heads >= 0
+                and packed_hidden % (num_heads + 2 * kv_num_heads) == 0
+            ):
+                head_size = packed_hidden // (num_heads + 2 * kv_num_heads)
+                output_hidden: int | ir.SymbolicDim = num_heads * head_size
+            else:
+                output_hidden = ctx.new_symbolic_dim()
+            output_shape = ir.Shape([query.shape[0], output_hidden])
+
+    if len(node.outputs) > 0:
+        ctx.set_shape_and_dtype(node.outputs[0], output_shape, query.dtype)
+    if len(node.outputs) > 1 and node.outputs[1] is not None:
+        ctx.set_shape_and_dtype(node.outputs[1], key_cache.shape, key_cache.dtype)
+    if len(node.outputs) > 2 and node.outputs[2] is not None:
+        value_cache = node.inputs[4] if len(node.inputs) > 4 else None
+        if value_cache is not None:
+            ctx.set_shape_and_dtype(node.outputs[2], value_cache.shape, value_cache.dtype)
+
+
+# ---------------------------------------------------------------------------
 # MatMulNBits (com.microsoft)
 # ---------------------------------------------------------------------------
 
@@ -761,6 +935,25 @@ def infer_matmul_nbits(ctx: _context.ShapeInferenceContext, node: ir.Node) -> No
     if a.shape is not None and a.shape.rank() >= 1:
         out_dims: list[int | ir.SymbolicDim] = [*list(a.shape.dims[:-1]), n_dim]
         output_shape = ir.Shape(out_dims)
+
+    if len(node.outputs) > 0:
+        ctx.set_shape_and_dtype(node.outputs[0], output_shape, a.dtype)
+
+
+@_reg(_MSFT, "MatMulBlockQuantizedFp4Weight", since_version=1)
+@_reg(_MSFT, "MatMulBlockQuantizedFp8Weight", since_version=1)
+def infer_matmul_block_quantized(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
+    """Infer [..., K] @ [N, K] as [..., N] for block-quantized weights."""
+    (a, b, _scale) = _context.check_inputs(node, "A", "B", "weight_scale")
+
+    output_shape: ir.Shape | None = None
+    if (
+        a.shape is not None
+        and a.shape.rank() >= 1
+        and b.shape is not None
+        and b.shape.rank() >= 1
+    ):
+        output_shape = ir.Shape([*a.shape.dims[:-1], b.shape[0]])
 
     if len(node.outputs) > 0:
         ctx.set_shape_and_dtype(node.outputs[0], output_shape, a.dtype)
