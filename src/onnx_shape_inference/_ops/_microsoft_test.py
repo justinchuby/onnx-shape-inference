@@ -8,7 +8,7 @@ import unittest
 
 import onnx_ir as ir
 
-from onnx_shape_inference import OpUsageError
+from onnx_shape_inference import OpUsageError, ShapeInferenceError
 from onnx_shape_inference._ops._testing import (
     run_shape_inference,
     run_shape_inference_with_values,
@@ -1949,6 +1949,372 @@ class QLinearConcatSymbolicTest(unittest.TestCase):
             opset_version=1,
         )
         self.assertEqual(actual[0].shape.rank(), 2)
+
+
+class LatestOnnxRuntimeOpsTest(unittest.TestCase):
+    def test_linear_attention_with_state_window(self):
+        actual = run_shape_inference(
+            MSFT,
+            "LinearAttention",
+            [
+                ts(FLOAT16, [2, 4, 64]),
+                ts(FLOAT16, [2, 4, 96]),
+                ts(FLOAT16, [2, 4, 48]),
+            ],
+            attributes={
+                "q_num_heads": ir.Attr("q_num_heads", ir.AttributeType.INT, 4),
+                "kv_num_heads": ir.Attr("kv_num_heads", ir.AttributeType.INT, 6),
+                "state_window": ir.Attr("state_window", ir.AttributeType.INT, 3),
+            },
+            opset_version=1,
+            num_outputs=2,
+        )
+        self.assertEqual(actual[0], ts(FLOAT16, [2, 4, 48]))
+        self.assertEqual(actual[1], ts(FLOAT16, [3, 2, 6, 16, 8]))
+
+    def test_linear_attention_legacy_fallback(self):
+        actual = run_shape_inference(
+            MSFT,
+            "LinearAttention",
+            [
+                ts(FLOAT16, [2, 4, 8, 16]),
+                ts(FLOAT16, [2, 4, 8, 16]),
+                ts(FLOAT16, [2, 4, 8, 16]),
+                ts(FLOAT, [2, 8, 16, 16]),
+            ],
+            opset_version=1,
+            num_outputs=2,
+        )
+        self.assertEqual(actual[0], ts(FLOAT16, [2, 4, 8, 16]))
+        self.assertEqual(actual[1], ts(FLOAT, [2, 8, 16, 16]))
+
+    def test_state_window_out_of_range(self):
+        cases = [
+            (
+                "LinearAttention",
+                [ts(FLOAT, [2, 4, 16])] * 3,
+                {
+                    "q_num_heads": ir.Attr("q_num_heads", ir.AttributeType.INT, 2),
+                    "kv_num_heads": ir.Attr("kv_num_heads", ir.AttributeType.INT, 2),
+                },
+            ),
+            (
+                "CausalConvWithState",
+                [ts(FLOAT, [2, 4, 8]), ts(FLOAT, [4, 1, 3])],
+                {},
+            ),
+        ]
+        for op_type, inputs, attributes in cases:
+            for state_window in (-1, 9):
+                with self.assertRaises(ShapeInferenceError):
+                    run_shape_inference(
+                        MSFT,
+                        op_type,
+                        inputs,
+                        attributes={
+                            **attributes,
+                            "state_window": ir.Attr(
+                                "state_window", ir.AttributeType.INT, state_window
+                            ),
+                        },
+                        opset_version=1,
+                        num_outputs=2,
+                    )
+
+    def test_causal_conv_with_state_window(self):
+        actual = run_shape_inference(
+            MSFT,
+            "CausalConvWithState",
+            [ts(FLOAT16, [2, 16, 7, 12]), ts(FLOAT16, [16, 1, 3, 5])],
+            attributes={
+                "ndim": ir.Attr("ndim", ir.AttributeType.INT, 2),
+                "state_window": ir.Attr("state_window", ir.AttributeType.INT, 3),
+            },
+            opset_version=1,
+            num_outputs=2,
+        )
+        self.assertEqual(actual[0], ts(FLOAT16, [2, 16, 7, 12]))
+        self.assertEqual(actual[1], ts(FLOAT16, [3, 2, 16, 7, 4]))
+
+    def test_mrotary_embedding(self):
+        actual = run_shape_inference(
+            MSFT,
+            "MRotaryEmbedding",
+            [
+                ts(FLOAT16, [2, 8, 4, 16]),
+                ts(INT64, [3, 2, 4]),
+                ts(FLOAT16, [128, 8]),
+                ts(FLOAT16, [128, 8]),
+            ],
+            opset_version=1,
+        )
+        self.assertEqual(actual, [ts(FLOAT16, [2, 8, 4, 16])])
+
+    def test_gated_ops(self):
+        rms_norm = run_shape_inference(
+            MSFT,
+            "GatedRMSNorm",
+            [ts(FLOAT16, [2, 4, 128]), ts(FLOAT16, [32]), ts(FLOAT16, [2, 4, 128])],
+            opset_version=1,
+        )
+        gated_add = run_shape_inference(
+            MSFT,
+            "GatedAdd",
+            [ts(FLOAT16, [2, 4, 128]), ts(FLOAT16, [2, 4, 128]), ts(FLOAT16, [2, 4, 1])],
+            opset_version=1,
+        )
+        self.assertEqual(rms_norm, [ts(FLOAT16, [2, 4, 128])])
+        self.assertEqual(gated_add, [ts(FLOAT16, [2, 4, 128])])
+
+    def test_linear_attention_gate(self):
+        actual = run_shape_inference(
+            MSFT,
+            "LinearAttentionGate",
+            [
+                ts(FLOAT16, [2, 4, 8]),
+                ts(FLOAT, [8]),
+                ts(FLOAT, [8]),
+                ts(FLOAT16, [2, 4, 8]),
+            ],
+            opset_version=1,
+            num_outputs=2,
+        )
+        self.assertEqual(
+            actual,
+            [ts(FLOAT16, [2, 4, 8]), ts(FLOAT16, [2, 4, 8])],
+        )
+
+    def test_linear_attention_gate_beta_requires_b(self):
+        with self.assertRaises(OpUsageError):
+            run_shape_inference(
+                MSFT,
+                "LinearAttentionGate",
+                [ts(FLOAT16, [2, 4, 8]), ts(FLOAT, [8]), ts(FLOAT, [8])],
+                opset_version=1,
+                num_outputs=2,
+            )
+
+    def test_linear_attention_gate_unknown_b_shape(self):
+        actual = run_shape_inference(
+            MSFT,
+            "LinearAttentionGate",
+            [
+                ts(FLOAT16, [2, 4, 8]),
+                ts(FLOAT, [8]),
+                ts(FLOAT, [8]),
+                ts(FLOAT16, None),
+            ],
+            opset_version=1,
+            num_outputs=2,
+        )
+        self.assertEqual(actual[1], ts(FLOAT16, [2, 4, 8]))
+
+    def test_block_quantized_matmuls(self):
+        fp4 = run_shape_inference(
+            MSFT,
+            "MatMulBlockQuantizedFp4Weight",
+            [
+                ts(FLOAT16, [2, 4, 64]),
+                ts(ir.DataType.UINT8, [128, 32]),
+                ts(ir.DataType.UINT8, [128, 4]),
+                ts(FLOAT, []),
+            ],
+            opset_version=1,
+        )
+        fp8 = run_shape_inference(
+            MSFT,
+            "MatMulBlockQuantizedFp8Weight",
+            [
+                ts(FLOAT16, [2, 64]),
+                ts(ir.DataType.FLOAT8E4M3FN, [128, 64]),
+                ts(FLOAT, [128, 1]),
+            ],
+            opset_version=1,
+        )
+        self.assertEqual(fp4, [ts(FLOAT16, [2, 4, 128])])
+        self.assertEqual(fp8, [ts(FLOAT16, [2, 128])])
+
+    def test_paged_attention_unpacked_with_cache_outputs(self):
+        actual = run_shape_inference(
+            MSFT,
+            "PagedAttention",
+            [
+                ts(FLOAT16, [7, 128]),
+                ts(FLOAT16, [7, 32]),
+                ts(FLOAT16, [7, 32]),
+                ts(INT8, [64, 16, 2, 16]),
+                ts(INT8, [64, 16, 2, 16]),
+                ts(INT32, [3]),
+                ts(INT32, [2]),
+                ts(INT32, [2, 8]),
+            ],
+            attributes={
+                "num_heads": ir.Attr("num_heads", ir.AttributeType.INT, 8),
+                "kv_num_heads": ir.Attr("kv_num_heads", ir.AttributeType.INT, 2),
+            },
+            opset_version=1,
+            num_outputs=3,
+        )
+        self.assertEqual(actual[0], ts(FLOAT16, [7, 128]))
+        self.assertEqual(actual[1], ts(INT8, [64, 16, 2, 16]))
+        self.assertEqual(actual[2], ts(INT8, [64, 16, 2, 16]))
+
+    def test_paged_attention_packed(self):
+        actual = run_shape_inference(
+            MSFT,
+            "PagedAttention",
+            [
+                ts(FLOAT16, [7, 192]),
+                None,
+                None,
+                ts(FLOAT16, [64, 16, 2, 16]),
+                ts(FLOAT16, [64, 16, 2, 16]),
+                ts(INT32, [3]),
+                ts(INT32, [2]),
+                ts(INT32, [2, 8]),
+            ],
+            attributes={
+                "num_heads": ir.Attr("num_heads", ir.AttributeType.INT, 8),
+                "kv_num_heads": ir.Attr("kv_num_heads", ir.AttributeType.INT, 2),
+            },
+            opset_version=1,
+        )
+        self.assertEqual(actual, [ts(FLOAT16, [7, 128])])
+
+    def test_paged_attention_latent(self):
+        actual = run_shape_inference(
+            MSFT,
+            "PagedAttention",
+            [
+                ts(FLOAT16, [7, 4608]),
+                ts(FLOAT16, [7, 576]),
+                None,
+                ts(FLOAT16, [64, 16, 1, 576]),
+                None,
+                ts(INT32, [3]),
+                ts(INT32, [2]),
+                ts(INT32, [2, 8]),
+            ],
+            attributes={
+                "num_heads": ir.Attr("num_heads", ir.AttributeType.INT, 8),
+                "kv_num_heads": ir.Attr("kv_num_heads", ir.AttributeType.INT, 1),
+                "v_head_size": ir.Attr("v_head_size", ir.AttributeType.INT, 64),
+                "scale": ir.Attr("scale", ir.AttributeType.FLOAT, 0.125),
+                "kv_cache_layout": ir.Attr(
+                    "kv_cache_layout", ir.AttributeType.STRING, "LATENT"
+                ),
+            },
+            opset_version=1,
+            num_outputs=2,
+        )
+        self.assertEqual(actual[0], ts(FLOAT16, [7, 512]))
+        self.assertEqual(actual[1], ts(FLOAT16, [64, 16, 1, 576]))
+
+    def test_paged_attention_latent_narrow_value_requires_scale(self):
+        with self.assertRaises(ShapeInferenceError):
+            run_shape_inference(
+                MSFT,
+                "PagedAttention",
+                [
+                    ts(FLOAT16, [7, 4608]),
+                    ts(FLOAT16, [7, 576]),
+                    None,
+                    ts(FLOAT16, [64, 16, 1, 576]),
+                    None,
+                    ts(INT32, [3]),
+                    ts(INT32, [2]),
+                    ts(INT32, [2, 8]),
+                ],
+                attributes={
+                    "num_heads": ir.Attr("num_heads", ir.AttributeType.INT, 8),
+                    "kv_num_heads": ir.Attr("kv_num_heads", ir.AttributeType.INT, 1),
+                    "v_head_size": ir.Attr("v_head_size", ir.AttributeType.INT, 64),
+                    "kv_cache_layout": ir.Attr(
+                        "kv_cache_layout", ir.AttributeType.STRING, "LATENT"
+                    ),
+                },
+                opset_version=1,
+            )
+
+    def test_paged_attention_rejects_invalid_layout(self):
+        with self.assertRaises(ShapeInferenceError):
+            run_shape_inference(
+                MSFT,
+                "PagedAttention",
+                [
+                    ts(FLOAT16, [7, 128]),
+                    ts(FLOAT16, [7, 32]),
+                    ts(FLOAT16, [7, 32]),
+                    ts(FLOAT16, [64, 16, 2, 16]),
+                    ts(FLOAT16, [64, 16, 2, 16]),
+                    ts(INT32, [3]),
+                    ts(INT32, [2]),
+                    ts(INT32, [2, 8]),
+                ],
+                attributes={
+                    "num_heads": ir.Attr("num_heads", ir.AttributeType.INT, 8),
+                    "kv_num_heads": ir.Attr("kv_num_heads", ir.AttributeType.INT, 2),
+                    "kv_cache_layout": ir.Attr(
+                        "kv_cache_layout", ir.AttributeType.STRING, "INVALID"
+                    ),
+                },
+                opset_version=1,
+            )
+
+    def test_paged_attention_rejects_invalid_input_combinations(self):
+        cases = [
+            (
+                [ts(FLOAT16, [7, 576]), None, None, ts(FLOAT16, [64, 16, 1, 576]), None],
+                "LATENT",
+                1,
+            ),
+            (
+                [
+                    ts(FLOAT16, [7, 128]),
+                    ts(FLOAT16, [7, 32]),
+                    None,
+                    ts(FLOAT16, [64, 16, 2, 16]),
+                    ts(FLOAT16, [64, 16, 2, 16]),
+                ],
+                "SEPARATE",
+                2,
+            ),
+        ]
+        for inputs, layout, kv_num_heads in cases:
+            with self.assertRaises(ShapeInferenceError):
+                run_shape_inference(
+                    MSFT,
+                    "PagedAttention",
+                    [
+                        *inputs,
+                        ts(INT32, [3]),
+                        ts(INT32, [2]),
+                        ts(INT32, [2, 8]),
+                    ],
+                    attributes={
+                        "num_heads": ir.Attr("num_heads", ir.AttributeType.INT, 8),
+                        "kv_num_heads": ir.Attr(
+                            "kv_num_heads", ir.AttributeType.INT, kv_num_heads
+                        ),
+                        "kv_cache_layout": ir.Attr(
+                            "kv_cache_layout", ir.AttributeType.STRING, layout
+                        ),
+                    },
+                    opset_version=1,
+                )
+
+    def test_block_quantized_matmul_rejects_scalar_activation(self):
+        with self.assertRaises(ShapeInferenceError):
+            run_shape_inference(
+                MSFT,
+                "MatMulBlockQuantizedFp8Weight",
+                [
+                    ts(FLOAT16, []),
+                    ts(ir.DataType.FLOAT8E4M3FN, [128, 64]),
+                    ts(FLOAT, [128, 1]),
+                ],
+                opset_version=1,
+            )
 
 
 if __name__ == "__main__":
