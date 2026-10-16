@@ -36,6 +36,49 @@ from onnx_shape_inference import _context, _symbolic_shapes
 
 _MAX_REWRITE_ITERATIONS = 8
 
+# Exact node types exclude binding constructs and user-defined functions whose
+# substitution behavior need not agree with their free_symbols property.
+_UNBOUND_ARITHMETIC_TYPES = frozenset(
+    (
+        sympy.Symbol,
+        sympy.Integer,
+        sympy.Rational,
+        sympy.Float,
+        type(sympy.S.Zero),
+        type(sympy.S.One),
+        type(sympy.S.NegativeOne),
+        type(sympy.S.Half),
+        sympy.Add,
+        sympy.Mul,
+        sympy.Pow,
+        sympy.Mod,
+        sympy.Min,
+        sympy.Max,
+        sympy.floor,
+        sympy.ceiling,
+    )
+)
+
+
+class _IndependentSymbolMap(dict[sympy.Symbol, sympy.Symbol]):
+    """Atomic symbol renames whose targets cannot introduce another source."""
+
+    __slots__ = ()
+
+
+def _relevant_symbol_map(
+    expr: sympy.Expr, symbol_map: dict[sympy.Symbol, sympy.Symbol]
+) -> dict[sympy.Symbol, sympy.Symbol]:
+    if not isinstance(symbol_map, _IndependentSymbolMap) or not all(
+        type(node) in _UNBOUND_ARITHMETIC_TYPES for node in sympy.preorder_traversal(expr)
+    ):
+        return symbol_map
+    # For this binder-free grammar, an absent free symbol cannot match an
+    # atomic source. Disjoint targets ensure earlier renames cannot introduce
+    # any omitted source. Keep a dict so SymPy retains its original ordering.
+    symbols = expr.free_symbols
+    return {source: target for source, target in symbol_map.items() if source in symbols}
+
 
 class _UnionFind:
     """Minimal union-find over symbol names."""
@@ -196,7 +239,7 @@ def _rewrite_dim(
     expr = _symbolic_shapes.dim_to_expr(dim)
     if expr is None or not expr.free_symbols:
         return None
-    new_expr = expr.subs(symbol_map)
+    new_expr = expr.subs(_relevant_symbol_map(expr, symbol_map))
     for source, target in compound:
         new_expr = new_expr.subs(source, target)
     if new_expr == expr:
@@ -357,6 +400,12 @@ def propagate_symbolic_constraints(
     symbol_map, compound = _build_replacements(equalities, ctx.is_generated_symbol)
     if not symbol_map and not compound:
         return False
+
+    if all(
+        type(source) is sympy.Symbol and type(target) is sympy.Symbol
+        for source, target in symbol_map.items()
+    ) and symbol_map.keys().isdisjoint(symbol_map.values()):
+        symbol_map = _IndependentSymbolMap(symbol_map)
 
     values = _collect_values(graph)
     modified = False

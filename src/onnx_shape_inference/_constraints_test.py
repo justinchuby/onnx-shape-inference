@@ -9,6 +9,7 @@ from unittest import mock
 
 import onnx_ir as ir
 import parameterized
+import sympy
 
 from onnx_shape_inference import _constraints, _context, _engine, _symbolic_shapes
 
@@ -606,6 +607,205 @@ class ConstraintRewriteMemoizationTest(unittest.TestCase):
         else:
             self.assertNotEqual(actual, _sym("dnz"))
             self.assertIsInstance(actual, ir.SymbolicDim)
+
+
+class IndependentLeafSubstitutionTest(unittest.TestCase):
+    def test_avoids_reprocessing_full_dictionary_for_each_dimension(self):
+        class CountedDict(dict):
+            items_calls = 0
+
+            def items(self):
+                self.items_calls += 1
+                return super().items()
+
+        replacements = CountedDict(
+            {
+                _symbolic_shapes.parse_symbolic_expression(
+                    f"unused_{i}"
+                ): _symbolic_shapes.parse_symbolic_expression(f"anchor_{i}")
+                for i in range(16)
+            }
+        )
+        ctx = _context.ShapeInferenceContext()
+        ctx.add_symbolic_equality("source", "anchor")
+        values = [ir.Value(shape=ir.Shape([f"dimension_{i}"])) for i in range(8)]
+        graph = ir.Graph(values, [], nodes=[])
+        with mock.patch.object(
+            _constraints, "_build_replacements", return_value=(replacements, [])
+        ):
+            self.assertFalse(_constraints.propagate_symbolic_constraints(ctx, graph))
+        self.assertEqual(replacements.items_calls, 1)
+        self.assertEqual(
+            [v.shape for v in values], [ir.Shape([f"dimension_{i}"]) for i in range(8)]
+        )
+
+    def test_only_relevant_keys_reach_substitution(self):
+        symbol = _symbolic_shapes.parse_symbolic_expression
+        replacements = {symbol(f"unused_{i}"): symbol(f"anchor_{i}") for i in range(682)}
+        replacements[symbol("source")] = symbol("anchor")
+        values = [ir.Value(shape=ir.Shape([f"source + dimension_{i}"])) for i in range(8)]
+        graph = ir.Graph(values, [], nodes=[])
+        ctx = _context.ShapeInferenceContext()
+        ctx.add_symbolic_equality("source", "anchor")
+        actual_key_counts = []
+        original = _constraints._relevant_symbol_map
+
+        def record(expr, mapping):
+            selected = original(expr, mapping)
+            actual_key_counts.append(len(selected))
+            return selected
+
+        with (
+            mock.patch.object(
+                _constraints, "_build_replacements", return_value=(replacements, [])
+            ),
+            mock.patch.object(_constraints, "_relevant_symbol_map", side_effect=record),
+        ):
+            self.assertTrue(_constraints.propagate_symbolic_constraints(ctx, graph))
+        # Eight unique inputs and their eight unique rewritten outputs: not
+        # 683 dictionary entries processed by SymPy on each helper invocation.
+        self.assertEqual(actual_key_counts, [1] * 8 + [0] * 8)
+
+    @parameterized.parameterized.expand(
+        [
+            ("leaf", "a"),
+            ("sum", "a + z"),
+            ("product", "a*b*z"),
+            ("power", "a**b"),
+            ("floor_max", "Max(a, z) + floor((a + 1)/8)"),
+            ("min_mod", "Min(a, z) + floor(a/2) + Mod(b, 4)"),
+            ("fraction", "a/(a - b)"),
+            ("negative_power", "(a - b)**(-2)"),
+        ]
+    )
+    def test_independent_renames_match_original_dictionary(self, _, text):
+        symbol = _symbolic_shapes.parse_symbolic_expression
+        mapping = {
+            symbol("a"): symbol("q"),
+            symbol("b"): symbol("q"),
+            symbol("unused"): symbol("u"),
+        }
+        expr = symbol(text)
+        prepared = _constraints._IndependentSymbolMap(mapping)
+        selected = _constraints._relevant_symbol_map(expr, prepared)
+        self.assertNotIn(symbol("unused"), selected)
+        self.assertEqual(expr.subs(selected), expr.subs(mapping))
+
+    def test_same_name_different_assumptions_and_noncommutative_targets(self):
+        positive = sympy.Symbol("a", positive=True)
+        negative = sympy.Symbol("a", negative=True)
+        x, y = sympy.symbols("x y", commutative=False)
+        mapping = {negative: y, positive: x}
+        expr = positive**2 + positive
+        selected = _constraints._relevant_symbol_map(
+            expr, _constraints._IndependentSymbolMap(mapping)
+        )
+        self.assertEqual(selected, {positive: x})
+        self.assertEqual(expr.subs(selected), expr.subs(mapping))
+
+    def test_binding_and_unknown_expression_types_retain_full_map(self):
+        a, b, c = sympy.symbols("a b c")
+        mapping = _constraints._IndependentSymbolMap({a: c})
+
+        class Opaque(sympy.Function):
+            @property
+            def free_symbols(self):
+                return {b}
+
+        for expr in (
+            sympy.Integral(a, (a, 0, b)),
+            sympy.Sum(a, (a, 1, b)),
+            sympy.Lambda(a, a + b),
+            sympy.Derivative(a * b, a, evaluate=False),
+            sympy.Piecewise((a, b > 0), (b, True)),
+            Opaque(a),
+        ):
+            with self.subTest(expression_type=type(expr).__name__):
+                selected = _constraints._relevant_symbol_map(expr, mapping)
+                self.assertIs(selected, mapping)
+                self.assertEqual(expr.subs(selected), expr.subs(dict(mapping)))
+        self.assertNotIn(a, Opaque(a).free_symbols)
+        self.assertEqual(Opaque(a).subs(mapping), Opaque(c))
+
+    @parameterized.parameterized.expand(
+        [
+            ("introduce_later", {"a": "b", "b": "c"}),
+            ("introduce_earlier", {"b": "a", "a": "c"}),
+            ("cycle", {"a": "b", "b": "a"}),
+            ("identity", {"a": "a"}),
+            ("constant_source", {"2": "c"}),
+            ("infinite_target", {"a": "oo"}),
+            ("compound_target", {"a": "b + c"}),
+        ]
+    )
+    def test_broader_maps_keep_original_path_and_sweep_results(self, _, strings):
+        parse = _symbolic_shapes.parse_symbolic_expression
+        mapping = {parse(source): parse(target) for source, target in strings.items()}
+        if _ == "infinite_target":
+            mapping[parse("a")] = sympy.oo
+        ctx = _context.ShapeInferenceContext()
+        ctx.add_symbolic_equality("source", "anchor")
+        original_selector = _constraints._relevant_symbol_map
+        optimized = []
+
+        def inspect(expr, replacements):
+            optimized.append(isinstance(replacements, _constraints._IndependentSymbolMap))
+            selected = original_selector(expr, replacements)
+            self.assertIs(selected, replacements)
+            return selected
+
+        def run(selector):
+            graph = ir.Graph([ir.Value(shape=ir.Shape(["a + b", "b", "a**2"]))], [], nodes=[])
+            with (
+                mock.patch.object(
+                    _constraints, "_build_replacements", return_value=(mapping, [])
+                ),
+                mock.patch.object(_constraints, "_relevant_symbol_map", side_effect=selector),
+            ):
+                modified = _constraints.propagate_symbolic_constraints(ctx, graph)
+            return modified, [v.shape for v in graph.inputs]
+
+        expected = run(lambda expr, replacements: replacements)
+        self.assertEqual(run(inspect), expected)
+        self.assertFalse(any(optimized))
+
+    def test_compound_partial_matches_and_singularities_keep_original_order(self):
+        parse = _symbolic_shapes.parse_symbolic_expression
+        mapping = {parse("a"): parse("q"), parse("b"): parse("q"), parse("unused"): parse("u")}
+        compounds = [
+            (parse("2*q"), parse("u")),
+            (parse("u + q"), parse("v")),
+            (parse("q**2"), parse("w")),
+            (sympy.Integer(2), parse("constant_anchor")),
+        ]
+        for text in ("3*a", "a + 2*b", "a**4", "a/(a-b)", "1/(a-b) + a"):
+            with self.subTest(text=text):
+                expected = _constraints._rewrite_dim(_sym(text), mapping, compounds)
+                actual = _constraints._rewrite_dim(
+                    _sym(text), _constraints._IndependentSymbolMap(mapping), compounds
+                )
+                self.assertEqual(actual, expected)
+
+    def test_symbol_subclasses_and_invalid_dimensions_preserve_fallback(self):
+        class CustomSymbol(sympy.Symbol):
+            pass
+
+        source = CustomSymbol("a")
+        mapping = {source: sympy.Symbol("z")}
+        self.assertIs(_constraints._relevant_symbol_map(source, mapping), mapping)
+        prepared = _constraints._IndependentSymbolMap({sympy.Symbol("a"): sympy.Symbol("z")})
+        self.assertIs(_constraints._relevant_symbol_map(source, prepared), prepared)
+        for dim in (17, ir.Shape([None]).dims[0]):
+            with self.subTest(dim_type=type(dim)):
+                self.assertEqual(
+                    _constraints._rewrite_dim(dim, mapping, []),
+                    _constraints._rewrite_dim(dim, prepared, []),
+                )
+        with self.assertRaises(ValueError) as baseline:
+            _constraints._rewrite_dim(_sym("unsupported("), mapping, [])
+        with self.assertRaises(ValueError) as candidate:
+            _constraints._rewrite_dim(_sym("unsupported("), prepared, [])
+        self.assertEqual(str(baseline.exception), str(candidate.exception))
 
 
 if __name__ == "__main__":
