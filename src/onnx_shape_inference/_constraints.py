@@ -360,6 +360,11 @@ def propagate_symbolic_constraints(
 
     values = _collect_values(graph)
     modified = False
+    # Maps stay fixed throughout this call, and _rewrite_dim only reads the
+    # dimension's type/value. Cache unchanged results too, across all sweeps.
+    # Keep integer, symbolic-text and unknown inputs distinct without parsing
+    # or canonicalizing them; a later call must rebuild its own cache and maps.
+    rewrites: dict[tuple[type, int | str | None], int | ir.SymbolicDim | None] = {}
 
     for _ in range(_MAX_REWRITE_ITERATIONS):
         changed_this_pass = False
@@ -370,7 +375,10 @@ def propagate_symbolic_constraints(
             new_dims: list[int | ir.SymbolicDim] = []
             dim_changed = False
             for dim in shape.dims:
-                rewritten = _rewrite_dim(dim, symbol_map, compound)
+                key = (type(dim), dim if isinstance(dim, int) else dim.value)
+                if key not in rewrites:
+                    rewrites[key] = _rewrite_dim(dim, symbol_map, compound)
+                rewritten = rewrites[key]
                 if rewritten is None:
                     new_dims.append(dim)
                 else:

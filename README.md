@@ -187,6 +187,11 @@ engine-generated symbols instead:
 model = infer_symbolic_shapes(model, adopt_declared_symbols=False)
 ```
 
+Constraint propagation reuses dimension rewrites within a single call, including
+unchanged results shared by repeated dimensions and nested graphs. This cache is
+discarded after the call; it does not alter replacement order, generated-symbol
+identity, anchor adoption, or reshape divisibility requirements.
+
 ## Development
 
 ```console

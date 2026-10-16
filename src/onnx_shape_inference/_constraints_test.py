@@ -5,11 +5,12 @@
 from __future__ import annotations
 
 import unittest
+from unittest import mock
 
 import onnx_ir as ir
 import parameterized
 
-from onnx_shape_inference import _constraints, _context, _symbolic_shapes
+from onnx_shape_inference import _constraints, _context, _engine, _symbolic_shapes
 
 
 def _sym(name: str) -> ir.SymbolicDim:
@@ -434,6 +435,177 @@ class AuthorDeclaredPlaceholderTest(unittest.TestCase):
         out = next(iter(graph.outputs)).shape
         self.assertEqual(out[0], _sym("_d0"))  # authored, preserved
         self.assertEqual(out[1], _sym("M"))  # minted, renamed
+
+
+class ConstraintRewriteMemoizationTest(unittest.TestCase):
+    def test_deduplicates_rewrites_including_unchanged_and_unknown_dims(self):
+        values = [
+            ir.Value(
+                name=f"x_{index}",
+                shape=ir.Shape(["_d0", "_d0", 7, None, "M", _sym("7")]),
+            )
+            for index in range(64)
+        ]
+        graph = ir.Graph(values, [], nodes=[])
+        ctx = _generated_ctx("_d0")
+        ctx.add_symbolic_equality("_d0", "N")
+        with mock.patch.object(
+            _constraints, "_rewrite_dim", wraps=_constraints._rewrite_dim
+        ) as rewrite:
+            self.assertTrue(_constraints.propagate_symbolic_constraints(ctx, graph))
+
+        # Each exact type/value is evaluated once, including cached None results
+        # and the new anchor encountered on the second (unchanged) sweep.
+        self.assertEqual(rewrite.call_count, 6)
+        keys = [
+            (
+                type(call.args[0]),
+                call.args[0] if isinstance(call.args[0], int) else call.args[0].value,
+            )
+            for call in rewrite.call_args_list
+        ]
+        self.assertEqual(len(set(keys)), 6)
+        self.assertIn((int, 7), keys)
+        self.assertIn((ir.SymbolicDim, "7"), keys)
+        for value in values:
+            self.assertEqual(value.shape, ir.Shape(["N", "N", 7, None, "M", _sym("7")]))
+        self.assertFalse(_constraints.propagate_symbolic_constraints(ctx, graph))
+
+    def test_exact_expression_text_is_not_conflated(self):
+        graph = _identity_graph({"x": ["_d0", "N + 1", "1+N"], "y": ["_d0", "N + 1", "1+N"]})
+        ctx = _generated_ctx("_d0")
+        ctx.add_symbolic_equality("_d0", "anchor")
+        with mock.patch.object(
+            _constraints, "_rewrite_dim", wraps=_constraints._rewrite_dim
+        ) as rewrite:
+            self.assertTrue(_constraints.propagate_symbolic_constraints(ctx, graph))
+        self.assertEqual(rewrite.call_count, 4)
+        self.assertEqual(graph.inputs[0].shape, ir.Shape(["anchor", "N + 1", "1+N"]))
+
+    def test_cache_does_not_survive_changed_equalities_on_same_context(self):
+        ctx = _generated_ctx("_d0")
+        ctx.add_symbolic_equality("_d0", "N")
+        graph = _identity_graph({"x": ["_d0"], "y": ["_d0"]})
+        self.assertTrue(_constraints.propagate_symbolic_constraints(ctx, graph))
+        self.assertEqual(graph.inputs[0].shape, ir.Shape(["N"]))
+
+        ctx.add_symbolic_equality("_d0", "A")
+        fresh = _identity_graph({"x": ["_d0"], "y": ["_d0"]})
+        self.assertTrue(_constraints.propagate_symbolic_constraints(ctx, fresh))
+        self.assertEqual(fresh.inputs[0].shape, ir.Shape(["A"]))
+
+    def test_cache_does_not_cross_generated_identity_contexts(self):
+        for generated, expected in [(("_d0", "_d1"), ["N", "M"]), (("_d1",), ["_d0", "M"])]:
+            with self.subTest(generated=generated):
+                ctx = _generated_ctx(*generated)
+                ctx.add_symbolic_equality("_d0", "N")
+                ctx.add_symbolic_equality("_d1", "M")
+                graph = _identity_graph({"x": ["_d0", "_d1"], "y": ["_d0", "_d1"]})
+                self.assertTrue(_constraints.propagate_symbolic_constraints(ctx, graph))
+                self.assertEqual(graph.inputs[0].shape, ir.Shape(expected))
+                self.assertFalse(_constraints.propagate_symbolic_constraints(ctx, graph))
+
+    @parameterized.parameterized.expand(
+        [
+            ("short_first", [("a+b", "short"), ("a+b+c", "long")], "c + short"),
+            ("long_first", [("a+b+c", "long"), ("a+b", "short")], "long"),
+        ]
+    )
+    def test_leaf_then_overlapping_compound_order(self, _name, equalities, expected):
+        ctx = _generated_ctx("_d0")
+        ctx.add_symbolic_equality("_d0", "a")
+        for lhs, rhs in equalities:
+            ctx.add_symbolic_equality(lhs, rhs)
+        graph = _identity_graph({"x": ["_d0+b+c"] * 8, "y": ["_d0+b+c"] * 8})
+        self.assertTrue(_constraints.propagate_symbolic_constraints(ctx, graph))
+        self.assertEqual(graph.inputs[0].shape, ir.Shape([expected] * 8))
+        self.assertFalse(_constraints.propagate_symbolic_constraints(ctx, graph))
+
+    def test_repeated_dims_across_nested_graph_and_unknown_metadata(self):
+        cond = ir.Value(name="cond", type=ir.TensorType(ir.DataType.BOOL), shape=ir.Shape([]))
+        body_value = ir.Value(
+            name="body_value", type=ir.TensorType(ir.DataType.FLOAT), shape=ir.Shape(["_d0"])
+        )
+        body = ir.Graph([], [body_value], nodes=[], name="body")
+        node = ir.Node(
+            "",
+            "If",
+            [cond],
+            num_outputs=1,
+            attributes=[ir.Attr("then_branch", ir.AttributeType.GRAPH, body)],
+        )
+        node.outputs[0].shape = ir.Shape(["_d0"])
+        unshaped = ir.Value(name="unshaped")
+        unknown_shape = ir.Shape([None, "M"], denotations=["UNKNOWN", "CHANNEL"], frozen=True)
+        unknown_type = ir.TensorType(ir.DataType.FLOAT, denotation="IMAGE")
+        unknown = ir.Value(name="unknown", shape=unknown_shape, type=unknown_type)
+        graph = ir.Graph([cond, unshaped, unknown], [node.outputs[0]], nodes=[node])
+        ctx = _generated_ctx("_d0")
+        ctx.add_symbolic_equality("_d0", "N")
+        equalities = tuple(ctx.symbolic_equalities)
+        generated = ctx.generated_dim_names
+
+        self.assertTrue(_constraints.propagate_symbolic_constraints(ctx, graph))
+        self.assertEqual(body_value.shape, ir.Shape(["N"]))
+        self.assertEqual(node.outputs[0].shape, ir.Shape(["N"]))
+        self.assertIsNone(unshaped.shape)
+        self.assertIsNone(unshaped.type)
+        self.assertIs(unknown.shape, unknown_shape)
+        self.assertIs(unknown.type, unknown_type)
+        self.assertEqual(unknown.shape.get_denotation(0), "UNKNOWN")
+        self.assertEqual(unknown.shape.get_denotation(1), "CHANNEL")
+        self.assertEqual(unknown.type.denotation, "IMAGE")
+        self.assertTrue(unknown.shape.frozen)
+        self.assertEqual(tuple(ctx.symbolic_equalities), equalities)
+        self.assertEqual(ctx.generated_dim_names, generated)
+
+    @parameterized.parameterized.expand(
+        [("with_provenance", True, "c"), ("without_provenance", False, "2*floor(c/2)")]
+    )
+    def test_repeated_divisibility_needs_provenance(self, _name, provenance, expected):
+        ctx = _generated_ctx("_d0")
+        ctx.add_symbolic_equality("_d0", "N")
+        if provenance:
+            ctx.add_symbolic_equality("a*b*c", "2*a*b*floor(c/2)")
+        graph = _identity_graph({"x": ["2*floor(c/2)"] * 8, "y": ["2*floor(c/2)"] * 8})
+        self.assertEqual(_constraints.propagate_symbolic_constraints(ctx, graph), provenance)
+        self.assertEqual(graph.inputs[0].shape, ir.Shape([expected] * 8))
+        self.assertFalse(_constraints.propagate_symbolic_constraints(ctx, graph))
+
+    @parameterized.parameterized.expand(
+        [
+            (policy, adopt)
+            for policy in ("skip", "override", "refine", "strict")
+            for adopt in (False, True)
+        ]
+    )
+    def test_public_policy_and_adoption_flags(self, policy, adopt):
+        x = ir.Value(name="X", type=ir.TensorType(ir.DataType.FLOAT), shape=ir.Shape([2, 5]))
+        nz = ir.Node("", "NonZero", [x], num_outputs=1)
+        identities = [
+            ir.Node("", "Identity", [nz.outputs[0]], num_outputs=1) for _ in range(4)
+        ]
+        for index, node in enumerate(identities):
+            node.outputs[0].name = f"Y_{index}"
+            node.outputs[0].type = ir.TensorType(ir.DataType.INT64)
+            node.outputs[0].shape = ir.Shape([2, "dnz"])
+        model = ir.Model(
+            ir.Graph(
+                [x],
+                [node.outputs[0] for node in identities],
+                nodes=[nz, *identities],
+                opset_imports={"": 21},
+            ),
+            ir_version=10,
+        )
+        _engine.infer_symbolic_shapes(model, policy=policy, adopt_declared_symbols=adopt)
+        actual = nz.outputs[0].shape[1]
+        # Skip/override do not record the anchor equality in this fixture.
+        if adopt and policy in ("refine", "strict"):
+            self.assertEqual(actual, _sym("dnz"))
+        else:
+            self.assertNotEqual(actual, _sym("dnz"))
+            self.assertIsInstance(actual, ir.SymbolicDim)
 
 
 if __name__ == "__main__":
