@@ -96,9 +96,15 @@ def infer_linear_attention(ctx: _context.ShapeInferenceContext, node: ir.Node) -
     ):
         value_hidden = value.shape[2]
         if isinstance(value_hidden, int):
+            if value_hidden % kv_num_heads:
+                ctx.record_error(
+                    node,
+                    "LinearAttention: value hidden size must be divisible by kv_num_heads",
+                )
+                return
             value_head_size: int | ir.SymbolicDim = value_hidden // kv_num_heads
         else:
-            value_head_size = ctx.new_symbolic_dim()
+            value_head_size = value_hidden // kv_num_heads
         output_shape = ir.Shape(
             [
                 query.shape[0],
@@ -109,9 +115,14 @@ def infer_linear_attention(ctx: _context.ShapeInferenceContext, node: ir.Node) -
 
         query_hidden = query.shape[2]
         if isinstance(query_hidden, int):
+            if query_hidden % q_num_heads:
+                ctx.record_error(
+                    node, "LinearAttention: query hidden size must be divisible by q_num_heads"
+                )
+                return
             key_head_size: int | ir.SymbolicDim = query_hidden // q_num_heads
         else:
-            key_head_size = ctx.new_symbolic_dim()
+            key_head_size = query_hidden // q_num_heads
         state_dims: list[int | ir.SymbolicDim] = [
             query.shape[0],
             kv_num_heads,
@@ -121,6 +132,8 @@ def infer_linear_attention(ctx: _context.ShapeInferenceContext, node: ir.Node) -
         if state_window > 0:
             state_dims.insert(0, state_window)
         state_shape = ir.Shape(state_dims)
+    elif query.shape is not None and query.shape.rank() == 3:
+        output_shape = ir.Shape([query.shape[0], query.shape[1], ctx.new_symbolic_dim()])
     past_state = node.inputs[3] if len(node.inputs) > 3 else None
     if state_shape is None and past_state is not None:
         state_shape = past_state.shape
@@ -913,11 +926,15 @@ def infer_paged_attention(ctx: _context.ShapeInferenceContext, node: ir.Node) ->
     if query.shape is not None and query.shape.rank() != 2:
         ctx.record_error(node, "PagedAttention: query must have rank 2")
         return
+    if num_heads <= 0 or kv_num_heads <= 0:
+        ctx.record_error(node, "PagedAttention: head counts must be positive")
+        return
+    for cache in (key_cache, value_cache):
+        if cache is not None and cache.shape is not None and cache.shape.rank() != 4:
+            ctx.record_error(node, "PagedAttention: cache inputs must have rank 4")
+            return
 
     if len(node.outputs) > 1:
-        if key_cache.shape is not None and key_cache.shape.rank() != 4:
-            ctx.record_error(node, "PagedAttention: key_cache must have rank 4")
-            return
         if layout == "LATENT" and len(node.outputs) > 2:
             ctx.record_error(node, "PagedAttention: LATENT layout has no value_cache_out")
             return
@@ -927,23 +944,16 @@ def infer_paged_attention(ctx: _context.ShapeInferenceContext, node: ir.Node) ->
         if layout == "SEPARATE" and value_cache is None:
             ctx.record_error(node, "PagedAttention: value_cache is required for cache outputs")
             return
-        if (
-            value_cache is not None
-            and value_cache.shape is not None
-            and value_cache.shape.rank() != 4
-        ):
-            ctx.record_error(node, "PagedAttention: value_cache must have rank 4")
-            return
 
     output_shape: ir.Shape | None = None
     if query.shape is not None and query.shape.rank() == 2:
         if layout == "LATENT":
             v_head_size_attr = node.attributes.get("v_head_size")
             v_head_size = v_head_size_attr.as_int() if v_head_size_attr is not None else 0
-            query_hidden = query.shape[1]
-            if num_heads <= 0:
-                ctx.record_error(node, "PagedAttention: num_heads must be positive")
+            if v_head_size < 0:
+                ctx.record_error(node, "PagedAttention: v_head_size must be nonnegative")
                 return
+            query_hidden = query.shape[1]
             if isinstance(query_hidden, int):
                 if query_hidden % num_heads != 0:
                     ctx.record_error(
@@ -990,7 +1000,7 @@ def infer_paged_attention(ctx: _context.ShapeInferenceContext, node: ir.Node) ->
                     return
                 output_hidden: int | ir.SymbolicDim = num_heads * effective_v_head_size
             else:
-                output_hidden = query_hidden if v_head_size == 0 else ctx.new_symbolic_dim()
+                output_hidden = query_hidden if v_head_size == 0 else num_heads * v_head_size
             output_shape = ir.Shape([query.shape[0], output_hidden])
         elif value is not None:
             output_shape = query.shape

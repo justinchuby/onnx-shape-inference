@@ -1952,6 +1952,148 @@ class QLinearConcatSymbolicTest(unittest.TestCase):
 
 
 class LatestOnnxRuntimeOpsTest(unittest.TestCase):
+    def test_linear_attention_unknown_value_shape(self):
+        actual = run_shape_inference(
+            MSFT,
+            "LinearAttention",
+            [ts(FLOAT16, [2, 4, 64]), ts(FLOAT16, [2, 4, 64]), ts(FLOAT16)],
+            attributes={
+                "q_num_heads": ir.AttrInt64("q_num_heads", 4),
+                "kv_num_heads": ir.AttrInt64("kv_num_heads", 4),
+            },
+            opset_version=1,
+        )
+        self.assertEqual(actual, [ts(FLOAT16, [2, 4, "_d0"])])
+
+    def test_linear_attention_rejects_indivisible_hidden_widths(self):
+        for query_width, value_width in ((65, 32), (64, 33)):
+            with (
+                self.subTest(query_width=query_width, value_width=value_width),
+                self.assertRaisesRegex(ShapeInferenceError, "must be divisible"),
+            ):
+                run_shape_inference(
+                    MSFT,
+                    "LinearAttention",
+                    [
+                        ts(FLOAT16, [2, 4, query_width]),
+                        ts(FLOAT16, [2, 4, 64]),
+                        ts(FLOAT16, [2, 4, value_width]),
+                    ],
+                    attributes={
+                        "q_num_heads": ir.AttrInt64("q_num_heads", 4),
+                        "kv_num_heads": ir.AttrInt64("kv_num_heads", 4),
+                    },
+                    opset_version=1,
+                    num_outputs=2,
+                )
+
+    def test_linear_attention_symbolic_head_sizes(self):
+        actual = run_shape_inference(
+            MSFT,
+            "LinearAttention",
+            [
+                ts(FLOAT16, ["B", "T", "Q"]),
+                ts(FLOAT16, ["B", "T", "Q"]),
+                ts(FLOAT16, ["B", "T", "V"]),
+            ],
+            attributes={
+                "q_num_heads": ir.AttrInt64("q_num_heads", 4),
+                "kv_num_heads": ir.AttrInt64("kv_num_heads", 4),
+            },
+            opset_version=1,
+            num_outputs=2,
+        )
+        self.assertEqual(actual[0], ts(FLOAT16, ["B", "T", "4*floor(V/4)"]))
+        self.assertEqual(actual[1], ts(FLOAT16, ["B", 4, "floor(Q/4)", "floor(V/4)"]))
+
+    def test_paged_attention_rejects_invalid_cache_ranks(self):
+        for cache_index in (3, 4):
+            for num_outputs in (1, 3):
+                with self.subTest(cache_index=cache_index, num_outputs=num_outputs):
+                    inputs = [
+                        ts(FLOAT16, [7, 128]),
+                        ts(FLOAT16, [7, 32]),
+                        ts(FLOAT16, [7, 32]),
+                        ts(FLOAT16, [64, 16, 2, 16]),
+                        ts(FLOAT16, [64, 16, 2, 16]),
+                        ts(INT32, [3]),
+                        ts(INT32, [2]),
+                        ts(INT32, [2, 8]),
+                    ]
+                    inputs[cache_index] = ts(FLOAT16, [64, 16, 32])
+                    with self.assertRaisesRegex(ShapeInferenceError, "must have rank 4"):
+                        run_shape_inference(
+                            MSFT,
+                            "PagedAttention",
+                            inputs,
+                            attributes={
+                                "num_heads": ir.AttrInt64("num_heads", 8),
+                                "kv_num_heads": ir.AttrInt64("kv_num_heads", 2),
+                            },
+                            opset_version=1,
+                            num_outputs=num_outputs,
+                        )
+
+    def test_paged_attention_latent_symbolic_query_width(self):
+        for value_head_size, expected_width in ((0, "H"), (64, 512)):
+            with self.subTest(value_head_size=value_head_size):
+                actual = run_shape_inference(
+                    MSFT,
+                    "PagedAttention",
+                    [
+                        ts(FLOAT16, ["T", "H"]),
+                        ts(FLOAT16, ["T", "K"]),
+                        None,
+                        ts(FLOAT16, [64, 16, 1, "K"]),
+                        None,
+                        ts(INT32, [3]),
+                        ts(INT32, [2]),
+                        ts(INT32, [2, 8]),
+                    ],
+                    attributes={
+                        "num_heads": ir.AttrInt64("num_heads", 8),
+                        "kv_num_heads": ir.AttrInt64("kv_num_heads", 1),
+                        "v_head_size": ir.AttrInt64("v_head_size", value_head_size),
+                        "scale": ir.AttrFloat32("scale", 0.125),
+                        "kv_cache_layout": ir.AttrString("kv_cache_layout", "LATENT"),
+                    },
+                    opset_version=1,
+                )
+                self.assertEqual(actual, [ts(FLOAT16, ["T", expected_width])])
+
+    def test_paged_attention_rejects_invalid_head_attributes(self):
+        for name, value in (
+            ("num_heads", 0),
+            ("num_heads", -1),
+            ("kv_num_heads", 0),
+            ("kv_num_heads", -1),
+            ("v_head_size", -1),
+        ):
+            with self.subTest(name=name, value=value):
+                attributes = {
+                    "num_heads": ir.AttrInt64("num_heads", 8),
+                    "kv_num_heads": ir.AttrInt64("kv_num_heads", 1),
+                    "kv_cache_layout": ir.AttrString("kv_cache_layout", "LATENT"),
+                }
+                attributes[name] = ir.AttrInt64(name, value)
+                with self.assertRaises(ShapeInferenceError):
+                    run_shape_inference(
+                        MSFT,
+                        "PagedAttention",
+                        [
+                            ts(FLOAT16, [7, "H"]),
+                            ts(FLOAT16, [7, "K"]),
+                            None,
+                            ts(FLOAT16, [64, 16, 1, "K"]),
+                            None,
+                            ts(INT32, [3]),
+                            ts(INT32, [2]),
+                            ts(INT32, [2, 8]),
+                        ],
+                        attributes=attributes,
+                        opset_version=1,
+                    )
+
     def test_linear_attention_with_state_window(self):
         actual = run_shape_inference(
             MSFT,
