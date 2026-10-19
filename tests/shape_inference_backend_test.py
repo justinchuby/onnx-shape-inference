@@ -3,7 +3,7 @@
 """Test shape inference against ONNX backend node tests.
 
 For each backend test model, the test:
-1. Loads the model and the test input tensors from ``.pb`` files.
+1. Generates the model and input tensors using ONNX's backend test loader.
 2. Injects the input tensors as graph initializers so that constant inputs
    (e.g. ``axes`` for Reduce ops) are available to shape inference.
 3. Saves the expected output dtype and shape from the model proto.
@@ -17,23 +17,23 @@ the test fails unless explicitly added to a skip list.
 
 from __future__ import annotations
 
-import pathlib
 import unittest
 
 import onnx
-import onnx.backend.test
+import onnx.backend.test.case.test_case
+import onnx.backend.test.loader
+import onnx.numpy_helper
 import onnx_ir as ir
 import parameterized
 
 from onnx_shape_inference import infer_symbolic_shapes
 
-_ONNX_BACKEND_NODE_TEST_DIR = pathlib.Path(onnx.backend.test.__file__).parent / "data" / "node"
-
-# Build parametrized test args: (test_name, model_path)
+# Node cases are generated in memory; newer ONNX wheels do not bundle .pb files.
 _test_args = [
-    (model_dir.name, model_dir / "model.onnx")
-    for model_dir in sorted(_ONNX_BACKEND_NODE_TEST_DIR.iterdir())
-    if (model_dir / "model.onnx").exists()
+    (case.name, case)
+    for case in sorted(
+        onnx.backend.test.loader.load_model_tests(kind="node"), key=lambda case: case.name
+    )
 ]
 
 # Tests where shape inference produces incorrect results due to data-dependent
@@ -47,19 +47,6 @@ _SKIP_EXPANDED_MODELS: set[str] = set()
 _ALL_SKIPS = _SKIP_EXPANDED_MODELS
 
 
-def _load_test_inputs(model_dir: pathlib.Path) -> list[onnx.TensorProto]:
-    """Load input tensors from the first test_data_set in a backend test dir."""
-    data_dir = model_dir / "test_data_set_0"
-    if not data_dir.exists():
-        return []
-    tensors = []
-    for pb_file in sorted(data_dir.glob("input_*.pb")):
-        tensor = onnx.TensorProto()
-        tensor.ParseFromString(pb_file.read_bytes())
-        tensors.append(tensor)
-    return tensors
-
-
 def _inject_inputs_as_initializers(
     proto: onnx.ModelProto,
     input_tensors: list[onnx.TensorProto],
@@ -67,8 +54,7 @@ def _inject_inputs_as_initializers(
     """Add test input tensors as graph initializers.
 
     This makes constant inputs (like ``axes`` for Reduce ops) visible to
-    shape inference via ``get_const_tensor``.  The tensor names in the ``.pb``
-    files match the graph input names.
+    shape inference via ``get_const_tensor``.
     """
     existing_names = {init.name for init in proto.graph.initializer}
     input_names = [inp.name for inp in proto.graph.input]
@@ -109,16 +95,26 @@ def _shapes_compatible(
 
 class ShapeInferenceBackendTest(unittest.TestCase):
     @parameterized.parameterized.expand(_test_args)
-    def test_shape_inference_matches_expected(self, _: str, model_path: pathlib.Path) -> None:
-        test_name = model_path.parent.name
-
+    def test_shape_inference_matches_expected(
+        self, test_name: str, case: onnx.backend.test.case.test_case.TestCase
+    ) -> None:
         if test_name in _ALL_SKIPS:
             self.skipTest("See skip list for reason")
 
-        proto = onnx.load(model_path)
+        self.assertIsNotNone(case.model)
+        self.assertTrue(case.data_sets)
+        # Input injection must not mutate the loader's shared test case.
+        proto = onnx.ModelProto()
+        proto.CopyFrom(case.model)
 
         # Inject test inputs as initializers so constant inputs are available
-        input_tensors = _load_test_inputs(model_path.parent)
+        input_tensors = [
+            value
+            if isinstance(value, onnx.TensorProto)
+            else onnx.numpy_helper.from_array(value, input_info.name)
+            for input_info, value in zip(proto.graph.input, case.data_sets[0][0])
+            if input_info.type.HasField("tensor_type")
+        ]
         _inject_inputs_as_initializers(proto, input_tensors)
 
         model = ir.serde.deserialize_model(proto)
