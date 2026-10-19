@@ -16,6 +16,7 @@ from onnx_shape_inference import _context, _registry
 from onnx_shape_inference._ops import _utils
 
 
+@_registry.registry.register("", "Range", since_version=27)
 @_registry.registry.register("", "Range", since_version=11)
 def infer_range(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
     """Infer shape and dtype for Range operator."""
