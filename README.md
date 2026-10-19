@@ -204,6 +204,9 @@ pip install -e .
 pytest
 ```
 
+Backend node tests use ONNX's loader to generate models and inputs in memory.
+They do not require a bundled or downloaded backend test-data directory.
+
 Lint and format with [lintrunner](https://github.com/suo/lintrunner):
 
 ```console
