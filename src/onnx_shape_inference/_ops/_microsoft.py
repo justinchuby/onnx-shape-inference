@@ -941,12 +941,9 @@ def infer_paged_attention(ctx: _context.ShapeInferenceContext, node: ir.Node) ->
         if layout == "SEPARATE" and len(node.outputs) != 3:
             ctx.record_error(node, "PagedAttention: cache outputs must be provided as a pair")
             return
-        if layout == "SEPARATE" and value_cache is None:
-            ctx.record_error(node, "PagedAttention: value_cache is required for cache outputs")
-            return
 
     output_shape: ir.Shape | None = None
-    if query.shape is not None and query.shape.rank() == 2:
+    if query.shape is not None:
         if layout == "LATENT":
             v_head_size_attr = node.attributes.get("v_head_size")
             v_head_size = v_head_size_attr.as_int() if v_head_size_attr is not None else 0
@@ -1007,7 +1004,7 @@ def infer_paged_attention(ctx: _context.ShapeInferenceContext, node: ir.Node) ->
         else:
             packed_hidden = query.shape[1]
             head_count = num_heads + 2 * kv_num_heads
-            if isinstance(packed_hidden, int) and num_heads > 0 and head_count > 0:
+            if isinstance(packed_hidden, int):
                 if packed_hidden % head_count != 0:
                     ctx.record_error(
                         node, "PagedAttention: packed hidden size must divide total heads"
