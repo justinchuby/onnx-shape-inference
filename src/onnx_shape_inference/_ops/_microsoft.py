@@ -33,6 +33,8 @@ _reg = _registry.registry.register
 @_reg(_MSFT, "MRotaryEmbedding", since_version=1)
 @_reg(_MSFT, "GatedRMSNorm", since_version=1)
 @_reg(_MSFT, "GatedAdd", since_version=1)
+@_reg(_MSFT, "BranchwiseRMSNorm", since_version=1)
+@_reg(_MSFT, "ScaledSiLU", since_version=1)
 def _infer_passthrough(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
     """Output shape and dtype are identical to the first input."""
     if not node.inputs or node.inputs[0] is None:
@@ -168,6 +170,25 @@ def infer_causal_conv_with_state(ctx: _context.ShapeInferenceContext, node: ir.N
     state_shape: ir.Shape | None = None
     ndim_attr = node.attributes.get("ndim")
     ndim = ndim_attr.as_int() if ndim_attr is not None else 1
+    dilation_attr = node.attributes.get("dilation")
+    dilation = dilation_attr.as_int() if dilation_attr is not None else 1
+    channels_last_attr = node.attributes.get("channels_last")
+    channels_last = channels_last_attr.as_int() if channels_last_attr is not None else 0
+    if dilation < 1 or ndim not in (1, 2, 3) or channels_last not in (0, 1):
+        ctx.record_error(node, "CausalConvWithState: invalid dilation, ndim, or channels_last")
+        return
+    if channels_last and ndim != 1:
+        ctx.record_error(node, "CausalConvWithState: channels_last requires ndim = 1")
+        return
+    if inp.shape is not None and (
+        (channels_last and inp.shape.rank() < 3)
+        or (not channels_last and inp.shape.rank() != ndim + 2)
+    ):
+        ctx.record_error(node, "CausalConvWithState: input rank is incompatible with layout")
+        return
+    if weight.shape is not None and weight.shape.rank() != ndim + 2:
+        ctx.record_error(node, "CausalConvWithState: weight must have rank ndim + 2")
+        return
     if (
         inp.shape is not None
         and inp.shape.rank() >= 1 + ndim
@@ -176,15 +197,22 @@ def infer_causal_conv_with_state(ctx: _context.ShapeInferenceContext, node: ir.N
     ):
         kernel = weight.shape[-1]
         if isinstance(kernel, int):
-            state_length: int | ir.SymbolicDim = max(kernel - 1, 0)
+            state_length: int | ir.SymbolicDim = max(kernel - 1, 0) * dilation
         else:
-            state_length = kernel - 1
-        state_dims: list[int | ir.SymbolicDim] = [
-            inp.shape[0],
-            inp.shape[1],
-            *inp.shape.dims[2 : 1 + ndim],
-            state_length,
-        ]
+            state_length = (kernel - 1) * dilation
+        if channels_last:
+            state_dims: list[int | ir.SymbolicDim] = [
+                inp.shape[0],
+                state_length,
+                *inp.shape.dims[2:],
+            ]
+        else:
+            state_dims = [
+                inp.shape[0],
+                inp.shape[1],
+                *inp.shape.dims[2 : 1 + ndim],
+                state_length,
+            ]
         if state_window > 0:
             state_dims.insert(0, state_window)
         state_shape = ir.Shape(state_dims)
@@ -827,6 +855,27 @@ def infer_group_query_attention(ctx: _context.ShapeInferenceContext, node: ir.No
     if len(node.outputs) <= 1:
         return
 
+    sliding_attr = node.attributes.get("sliding_window_cache")
+    sliding_cache = sliding_attr is not None and sliding_attr.as_int() == 1
+    if (
+        sliding_cache
+        and len(node.outputs) > 3
+        and node.outputs[3].name != ""
+        and has_rank3_query
+        and num_heads is not None
+    ):
+        total_input = _input(6)
+        total_data = ctx.get_symbolic_value(total_input) if total_input is not None else None
+        if total_data is not None and len(total_data) != 1:
+            ctx.record_error(node, "total_sequence_length must contain exactly one element")
+            return
+        total = total_data[0] if total_data is not None else ctx.new_symbolic_dim()
+        ctx.set_shape_and_dtype(
+            node.outputs[3],
+            ir.Shape([query.shape[0], num_heads, query.shape[1], total]),
+            query.dtype,
+        )
+
     # Sequence length contributed by the current step's key/value.
     def _kv_sequence_length() -> int | ir.SymbolicDim | None:
         if not is_packed:
@@ -849,8 +898,10 @@ def infer_group_query_attention(ctx: _context.ShapeInferenceContext, node: ir.No
         # a fresh dim.
         past_dims = list(past_key.shape.dims)
         past_seq = past_dims[2]
-        if kv_seq is not None:
-            present_seq: int | ir.SymbolicDim = past_seq + kv_seq
+        if sliding_cache:
+            present_seq: int | ir.SymbolicDim = past_seq
+        elif kv_seq is not None:
+            present_seq = past_seq + kv_seq
         else:
             present_seq = ctx.new_symbolic_dim()
         present_shape = ir.Shape([past_dims[0], past_dims[1], present_seq, past_dims[3]])
@@ -885,6 +936,7 @@ def infer_group_query_attention(ctx: _context.ShapeInferenceContext, node: ir.No
 # ---------------------------------------------------------------------------
 
 
+@_reg(_MSFT, "SparsePagedAttention", since_version=1)
 @_reg(_MSFT, "PagedAttention", since_version=1)
 def infer_paged_attention(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
     """Infer packed-token output and aliased cache outputs for PagedAttention."""
@@ -898,6 +950,16 @@ def infer_paged_attention(ctx: _context.ShapeInferenceContext, node: ir.Node) ->
     for index, name in required:
         if len(node.inputs) <= index or node.inputs[index] is None:
             raise _context.OpUsageError(node, f"Required input '{name}' (#{index}) is missing")
+    if node.op_type == "SparsePagedAttention":
+        for index, name in (
+            (4, "value_cache"),
+            (9, "selected_indices"),
+            (10, "selected_counts"),
+        ):
+            if len(node.inputs) <= index or node.inputs[index] is None:
+                raise _context.OpUsageError(
+                    node, f"Required input '{name}' (#{index}) is missing"
+                )
     query = node.inputs[0]
     key_cache = node.inputs[3]
     key = node.inputs[1] if len(node.inputs) > 1 else None
@@ -958,6 +1020,12 @@ def infer_paged_attention(ctx: _context.ShapeInferenceContext, node: ir.Node) ->
                     )
                     return
                 head_size = query_hidden // num_heads
+                cache_dtype_attr = node.attributes.get("k_cache_dtype")
+                packed_cache = (
+                    cache_dtype_attr is not None
+                    and cache_dtype_attr.as_string() in {"int4", "float4e2m1"}
+                )
+                cache_head_size = (head_size + 1) // 2 if packed_cache else head_size
                 if (
                     key is not None
                     and key.shape is not None
@@ -976,7 +1044,7 @@ def infer_paged_attention(ctx: _context.ShapeInferenceContext, node: ir.Node) ->
                         (isinstance(key_cache.shape[2], int) and key_cache.shape[2] != 1)
                         or (
                             isinstance(key_cache.shape[3], int)
-                            and key_cache.shape[3] != head_size
+                            and key_cache.shape[3] != cache_head_size
                         )
                     )
                 ):
