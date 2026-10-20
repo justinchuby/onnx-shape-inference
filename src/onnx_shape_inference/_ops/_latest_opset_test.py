@@ -46,14 +46,28 @@ class SwiGLUTest(unittest.TestCase):
         [("broadcast_forbidden", [2, 64], [1, 64]), ("rank", [2, 64], [64])]
     )
     def test_no_broadcast(self, _name, left, right):
-        with self.assertRaises(ShapeInferenceError):
-            run_shape_inference(
-                "", "SwiGLU", [ts(HALF, left), ts(HALF, right)], opset_version=28
+        for policy in ("override", "skip"):
+            expected = (
+                self.assertRaises(ShapeInferenceError)
+                if policy == "override"
+                else self.assertLogs("onnx_shape_inference._context", level="WARNING")
             )
+            with expected:
+                run_shape_inference(
+                    "",
+                    "SwiGLU",
+                    [ts(HALF, left), ts(HALF, right)],
+                    opset_version=28,
+                    policy=policy,
+                )
 
     def test_dtype_mismatch(self):
         with self.assertRaises(ShapeInferenceError):
             run_shape_inference("", "SwiGLU", [ts(HALF), ts(FLOAT)], opset_version=28)
+        with self.assertLogs("onnx_shape_inference._context", level="WARNING"):
+            run_shape_inference(
+                "", "SwiGLU", [ts(HALF), ts(FLOAT)], opset_version=28, policy="skip"
+            )
 
     def test_required_inputs(self):
         with self.assertRaises(OpUsageError):
@@ -156,15 +170,50 @@ class UpdatedContribSemanticsTest(unittest.TestCase):
         ]
     )
     def test_invalid_causal_conv_attributes(self, _name, attr, value):
-        with self.assertRaises(ShapeInferenceError):
-            run_shape_inference(
-                MS,
-                "CausalConvWithState",
-                [ts(HALF, [2, 64, 7]), ts(HALF, [64, 1, 4])],
-                {attr: ir.AttrInt64(attr, value)},
-                opset_version=1,
-                num_outputs=2,
+        for policy in ("override", "skip"):
+            expected = (
+                self.assertRaises(ShapeInferenceError)
+                if policy == "override"
+                else self.assertLogs("onnx_shape_inference._context", level="WARNING")
             )
+            with expected:
+                run_shape_inference(
+                    MS,
+                    "CausalConvWithState",
+                    [ts(HALF, [2, 64, 7]), ts(HALF, [64, 1, 4])],
+                    {attr: ir.AttrInt64(attr, value)},
+                    opset_version=1,
+                    num_outputs=2,
+                    policy=policy,
+                )
+
+    @parameterized.parameterized.expand(
+        [
+            ("layout", [2, 7, 64], [64, 1, 4, 4], 1, 2),
+            ("input", [2, 64], [64, 1, 4], 0, 1),
+            ("weight", [2, 64, 7], [64, 4], 0, 1),
+        ]
+    )
+    def test_invalid_causal_conv_geometry(self, _name, shape, weight, layout, ndim):
+        for policy in ("override", "skip"):
+            expected = (
+                self.assertRaises(ShapeInferenceError)
+                if policy == "override"
+                else self.assertLogs("onnx_shape_inference._context", level="WARNING")
+            )
+            with expected:
+                run_shape_inference(
+                    MS,
+                    "CausalConvWithState",
+                    [ts(HALF, shape), ts(HALF, weight)],
+                    {
+                        "channels_last": ir.AttrInt64("channels_last", layout),
+                        "ndim": ir.AttrInt64("ndim", ndim),
+                    },
+                    opset_version=1,
+                    num_outputs=2,
+                    policy=policy,
+                )
 
     def test_sliding_window_gqa_keeps_cache_capacity(self):
         actual = run_shape_inference(
@@ -192,7 +241,12 @@ class UpdatedContribSemanticsTest(unittest.TestCase):
             actual, [ts(HALF, [1, 7, 128]), ts(HALF, [1, 2, 16, 32]), ts(HALF, [1, 2, 16, 32])]
         )
 
-    def test_sliding_window_qk_uses_absolute_total_not_cache_capacity(self):
+    @parameterized.parameterized.expand(
+        [("known", [100], 100), ("unknown", None, "_d0"), ("invalid", [100, 101], None)]
+    )
+    def test_sliding_window_qk_uses_absolute_total_not_cache_capacity(
+        self, _name, total, expected_total
+    ):
         specs = [
             ts(HALF, [1, 7, 128]),
             ts(HALF, [1, 7, 64]),
@@ -205,23 +259,43 @@ class UpdatedContribSemanticsTest(unittest.TestCase):
         inputs = [
             ir.Value(name=f"in_{i}", shape=s.shape, type=s.type) for i, s in enumerate(specs)
         ]
+        attrs = {
+            "num_heads": ir.AttrInt64("num_heads", 4),
+            "kv_num_heads": ir.AttrInt64("kv_num_heads", 2),
+            "sliding_window_cache": ir.AttrInt64("sliding_window_cache", 1),
+            "local_window_size": ir.AttrInt64("local_window_size", 16),
+            "qk_output": ir.AttrInt64("qk_output", 1),
+        }
+        if expected_total is None:
+            for policy in ("override", "skip"):
+                expected = (
+                    self.assertRaises(ShapeInferenceError)
+                    if policy == "override"
+                    else self.assertLogs("onnx_shape_inference._context", level="WARNING")
+                )
+                with expected:
+                    run_shape_inference_with_values(
+                        MS,
+                        "GroupQueryAttention",
+                        inputs,
+                        attrs,
+                        opset_version=1,
+                        num_outputs=4,
+                        symbolic_values={6: total},
+                        policy=policy,
+                    )
+            return
         actual = run_shape_inference_with_values(
             MS,
             "GroupQueryAttention",
             inputs,
-            {
-                "num_heads": ir.AttrInt64("num_heads", 4),
-                "kv_num_heads": ir.AttrInt64("kv_num_heads", 2),
-                "sliding_window_cache": ir.AttrInt64("sliding_window_cache", 1),
-                "local_window_size": ir.AttrInt64("local_window_size", 16),
-                "qk_output": ir.AttrInt64("qk_output", 1),
-            },
+            attrs,
             opset_version=1,
             num_outputs=4,
-            symbolic_values={6: [100]},
+            symbolic_values={6: total} if total is not None else None,
         )
         self.assertEqual(actual[1:3], [ts(HALF, [1, 2, 16, 32])] * 2)
-        self.assertEqual(actual[3], ts(HALF, [1, 4, 7, 100]))
+        self.assertEqual(actual[3], ts(HALF, [1, 4, 7, expected_total]))
 
     @parameterized.parameterized.expand([("int4", 64), ("int4", 65), ("float4e2m1", 64)])
     def test_paged_latent_subbyte_cache_geometry(self, logical_type, head_size):

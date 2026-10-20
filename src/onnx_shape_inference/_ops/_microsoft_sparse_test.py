@@ -195,7 +195,17 @@ class SparseAttentionIndexerTest(unittest.TestCase):
 
 
 class PackedSparseAttentionIndexerTest(unittest.TestCase):
-    def _run(self, qsa, *, capture=0, unknown=False):
+    def _run(
+        self,
+        qsa,
+        *,
+        capture=0,
+        unknown=False,
+        overrides=None,
+        attributes=None,
+        output_names=None,
+        policy="override",
+    ):
         specs = [
             ts(HALF, [13, 128]),
             ts(HALF, [13, 32 if qsa else 64]),
@@ -216,23 +226,30 @@ class PackedSparseAttentionIndexerTest(unittest.TestCase):
         ]
         if capture:
             specs.append(ts(INT32, [2]))
+        if overrides:
+            for index, spec in overrides.items():
+                specs[index] = spec
         inputs = [
             ir.Value(name=f"in_{i}", type=spec.type, shape=None if unknown else spec.shape)
             if spec is not None
             else None
             for i, spec in enumerate(specs)
         ]
-        outputs = [
-            ir.Value(name="" if qsa and i == 4 else f"out_{i}")
-            for i in range(7 if capture else 6)
-        ]
+        names = (
+            output_names
+            if output_names is not None
+            else ["" if qsa and i == 4 else f"out_{i}" for i in range(7 if capture else 6)]
+        )
+        outputs = [ir.Value(name=name) for name in names]
         attrs = _policy(qsa)
         attrs["state_capacity"] = ir.AttrInt64("state_capacity", 64)
         attrs["state_update_capacity"] = ir.AttrInt64("state_update_capacity", capture)
+        if attributes:
+            attrs.update(attributes)
         node = ir.Node(
             MS, "PackedSparseAttentionIndexer", inputs, attributes=attrs, outputs=outputs
         )
-        ctx = ShapeInferenceContext({MS: 1}, policy="override")
+        ctx = ShapeInferenceContext({MS: 1}, policy=policy)
         registry.get(MS, node.op_type, 1)(ctx, node)
         return [ir.TypeAndShape(v.type, v.shape) for v in outputs]
 
@@ -270,6 +287,41 @@ class PackedSparseAttentionIndexerTest(unittest.TestCase):
     def test_csa_capture_forbidden(self):
         with self.assertRaises(OpUsageError):
             self._run(False, capture=1)
+
+    @parameterized.parameterized.expand(
+        [
+            ("key_rank", 12, ts(HALF, [2, 64])),
+            ("buffer_rank", 13, ts(HALF, [2, 7])),
+            ("length_rank", 15, ts(INT32, [2])),
+            ("key_capacity", 12, ts(HALF, [2, 63, 32])),
+            ("buffer_capacity", 13, ts(HALF, [2, 6, 32])),
+            ("length_columns", 15, ts(INT32, [2, 3])),
+        ]
+    )
+    def test_invalid_state(self, _name, index, spec):
+        with self.assertRaises(ShapeInferenceError):
+            self._run(True, overrides={index: spec})
+        with self.assertLogs("onnx_shape_inference._context", level="WARNING"):
+            self._run(True, overrides={index: spec}, policy="skip")
+
+    @parameterized.parameterized.expand([("state_capacity", 0), ("state_update_capacity", 9)])
+    def test_invalid_capacity(self, attr, value):
+        attributes = {attr: ir.AttrInt64(attr, value)}
+        with self.assertRaises(ShapeInferenceError):
+            self._run(True, attributes=attributes)
+        with self.assertLogs("onnx_shape_inference._context", level="WARNING"):
+            self._run(True, attributes=attributes, policy="skip")
+
+    @parameterized.parameterized.expand(
+        [
+            ("output_count", {"output_names": ["a", "b"]}),
+            ("qsa_gate_output", {"output_names": ["a", "b", "c", "d", "e", "f"]}),
+            ("capture_input", {"capture": 1, "overrides": {16: None}}),
+        ]
+    )
+    def test_invalid_optional_contract(self, _name, kwargs):
+        with self.assertRaises(OpUsageError):
+            self._run(True, **kwargs)
 
 
 class DynamicSparseAttentionTest(unittest.TestCase):
@@ -364,4 +416,252 @@ class SparsePagedAttentionTest(unittest.TestCase):
         )
         self.assertEqual(
             actual, [ts(HALF, ["T", 128]), ts(INT8, [16, 8, 2, 32]), ts(INT8, [16, 8, 2, 32])]
+        )
+
+
+class SparseBoundaryTest(unittest.TestCase):
+    def _invalid(self, op, inputs, attrs, outputs=2):
+        with self.assertRaises(ShapeInferenceError):
+            run_shape_inference(MS, op, inputs, attrs, opset_version=1, num_outputs=outputs)
+        with self.assertLogs("onnx_shape_inference._context", level="WARNING"):
+            run_shape_inference(
+                MS, op, inputs, attrs, opset_version=1, num_outputs=outputs, policy="skip"
+            )
+
+    @parameterized.parameterized.expand(
+        [
+            ("policy", "policy_mode", "invalid"),
+            ("ratio", "compress_ratio", 0),
+            ("ratio_overflow", "compress_ratio", 2**31),
+            ("budget", "token_budget", 7),
+            ("capacity_overflow", "token_budget", 2**31),
+            ("forbidden", "index_topk", 5),
+        ]
+    )
+    def test_indexer_invalid_attributes(self, _name, name, value):
+        attrs = _policy()
+        attrs[name] = (
+            ir.AttrString(name, value) if isinstance(value, str) else ir.AttrInt64(name, value)
+        )
+        self._invalid("SparseAttentionIndexer", _dense_inputs(), attrs)
+
+    @parameterized.parameterized.expand(
+        [
+            ("query_rank", 0, [7, 128]),
+            ("norm_rank", 2, []),
+            ("cos_rank", 4, [128]),
+            ("sin_rank", 5, [128]),
+            ("zero_head", 2, [0]),
+            ("query_width", 0, [2, 7, 127]),
+            ("past_rank", 7, [8, 32]),
+        ]
+    )
+    def test_indexer_invalid_ranks_and_geometry(self, _name, index, shape):
+        inputs = _dense_inputs()
+        inputs[index] = ts(HALF, shape)
+        self._invalid("SparseAttentionIndexer", inputs, _policy())
+
+    @parameterized.parameterized.expand(
+        [
+            ("rank", [2, 6, 64]),
+            ("planes", [3, 2, 6, 64]),
+            ("batch", [2, 3, 6, 64]),
+            ("width", [2, 2, 6, 63]),
+            ("length", [2, 2, 8, 64]),
+        ]
+    )
+    def test_csa_invalid_buffer(self, _name, shape):
+        self._invalid(
+            "SparseAttentionIndexer", _dense_inputs(False, buffer=shape), _policy(False), 3
+        )
+
+    @parameterized.parameterized.expand(
+        [("qsa_with_gate", True, 8), ("csa_with_mask", False, 6)]
+    )
+    def test_policy_input_contract(self, _name, qsa, index):
+        inputs = _dense_inputs(qsa)
+        inputs += [None] * max(0, index + 1 - len(inputs))
+        inputs[index] = ts(HALF)
+        with self.assertRaises(OpUsageError):
+            run_shape_inference(
+                MS,
+                "SparseAttentionIndexer",
+                inputs,
+                _policy(qsa),
+                opset_version=1,
+                num_outputs=2 if qsa else 3,
+            )
+
+    def test_dense_output_count(self):
+        with self.assertRaises(OpUsageError):
+            run_shape_inference(
+                MS, "SparseAttentionIndexer", _dense_inputs(), _policy(), opset_version=1
+            )
+
+    def test_qsa_unknown_query_keeps_past_batch(self):
+        inputs = _dense_inputs()
+        inputs[0] = ts(HALF)
+        self.assertEqual(
+            run_shape_inference(
+                MS, "SparseAttentionIndexer", inputs, _policy(), opset_version=1, num_outputs=2
+            ),
+            [ts(INT32), ts(HALF, [2, "_d0", 32])],
+        )
+
+    @parameterized.parameterized.expand([(True,), (False,)])
+    def test_csa_unresolved_window_plan(self, unknown_buffer):
+        inputs = _dense_inputs(False, shape=[2, "S", 128])
+        if unknown_buffer:
+            inputs[13] = ts(HALF)
+        actual = run_shape_inference(
+            MS,
+            "SparseAttentionIndexer",
+            inputs,
+            _policy(False),
+            opset_version=1,
+            num_outputs=3,
+        )
+        self.assertEqual(actual[0], ts(INT32, [2, "S", 5]))
+        self.assertEqual(actual[1], ts(HALF, [2, "_d1", 32]))
+        self.assertEqual(
+            actual[2], ts(HALF) if unknown_buffer else ts(HALF, [2, 2, "_d0", 64])
+        )
+
+    def test_csa_unknown_past_key(self):
+        inputs = _dense_inputs(False)
+        inputs[7] = ts(HALF)
+        actual = run_shape_inference(
+            MS,
+            "SparseAttentionIndexer",
+            inputs,
+            _policy(False),
+            opset_version=1,
+            num_outputs=3,
+        )
+        self.assertEqual(actual, [ts(INT32, [2, 7, 5]), ts(HALF), ts(HALF, [2, 2, 5, 64])])
+
+    @parameterized.parameterized.expand([(4,), (9,), (10,)])
+    def test_sparse_paged_missing_selection_input(self, index):
+        inputs = [
+            ts(HALF),
+            ts(HALF),
+            ts(HALF),
+            ts(HALF),
+            ts(HALF),
+            ts(INT32),
+            ts(INT32),
+            ts(INT32),
+            None,
+            ts(INT32),
+            ts(INT32),
+        ]
+        inputs[index] = None
+        with self.assertRaises(OpUsageError):
+            run_shape_inference(MS, "SparsePagedAttention", inputs, opset_version=1)
+
+    @staticmethod
+    def _dynamic_inputs():
+        return [
+            ts(HALF, [2, 7, 256]),
+            None,
+            None,
+            ts(HALF, [2, 2, 16, 32]),
+            ts(HALF, [2, 2, 16, 32]),
+            None,
+            None,
+            ts(INT32),
+            ts(INT32),
+            ts(INT32),
+            ts(INT32),
+        ]
+
+    @staticmethod
+    def _heads():
+        return {
+            "num_heads": ir.AttrInt64("num_heads", 4),
+            "kv_num_heads": ir.AttrInt64("kv_num_heads", 2),
+        }
+
+    @parameterized.parameterized.expand(
+        [
+            ("heads", None, None, "num_heads", 0),
+            ("kv_heads", None, None, "kv_num_heads", 3),
+            ("query_rank", 0, [7, 256], None, None),
+            ("query_width", 0, [2, 7, 255], None, None),
+            ("cache_rank", 3, [2, 16, 32], None, None),
+        ]
+    )
+    def test_dynamic_invalid(self, _name, index, shape, attr, value):
+        inputs, attrs = self._dynamic_inputs(), self._heads()
+        if index is not None:
+            inputs[index] = ts(HALF, shape)
+        if attr is not None:
+            attrs[attr] = ir.AttrInt64(attr, value)
+        self._invalid("DynamicSparseAttention", inputs, attrs, 3)
+
+    def test_dynamic_mismatched_optional_inputs(self):
+        inputs = self._dynamic_inputs()
+        inputs[1] = ts(HALF)
+        with self.assertRaises(OpUsageError):
+            run_shape_inference(
+                MS, "DynamicSparseAttention", inputs, self._heads(), opset_version=1
+            )
+
+    def test_dynamic_invalid_constant_length(self):
+        specs = self._dynamic_inputs()
+        specs[3] = specs[4] = None
+        inputs = [
+            ir.Value(name=f"i{i}", shape=s.shape, type=s.type) if s is not None else None
+            for i, s in enumerate(specs)
+        ]
+        with self.assertRaises(ShapeInferenceError):
+            run_shape_inference_with_values(
+                MS,
+                "DynamicSparseAttention",
+                inputs,
+                self._heads(),
+                opset_version=1,
+                num_outputs=3,
+                symbolic_values={10: [7, 8]},
+            )
+        with self.assertLogs("onnx_shape_inference._context", level="WARNING"):
+            run_shape_inference_with_values(
+                MS,
+                "DynamicSparseAttention",
+                inputs,
+                self._heads(),
+                opset_version=1,
+                num_outputs=3,
+                symbolic_values={10: [7, 8]},
+                policy="skip",
+            )
+
+    def test_dynamic_no_cache_outputs(self):
+        self.assertEqual(
+            run_shape_inference(
+                MS,
+                "DynamicSparseAttention",
+                self._dynamic_inputs(),
+                self._heads(),
+                opset_version=1,
+            ),
+            [ts(HALF, [2, 7, 128])],
+        )
+
+    @parameterized.parameterized.expand([(True,), (False,)])
+    def test_dynamic_unknown_query(self, known_cache):
+        inputs = self._dynamic_inputs()
+        inputs[0] = ts(HALF)
+        if not known_cache:
+            inputs[3] = inputs[4] = None
+        actual = run_shape_inference(
+            MS, "DynamicSparseAttention", inputs, self._heads(), opset_version=1, num_outputs=3
+        )
+        self.assertEqual(
+            actual,
+            [
+                ts(HALF),
+                ts(HALF, [2, 2, 16, 32]) if known_cache else ts(HALF),
+                ts(HALF, [2, 2, 16, 32]) if known_cache else ts(HALF),
+            ],
         )
