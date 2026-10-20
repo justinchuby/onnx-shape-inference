@@ -76,13 +76,69 @@ Optional empty output slots are not populated.
 The generated ONNX backend corpus remains enabled in full; no cases are skipped
 or filtered to achieve this coverage.
 
+## FLOAT6 validation against upstream IR (2026-10-20)
+
+ONNX 1.23.2's `Cast-28`, `QuantizeLinear-28`, and `DequantizeLinear-28`
+FLOAT6 extensions are tested against **onnx/ir-py main commit
+[`7c31e12fb31a852e1746f66dc2db5cff905a8ec5`](https://github.com/onnx/ir-py/commit/7c31e12fb31a852e1746f66dc2db5cff905a8ec5)**.
+That checkout reports version `1.1.0`; this is a tested source revision, not a
+claim that `1.1.0` is released. Its `DataType.FLOAT6E2M3` and `FLOAT6E3M2`
+match ONNX's enum values 27 and 28 and both have a six-bit width.
+
+The existing generic Cast and context/engine type propagation can carry these
+types without new registrations or dtype substitution. Regression tests compare
+shape and dtype with released ONNX inference for both formats:
+
+- Cast to/from FLOAT6 preserves scalar, concrete, symbolic, and unknown shapes.
+- QuantizeLinear obtains FLOAT6 from `output_dtype` or the zero point. Explicit
+  `output_dtype=0` means unspecified, not an UNDEFINED output; a specified dtype
+  must agree with a typed zero point. An untyped zero point does not imply UINT8.
+- DequantizeLinear accepts FLOAT6 inputs, but its output is the scale's floating
+  type or the explicit floating output type, **not** FLOAT6. An explicit
+  `output_dtype=0` still selects the scale's type.
+- Per-tensor, per-axis, and blocked quantization preserve logical dimensions,
+  regardless of six-bit storage. Full-graph quantize/cast/dequantize propagation
+  and ONNX type serialization round trips preserve the exact FLOAT6 enum IDs.
+
+The CI compatibility job pins this IR commit and runs the full suite, including
+the complete generated backend corpus. Normal released-IR jobs remain enabled.
+The public runtime dependency stays `onnx-ir>=0.2.0`; users are **not** required
+to install a Git-main dependency. With released `onnx-ir 1.0.0`, only FLOAT6-specific
+tests are feature-gated with an explicit missing-enum reason. All other tests,
+including quantization-default/error regressions, continue to run.
+
+Validation used separate worktree-local Python 3.12.7 environments with
+ONNX 1.23.2 and ONNX Runtime 1.31.0:
+
+| IR build | Cast/quantization targeted suite | Full suite |
+|----------|----------------------------------|------------|
+| Pinned upstream main above | 137 passed, no skips | 3,891 passed + 80 subtests, no skips |
+| Released 1.0.0 | 49 passed; 88 FLOAT6-only tests gated | 3,803 passed + 80 subtests; the same 88 tests gated |
+
+The targeted suite includes `_float6_test.py`, `_cast_test.py`, and
+`_normalization_test.py`. The complete generated backend corpus runs unchanged in
+both environments; none of its cases are gated. Repository-wide lint/format,
+dependency consistency, and diff whitespace checks pass.
+
+To reproduce the source-version validation in a separate environment:
+
+```powershell
+python -m venv .venv-float6
+.\.venv-float6\Scripts\python.exe -m pip install -r requirements\ci\requirements.txt -e . `
+  "onnx==1.23.2" "onnxruntime==1.31.0" `
+  "onnx-ir @ git+https://github.com/onnx/ir-py.git@7c31e12fb31a852e1746f66dc2db5cff905a8ec5"
+.\.venv-float6\Scripts\python.exe -m pytest src\onnx_shape_inference\_ops\_float6_test.py -q
+.\.venv-float6\Scripts\python.exe -m pytest -q
+```
+
 ## Remaining limitations
 
-- **FLOAT6 representation:** ONNX 1.23.2 adds `float6e2m3` and `float6e3m2` to
-  `Cast`, `QuantizeLinear`, and `DequantizeLinear`. The audited `onnx-ir 1.0.0`
-  `DataType` enum cannot represent either type. These require upstream IR dtype
-  support before they can be supported here; substituting another dtype would be
-  incorrect. Other dtype extensions use the existing generic propagation rules.
+- **Released-IR FLOAT6 representation:** FLOAT6 shape/type support is verified
+  with the pinned upstream IR revision above. The audited released `onnx-ir 1.0.0`
+  still cannot represent either FLOAT6 dtype; using those models requires an IR
+  build exposing the new enums until upstream releases that support. No fallback
+  to a different dtype is provided. These tests exercise shape/type metadata, not
+  numerical FLOAT6 conversion or quantization kernels.
 - CSA buffer sizes that depend on unresolved symbolic window-plan branches remain
   fresh unknown dimensions rather than assuming whether a window closes.
   Runtime selection values, hash values, and recurrent state contents are not
