@@ -57,9 +57,34 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
           slug: justinchuby/onnx-shape-inference
 
+  test-ir-main:
+    name: test (upstream IR FLOAT6)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Install audited upstream IR and released ONNX
+        run: |
+          pip install -r requirements/ci/requirements.txt -e . \
+            "onnx==1.23.2" "onnxruntime==1.31.0" \
+            "onnx-ir @ git+https://github.com/onnx/ir-py.git@7c31e12fb31a852e1746f66dc2db5cff905a8ec5"
+      - name: Verify FLOAT6 capability
+        run: |
+          python -c "import onnx_ir as ir; assert all(name in ir.DataType.__members__ for name in ('FLOAT6E2M3', 'FLOAT6E3M2'))"
+      - name: Run full suite with FLOAT6 enabled
+        run: |
+          pytest --cov=src --cov-report=xml --cov-branch --junitxml junit.xml
+      - name: Upload coverage reports to Codecov
+        uses: codecov/codecov-action@v7
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          slug: justinchuby/onnx-shape-inference
+
   build:
     name: Build
-    needs: [test]
+    needs: [test, test-ir-main]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7

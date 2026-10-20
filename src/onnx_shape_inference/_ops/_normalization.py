@@ -140,7 +140,7 @@ def infer_dequantize_linear(ctx: _context.ShapeInferenceContext, node: ir.Node) 
     (x,) = _context.check_inputs(node, "x")
     # Check output_dtype attribute first (opset 24+)
     output_dtype_attr = node.attributes.get("output_dtype")
-    if output_dtype_attr is not None:
+    if output_dtype_attr is not None and output_dtype_attr.as_int() != 0:
         output_dtype = ir.DataType(output_dtype_attr.as_int())
     else:
         # Output dtype matches the scale's dtype (input[1])
@@ -157,15 +157,20 @@ def infer_dequantize_linear(ctx: _context.ShapeInferenceContext, node: ir.Node) 
 def infer_quantize_linear(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
     """Infer shape and dtype for QuantizeLinear operator."""
     (x,) = _context.check_inputs(node, "x")
-    output_dtype = ir.DataType.UINT8
+    output_dtype: ir.DataType | None = None
     # Check output_dtype attribute first (opset 21+)
     output_dtype_attr = node.attributes.get("output_dtype")
-    if output_dtype_attr is not None:
+    if output_dtype_attr is not None and output_dtype_attr.as_int() != 0:
         output_dtype = ir.DataType(output_dtype_attr.as_int())
-    elif len(node.inputs) > 2 and node.inputs[2] is not None:
+    if len(node.inputs) > 2 and node.inputs[2] is not None:
         zp_dtype = node.inputs[2].dtype
         if zp_dtype is not None:
+            if output_dtype is not None and output_dtype != zp_dtype:
+                ctx.record_error(node, "output_dtype must match y_zero_point dtype")
+                return
             output_dtype = zp_dtype
+    elif output_dtype is None:
+        output_dtype = ir.DataType.UINT8
     if len(node.outputs) > 0:
         ctx.set_shape_and_dtype(node.outputs[0], x.shape, output_dtype)
 

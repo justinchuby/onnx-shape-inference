@@ -22,6 +22,28 @@ _reg = _registry.registry.register
 _BinOp = Callable[[object, object], object | None]
 
 
+@_reg("", "SwiGLU", since_version=28)
+def infer_swiglu(ctx: _context.ShapeInferenceContext, node: ir.Node) -> None:
+    """SwiGLU requires equal input shapes, without broadcasting."""
+    a, b = _context.check_inputs(node, "A", "B")
+    shape = a.shape if a.shape is not None else b.shape
+    if a.dtype is not None and b.dtype is not None and a.dtype != b.dtype:
+        ctx.record_error(node, "SwiGLU inputs must have the same dtype")
+        return
+    if a.shape is not None and b.shape is not None:
+        if a.shape.rank() != b.shape.rank():
+            ctx.record_error(node, "SwiGLU inputs must have identical shapes")
+            return
+        dims: list[int | ir.SymbolicDim] = []
+        for left, right in zip(a.shape, b.shape):
+            if isinstance(left, int) and isinstance(right, int) and left != right:
+                ctx.record_error(node, "SwiGLU inputs must have identical shapes")
+                return
+            dims.append(right if isinstance(right, int) else left)
+        shape = ir.Shape(dims)
+    ctx.set_shape_and_dtype(node.outputs[0], shape, a.dtype or b.dtype)
+
+
 def _broadcast_symbolic_values(
     op_func: _BinOp,
     val_a: list[int | ir.SymbolicDim] | None,

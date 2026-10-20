@@ -8,6 +8,9 @@
 
 Experimental symbolic shape inference for ONNX models. Built on top of [ONNX IR](https://github.com/onnx/ir-py), this library performs shape inference directly on the IR without serialization overhead, using [SymPy](https://www.sympy.org/) for symbolic dimension arithmetic.
 
+See the [released operator support audit](docs/operator-support.md) for ONNX
+opset 28 / ONNX Runtime 1.31 coverage and remaining limitations.
+
 ## Features
 
 - **Symbolic shape inference** — propagates shapes through the graph using SymPy expressions for symbolic dimensions
